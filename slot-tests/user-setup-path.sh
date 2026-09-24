@@ -5,8 +5,9 @@
 # user-setup-path — shani-user-setup.path stays active after boot (no
 # trigger-limit-hit); the /data/user-setup-needed marker and useradd still
 # trigger shani-user-setup.service; a sync that fixes several users at once
-# converges with the path unit alive; another spelling of the same zsh is not
-# rewritten; re-adding the old PathExists= line reproduces the failure
+# converges with the path unit alive (missing shells repaired); another
+# spelling of the same zsh is not rewritten; a shell a user chose (bash) is
+# kept - no forced zsh; re-adding the old PathExists= line reproduces the failure
 # (negative control); shani-health --security's "Unit Sandboxing" works.
 set -u
 res() { printf 'RESULT %-40s %s\n' "$1" "$2"; }
@@ -49,11 +50,12 @@ echo "== marker with users the sync must change (what every deploy leaves)"
 # trigger-limit-hit): 6 users created and changed in a row, then the marker,
 # must converge with the path unit alive
 CONV_USERS=(conv1 conv2 conv3 conv4 conv5 conv6)
-conv() {  # <label> — users with the wrong shell + the marker; path must survive
+NOSH=/usr/bin/no-such-shell   # a shell that no longer exists: must be repaired
+conv() {  # <label> — users with a missing shell + the marker; path must survive
   local u n=${#CONV_USERS[@]}
-  for u in "${CONV_USERS[@]}"; do useradd -m -s /bin/sh "$u" 2>/dev/null || usermod -s /bin/sh "$u"; done
+  for u in "${CONV_USERS[@]}"; do useradd -m -s "$NOSH" "$u" 2>/dev/null || usermod -s "$NOSH" "$u"; done
   settle; systemctl reset-failed "$pth" "$svc" 2>/dev/null; systemctl restart "$pth"; sleep 2
-  for u in "${CONV_USERS[@]}"; do usermod -s /bin/sh "$u"; done
+  for u in "${CONV_USERS[@]}"; do usermod -s "$NOSH" "$u"; done
   touch /data/user-setup-needed; sleep 2; settle
   CONV_STATE=$(systemctl is-active "$pth")
   CONV_FIXED=0; for u in "${CONV_USERS[@]}"; do [[ $(getent passwd "$u" | cut -d: -f7) == */zsh || $(getent passwd "$u" | cut -d: -f7) == */bash ]] && CONV_FIXED=$((CONV_FIXED + 1)); done
@@ -79,13 +81,20 @@ if [[ -n $zsh_real ]]; then
   [[ $(stat -c %i:%Y /data/overlay/etc/upper/passwd) == "$ino" ]] && res alias-shell-no-rewrite PASS \
       || res alias-shell-no-rewrite "FAIL (passwd rewritten: $(getent passwd conv1 conv2 | cut -d: -f7 | tr '\n' ' '))"
   # NEGATIVE control for that detector: a real change must show as a rewrite
-  usermod -s /bin/sh conv1
+  usermod -s "$NOSH" conv1
   ino=$(stat -c %i:%Y /data/overlay/etc/upper/passwd)
   systemctl start "$svc"; settle
   [[ $(stat -c %i:%Y /data/overlay/etc/upper/passwd) != "$ino" ]] && res rewrite-detector-control PASS \
       || res rewrite-detector-control "FAIL (a needed change was not seen)"
   systemctl reset-failed "$pth" 2>/dev/null; systemctl start "$pth"
 fi
+echo "== a shell the user chose stays (no forced zsh)"
+bash_real=$(realpath -e "$(command -v bash)")
+useradd -m -s "$bash_real" chooser 2>/dev/null || usermod -s "$bash_real" chooser
+settle; touch /data/user-setup-needed; sleep 2; settle
+[[ $(getent passwd chooser | cut -d: -f7) == "$bash_real" ]] && res chosen-shell-kept PASS \
+    || res chosen-shell-kept "FAIL (bash -> $(getent passwd chooser | cut -d: -f7))"
+userdel -rf chooser 2>/dev/null
 for u in "${CONV_USERS[@]}"; do userdel -rf "$u" 2>/dev/null; done
 systemctl reset-failed "$pth" "$svc" 2>/dev/null; systemctl restart "$pth"; sleep 8
 
