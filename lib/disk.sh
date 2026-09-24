@@ -92,11 +92,28 @@ _ensure_single_loop() {
   fi
 
   if (( ${#loops[@]} == 1 )); then
+    # An attachment made without -P has no partition nodes (<loop>p1...),
+    # so install.img's by-label links dangle and every mount fails. Replace
+    # it - only when nothing holds it (no partition nodes means nothing on
+    # it can be mounted, but check the whole device too).
+    if [[ -n "$(sfdisk -d "$img" 2>/dev/null | grep -m1 '^/')" && ! -e "${loops[0]}p1" ]]; then
+      if ! findmnt -rn -S "${loops[0]}" >/dev/null 2>&1; then
+        warn "${loops[0]} is attached to $(basename "$img") without partition scanning - reattaching with -P"
+        losetup -d "${loops[0]}" 2>/dev/null || die "cannot detach ${loops[0]}"
+        losetup -P --find --show "$img" || die "Failed to attach loop device for $img"
+        return 0
+      fi
+    fi
     echo "${loops[0]}"
     return 0
   fi
 
-  losetup --find --show "$img" || die "Failed to attach loop device for $img"
+  # -P: scan the partition table, so a whole-disk image (install.img: ESP +
+  # btrfs) gets <loop>p1/<loop>p2 nodes. Previously missing: bootstrap
+  # attached with -P itself, but any other command after `clean` re-attached
+  # without it and every by-label mount failed ("special device ... does not
+  # exist").
+  losetup -P --find --show "$img" || die "Failed to attach loop device for $img"
 }
 
 _mount_root() {

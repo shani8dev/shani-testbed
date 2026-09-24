@@ -607,6 +607,12 @@ _prepare_enter_args() {
 # hitting the missing dir cannot self-heal — the fix is to run `test disk`
 # first (or the equivalent sudo one-liner below).
 _ensure_by_label_dir() {
+  # Inside the builder we are root: just create it (clean removes its links
+  # and the host's udev then prunes the empty dir, so every command after a
+  # clean used to stop here and ask for a manual `test disk`).
+  if [[ ! -d /dev/disk/by-label && "$(id -u)" == "0" ]]; then
+    mkdir -p /dev/disk/by-label && chown root:root /dev/disk/by-label
+  fi
   if [[ ! -d /dev/disk/by-label ]]; then
     die "/dev/disk/by-label does not exist — systemd-nspawn boot commands need it (root:root). Run 'test disk' first, or: sudo mkdir -p /dev/disk/by-label && sudo chown root:root /dev/disk/by-label"
   fi
