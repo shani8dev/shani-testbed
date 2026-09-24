@@ -15,8 +15,23 @@
 #     schemas (a key for an app/schema the image doesn't have is silently
 #     ignored by glib-compile-schemas); NEGATIVE control: a bogus override
 #     is reported by the same check
+#
+# Checks for a feature carry the package version that first shipped it
+# (`since`): an older image - e.g. the current stable, run by `gate` -
+# reports SKIP naming its version instead of FAIL, so the test describes
+# what that image claims to ship. A newer image that lost a feature still
+# fails.
 set -u
 res() { printf 'RESULT %-40s %s\n' "$1" "$2"; }
+has() {  # <pkg> <first-version> — installed at that version or newer
+    local v; v=$(pacman -Q "$1" 2>/dev/null | awk '{print $2}')
+    [[ -n $v ]] && (( $(vercmp "$v" "$2") >= 0 ))
+}
+since() {  # <result-name> <pkg> <first-version> — else report SKIP
+    has "$2" "$3" && return 0
+    res "$1" "SKIP ($2 $(pacman -Q "$2" 2>/dev/null | awk '{print $2}') predates $3)"
+    return 1
+}
 u=freshuser H=/home/$u
 userdel -r "$u" >/dev/null 2>&1
 useradd -m -s /bin/zsh "$u" || { res useradd-from-skel FAIL; exit 0; }
@@ -30,16 +45,21 @@ ERR='command not found|[Nn]o such file|[Ee]rror|unknown option|parse error|bad p
 
 echo "== tools the shipped configs use"
 missing=""
-for t in zsh fish starship mcfly fzf fastfetch bat eza fd zoxide delta tmux micro rg tldr; do
+tools="zsh fish starship mcfly fzf fastfetch tmux micro"
+has shani-settings 0.0.5-42 && tools+=" bat eza fd zoxide delta"
+has shani-tools-extra 1.2-12 && tools+=" rg tldr"
+for t in $tools; do
     command -v "$t" >/dev/null || missing+=" $t"
 done
-[[ -z $missing ]] && res config-tools-installed PASS || res config-tools-installed "FAIL (missing:$missing)"
+[[ -z $missing ]] && res config-tools-installed "PASS ($(wc -w <<<"$tools") tools)" || res config-tools-installed "FAIL (missing:$missing)"
 
 echo "== first interactive shells"
 out=$(in_pty "zsh -i -c 'print ZSH_DONE'")
 bad=$(grep -E "$ERR" <<<"$out" | grep -v ZSH_DONE | head -3)
 grep -q ZSH_DONE <<<"$out" && [[ -z $bad ]] && res zsh-starts-clean PASS || res zsh-starts-clean "FAIL (${bad:-no output})"
-grep -q 'hani' <<<"$out" && res zsh-fastfetch-greeting PASS || res zsh-fastfetch-greeting FAIL
+if since zsh-fastfetch-greeting shani-settings 0.0.5-42; then
+    grep -q 'hani' <<<"$out" && res zsh-fastfetch-greeting PASS || res zsh-fastfetch-greeting FAIL
+fi
 p=$(as_user zsh -i -c 'starship prompt' 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
 grep -q "$u" <<<"$p" && res starship-prompt PASS || res starship-prompt "FAIL ($(head -c 80 <<<"$p"))"
 for sh in bash fish; do
@@ -50,19 +70,25 @@ for sh in bash fish; do
 done
 
 echo "== tmux and git"
-out=$(as_user tmux -L fresh -f /dev/null new-session -d \; source-file /etc/tmux.conf 2>&1); rc=$?
-as_user tmux -L fresh kill-server 2>/dev/null
-[[ $rc -eq 0 && -z $out ]] && res tmux-conf-accepted PASS || res tmux-conf-accepted "FAIL ($out)"
-repo=$(as_user mktemp -d)
-as_user git -C "$repo" init -q && echo a | as_user tee "$repo/f" >/dev/null && as_user git -C "$repo" add f \
-  && as_user git -C "$repo" -c user.name=t -c user.email=t@t commit -qm i && echo b | as_user tee "$repo/f" >/dev/null
-out=$(in_pty "git -C $repo --paginate diff"); rc=$?
-[[ $rc -eq 0 && $(git config --system core.pager) == delta ]] && ! grep -Eq "$ERR" <<<"$out" \
-    && res git-delta-pager PASS || res git-delta-pager "FAIL (rc=$rc)"
+if since tmux-conf-accepted shani-settings 0.0.5-42; then
+    out=$(as_user tmux -L fresh -f /dev/null new-session -d \; source-file /etc/tmux.conf 2>&1); rc=$?
+    as_user tmux -L fresh kill-server 2>/dev/null
+    [[ $rc -eq 0 && -z $out ]] && res tmux-conf-accepted PASS || res tmux-conf-accepted "FAIL ($out)"
+fi
+if since git-delta-pager shani-settings 0.0.5-42; then
+    repo=$(as_user mktemp -d)
+    as_user git -C "$repo" init -q && echo a | as_user tee "$repo/f" >/dev/null && as_user git -C "$repo" add f \
+      && as_user git -C "$repo" -c user.name=t -c user.email=t@t commit -qm i && echo b | as_user tee "$repo/f" >/dev/null
+    out=$(in_pty "git -C $repo --paginate diff"); rc=$?
+    [[ $rc -eq 0 && $(git config --system core.pager) == delta ]] && ! grep -Eq "$ERR" <<<"$out" \
+        && res git-delta-pager PASS || res git-delta-pager "FAIL (rc=$rc)"
+fi
 
 echo "== desktop defaults"
 if [[ -d /usr/share/xsessions || -d /usr/share/wayland-sessions ]]; then
-    fc-list : family | grep -qi 'FiraMono Nerd Font' && res nerd-font-installed PASS || res nerd-font-installed FAIL
+    if since nerd-font-installed shani-fonts 1.3-5; then
+        fc-list : family | grep -qi 'FiraMono Nerd Font' && res nerd-font-installed PASS || res nerd-font-installed FAIL
+    fi
 else
     res nerd-font-installed "PASS (no desktop session on this profile)"
 fi

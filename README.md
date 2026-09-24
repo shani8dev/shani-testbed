@@ -228,6 +228,8 @@ copy-pasted between commands):
 | `lib/qemu.sh`, `lib/gui.sh`, `lib/qmp_client.py` | OVMF boots (`qemu`, `iso`, `watch`, `gui`); one shared QMP/QGA client |
 | `lib/vmspawn.sh` | `vmspawn` — UEFI + TPM boot without KVM |
 | `lib/suite.sh` | `suite`, `status` |
+| `lib/gate.sh` | `gate` — the promote-stable release gate |
+| `lib/isoinstall.sh` | `iso-install` — ISO booted under UEFI, its own installer, firmware boot of the result |
 | `lib/a11y_client.py` | AT-SPI accessibility-tree client used by `app` |
 | `mcp/shani_harness_mcp.py` | MCP server exposing `app` and harness commands to AI agents |
 
@@ -269,6 +271,64 @@ the final `clean` still runs. `--local-src` defaults to
 ```bash
 ./run_in_container.sh build.sh test suite -p gnome
 ./run_in_container.sh build.sh test status      # read-only: images, loops, slots, overlays
+```
+
+### `gate`: only a tested build becomes stable
+
+`gate -p <profile>` tests the **published** candidates (R2 `latest.txt` and
+`iso-latest.txt`) along both journeys users take, using only what users get
+(SHA-256 + GPG checked against the pinned fingerprint, the self-updated
+shani-deploy, no `--local-src`):
+
+| phase | steps |
+|---|---|
+| fresh (a new user) | `iso-install` of the candidate ISO → identity → verify-boot → slot-tests → desktop → `upgrade --self-update` to the candidate image → identity → verify-boot → slot-tests → desktop → rollback → identity → verify-boot |
+| upgrade (an existing user) | install current stable → `upgrade --self-update` → identity → verify-boot → slot-tests → desktop → rollback → identity → verify-boot |
+
+*identity* reads `/etc/shani-version` in the slot `current-slot` names, so
+a build published mid-gate fails instead of being promoted untested.
+Slot-tests are `boot-health`, `fresh-user` (features newer than the image's
+packages report `SKIP (<pkg> <ver> predates …)`) and, on the ISO path,
+`launchers` (every pinned dock/favorite app installed - the Flatpak layer
+only ships inside ISOs). On success it writes `disk/gate-<profile>.passed`
+(line 1 the image, line 2 the ISO folder when the fresh phase ran), which
+`promote-stable.sh --expect= --expect-iso=` compare before promoting.
+`--skip=fresh,upgrade,desktop`, `--keep`. Downloads are verified with a
+public-only keyring (`SHANIOS_TEST_SIGNING_KEY=<file>`, the local builder
+keyring, or shani-keyring's `shani.gpg`), so it runs on CI without secrets.
+
+```bash
+./run_in_container.sh build.sh test gate -p plasma
+```
+
+### `iso-install`: install the way a user does
+
+The fresh phase's install is not the fast bind-mount path
+(`bootstrap --from-iso`, which runs the ISO's scripts in the builder
+container). `iso-install -p <profile> --iso=<iso-latest|iso-stable|date|file>`:
+
+1. boots the ISO under OVMF with a software TPM and `install.img` as a
+   blank virtio disk - firmware, the ISO's bootloader, kernel, initramfs,
+   live root;
+2. in the live session, through the ISO's own qemu-guest-agent, runs the
+   installer exactly as os-installer does (read from its source): `/bin/bash
+   /etc/os-installer/scripts/<step>.sh` for prepare, install, configure, as
+   the live user, in a pty, cwd `/`, with only that step's `OSI_*`
+   variables - so the ISO's own tools and kernel do the install;
+3. boots the installed disk through the same NVRAM and TPM (the boot entry
+   configure.sh wrote) to a login prompt; its console reaches
+   `disk/iso-install-boot-console.log` through systemd-stub's SMBIOS
+   kernel-cmdline-extra (`console=ttyS0`, the only change to the system).
+
+Not covered: clicking the os-installer GUI pages (they only collect the
+`OSI_*` values), and Secure Boot (MOK enrollment needs MokManager).
+`--boot-only` re-boots the last installed disk. Uses KVM when present; under
+TCG (this host) the live boot takes ~80 s, the install ~23 min, the
+installed boot ~95 s. `tests/iso-install-runner.sh` checks the in-guest
+runner against os-installer's contract in a container.
+
+```bash
+./run_in_container.sh build.sh test iso-install -p plasma --iso=iso-latest
 ```
 
 ### Any published release: `--from-r2`
@@ -344,8 +404,10 @@ no override hook, and this harness deliberately does not patch that (that
 would mean testing a modified binary, not what actually ships). Instead:
 
 - `../run_in_container.sh` passes `--add-host=downloads.shani.dev:127.0.0.1`
-  on every invocation (a no-op for every command except this one), so the
-  domain resolves to the container's own loopback
+  to `test` commands, so the domain resolves to the container's own
+  loopback — except `test gate`, anything with `--from-r2`, and
+  `SHANIOS_TEST_REAL_R2=1`, which must reach the real R2 (with the mapping
+  and no `serve` running, every download fails "after 0 ms")
 - `cmd_ca` mints a CA + leaf cert for that exact CN
 - `cmd_bootstrap` trust-anchors the CA **inside `@blue`/`@green`**
   (Arch/p11-kit: `trust anchor` + `trust extract-compat`) at receive time

@@ -117,10 +117,111 @@ _r2_get() {  # <url> <dest> <required:1|0>
     done
     rc=0; wait "$pid" || rc=$?
     if (( rc == 0 )); then mv -f "${dest}.part" "$dest"; return 0; fi
-    warn "download of $(basename "$dest") stopped (curl rc=${rc}, try ${try}/10) - resuming"
-    sleep 5
+    # back off (5s .. 5min): 10 quick retries gave up on a one-minute
+    # network outage with 1.9 GB of a 3 GB image already down
+    warn "download of $(basename "$dest") stopped (curl rc=${rc}, try ${try}/10) - resuming in $(( try < 7 ? 5 * 2 ** (try - 1) : 300 ))s"
+    sleep $(( try < 7 ? 5 * 2 ** (try - 1) : 300 ))
   done
   die "Could not download ${url} after 10 tries"
+}
+
+# Public-only keyring for checking published artifacts. Not
+# gpg_prepare_keyring: that one is for SIGNING and dies without the secret
+# key, which only the maintainer's machine has - so a CI gate could never
+# verify a download. The public key comes from SHANIOS_TEST_SIGNING_KEY, the
+# local builder keyring, or shani-keyring's shani.gpg; whichever it is, a
+# signature only counts if its primary-key fingerprint is GPG_KEY_ID (pinned
+# in config.sh, in git), so a swapped key file can't vouch for anything.
+_release_keyring() {
+  [[ -n "${RELEASE_GNUPGHOME:-}" ]] && return 0
+  RELEASE_GNUPGHOME="$(mktemp -d)"
+  local g=(gpg --homedir "$RELEASE_GNUPGHOME" --batch --quiet)
+  if [[ -n "${SHANIOS_TEST_SIGNING_KEY:-}" ]]; then
+    "${g[@]}" --import "$SHANIOS_TEST_SIGNING_KEY" 2>/dev/null || true
+  fi
+  if ! "${g[@]}" --list-keys "$GPG_KEY_ID" >/dev/null 2>&1 && [[ -d "${BUILDER_GNUPGHOME:-}" ]]; then
+    gpg --homedir "$BUILDER_GNUPGHOME" --batch --export "$GPG_KEY_ID" 2>/dev/null | "${g[@]}" --import 2>/dev/null || true
+  fi
+  if ! "${g[@]}" --list-keys "$GPG_KEY_ID" >/dev/null 2>&1; then
+    curl -fsSL --max-time 30 "${SHANIOS_TEST_KEYRING_URL:-https://raw.githubusercontent.com/shani8dev/shani-keyring/main/shani.gpg}" \
+      | "${g[@]}" --import 2>/dev/null || true
+  fi
+  "${g[@]}" --list-keys "$GPG_KEY_ID" >/dev/null 2>&1 \
+    || die "No public key ${GPG_KEY_ID} to verify releases with (set SHANIOS_TEST_SIGNING_KEY=<file>)"
+}
+
+# <file> with <file>.sha256 and <file>.asc beside it: SHA-256, then a GPG
+# signature whose primary key is GPG_KEY_ID. A file that fails is deleted
+# so the next run downloads it again.
+_verify_download() {
+  local f="$1"
+  _release_keyring
+  ( cd "$(dirname "$f")" && sha256sum --check --status "$(basename "$f").sha256" ) \
+    || { rm -f "$f"; die "SHA-256 mismatch for $(basename "$f") (deleted) - re-run to download again"; }
+  gpg --homedir "${RELEASE_GNUPGHOME}" --batch --status-fd 1 --verify "${f}.asc" "$f" 2>/dev/null \
+      | grep -Eq "^\[GNUPG:\] VALIDSIG .* ${GPG_KEY_ID}\$" \
+    || { rm -f "$f"; die "GPG signature check failed for $(basename "$f") (deleted)"; }
+  log "  verified $(basename "$f") (SHA-256 + GPG ${GPG_KEY_ID: -8})"
+}
+
+# The published ISO for <profile> <iso-latest|iso-stable|YYYYMMDD>, or a
+# local .iso path. Sets ISO_FILE and ISO_DATE (YYYYMMDD of its folder,
+# which is also the date of the rootfs it carries: build-iso.sh takes the
+# base image from the same dated folder's latest.txt).
+_fetch_published_iso() {
+  local profile="$1" sel="$2" base date name dest f
+  if [[ "$sel" == /* || "$sel" == ./* ]]; then
+    [[ -f "$sel" ]] || die "--from-iso: no such file ${sel}"
+    ISO_FILE="$(realpath "$sel")"
+    ISO_DATE=$(grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}' <<<"$(basename "$sel")" | tr -d . | head -n1) || true
+    return 0
+  fi
+  base="${R2_PUBLIC_BASE:-https://downloads.shani.dev}/${profile}"
+  if [[ "$sel" == iso-latest || "$sel" == iso-stable ]]; then
+    date=$(curl -fsS --max-time 30 --retry 5 --retry-delay 5 --retry-all-errors "${base}/${sel}.txt" 2>/dev/null | tr -d '[:space:]') || true
+  else
+    date="$sel"
+  fi
+  [[ "$date" =~ ^[0-9]{8}$ ]] || die "--from-iso: '${sel}' gave '${date}', not a YYYYMMDD folder (${base}/${sel}.txt)"
+  name="signed_${OS_NAME}-${profile}-${date:0:4}.${date:4:2}.${date:6:2}-x86_64.iso"
+  dest="${OUTPUT_DIR}/${profile}/${date}"
+  mkdir -p "$dest"
+  log "Fetching ${name} from ${base}/${date} (resumable)"
+  for f in "$name.sha256" "$name.asc" "$name"; do
+    _r2_get "${base}/${date}/${f}" "${dest}/${f}" 1
+  done
+  _verify_download "${dest}/${name}"
+  ISO_FILE="${dest}/${name}"
+  ISO_DATE="$date"
+}
+
+# Mount an ISO the way its live session sees itself: the ISO read-only (its
+# shanios/x86_64/{rootfs,flatpakfs,snapfs}.zst are what install.sh
+# extracts) and the live root airootfs.sfs, whose /etc/os-installer is the
+# installer that ISO really runs (scripts, config.yaml, part.sfdisk) - so
+# OSI_ROOT points there instead of the os-installer-config checkout. Sets
+# ISO_ROOTFS.
+_mount_iso() {
+  local iso="$1"
+  ISO_MNT=/run/shanios-iso ISO_LIVE=/run/shanios-iso-live
+  mkdir -p "$ISO_MNT" "$ISO_LIVE"
+  mountpoint -q "$ISO_MNT" || mount -o loop,ro "$iso" "$ISO_MNT" || die "could not mount ${iso}"
+  local sfs="${ISO_MNT}/${OS_NAME}/x86_64/airootfs.sfs"
+  [[ -f "$sfs" ]] || die "${iso} has no ${OS_NAME}/x86_64/airootfs.sfs"
+  mountpoint -q "$ISO_LIVE" || mount -o loop,ro "$sfs" "$ISO_LIVE" || die "could not mount ${sfs}"
+  ISO_ROOTFS="${ISO_MNT}/${OS_NAME}/x86_64/rootfs.zst"
+  [[ -f "$ISO_ROOTFS" ]] || die "${iso} has no ${OS_NAME}/x86_64/rootfs.zst"
+  export OSI_ROOT="${ISO_LIVE}/etc/os-installer"
+  [[ -f "${OSI_ROOT}/scripts/install.sh" ]] || die "${iso}'s live root has no /etc/os-installer/scripts/install.sh"
+  log "ISO $(basename "$iso"): rootfs $(du -h "$ISO_ROOTFS" | cut -f1)$( [[ -f ${ISO_MNT}/${OS_NAME}/x86_64/flatpakfs.zst ]] && echo ', flatpakfs')$( [[ -f ${ISO_MNT}/${OS_NAME}/x86_64/snapfs.zst ]] && echo ', snapfs'); installer from its live root"
+}
+
+_umount_iso() {
+  local m
+  for m in /run/archiso/bootmnt/"${OS_NAME}"/x86_64/*.zst /run/shanios-iso-live /run/shanios-iso; do
+    mountpoint -q "$m" 2>/dev/null && umount -l "$m"
+  done
+  return 0
 }
 
 _fetch_published() {
@@ -148,14 +249,8 @@ _fetch_published() {
     _r2_get "${base}/${date_dir}/${f}.asc" "${dest}/${f}.asc" 1
   done
 
-  gpg_prepare_keyring
   for f in "${dest}/${filename}" "${dest}/flatpakfs.zst" "${dest}/snapfs.zst"; do
-    [[ -f "$f" ]] || continue
-    ( cd "$dest" && sha256sum --check --status "$(basename "$f").sha256" ) \
-      || { rm -f "$f"; die "SHA-256 mismatch for $(basename "$f") (deleted) - re-run to download again"; }
-    gpg --homedir "${BUILDER_GNUPGHOME}" --batch --verify "${f}.asc" "$f" 2>/dev/null \
-      || { rm -f "$f"; die "GPG signature check failed for $(basename "$f") (deleted)"; }
-    log "  verified $(basename "$f") (SHA-256 + GPG ${GPG_KEY_ID: -8})"
+    [[ -f "$f" ]] && _verify_download "$f"
   done
   if [[ "$sel" == latest || "$sel" == stable ]]; then
     printf '%s\n' "$filename" > "${OUTPUT_DIR}/${profile}/${sel}.txt"
@@ -209,10 +304,13 @@ cmd_bootstrap() {
   # production equivalent to call instead: trust-anchoring this session's
   # throwaway CA into each slot, so cmd_serve's local HTTPS mirror
   # verifies for real inside a booted/entered slot.
-  local usage_bootstrap="Usage: $(basename "$0") bootstrap -p <profile> [-d latest|stable|<date>] [--encrypted] [--from-r2]"
+  local usage_bootstrap="Usage: $(basename "$0") bootstrap -p <profile> [-d latest|stable|<date>] [--encrypted] [--from-r2|--from-iso=<sel>]"
   _take_from_r2 "$@"
   set -- "${REST_ARGS[@]}"
   local from_r2="$FROM_R2"
+  _take_from_iso "$@"
+  set -- "${REST_ARGS[@]}"
+  local from_iso="$FROM_ISO"
   _take_encrypted "$@"
   set -- "${REST_ARGS[@]}"
   local encrypted="$ENCRYPTED"
@@ -233,10 +331,13 @@ cmd_bootstrap() {
   local -a install_args=(-p "$profile" -d "$date_sel")
   (( encrypted )) && install_args+=(--encrypted)
   (( from_r2 )) && install_args+=(--from-r2)
+  [[ -n "$from_iso" ]] && install_args+=("--from-iso=${from_iso}")
   cmd_install "${install_args[@]}"
   local -a configure_args=(-p "$profile")
   (( encrypted )) && configure_args+=(--encrypted)
+  # configure.sh too comes from the ISO's live root (OSI_ROOT, _mount_iso)
   cmd_configure "${configure_args[@]}"
+  _umount_iso
 
   log "Trust-anchoring this session's throwaway CA into @blue/@green (test-only — no production equivalent)"
   _mount_root
@@ -378,6 +479,10 @@ cmd_install() {
   _take_from_r2 "$@"
   set -- "${REST_ARGS[@]}"
   local from_r2="$FROM_R2"
+  _take_from_iso "$@"
+  set -- "${REST_ARGS[@]}"
+  local from_iso="$FROM_ISO"
+  [[ -n "$from_iso" ]] && (( from_r2 )) && die "install: --from-iso and --from-r2 are alternatives"
   _take_encrypted "$@"
   set -- "${REST_ARGS[@]}"
   local encrypted="$ENCRYPTED"
@@ -390,12 +495,18 @@ cmd_install() {
       *) ;;
     esac
   done
-  [[ -n "$profile" ]] || die "Usage: $(basename "$0") install -p <profile> [-d latest|stable|<date>] [--encrypted] [--from-r2]"
+  [[ -n "$profile" ]] || die "Usage: $(basename "$0") install -p <profile> [-d latest|stable|<date>] [--encrypted] [--from-r2|--from-iso=<iso-latest|iso-stable|date|file>]"
 
   (( from_r2 )) && _fetch_published "$profile" "$date_sel"
   _reset_slot_overlays
   local image
-  image="$(_resolve_build_image "$profile" "$date_sel")"
+  if [[ -n "$from_iso" ]]; then
+    _fetch_published_iso "$profile" "$from_iso"
+    _mount_iso "$ISO_FILE"
+    image="$ISO_ROOTFS"
+  else
+    image="$(_resolve_build_image "$profile" "$date_sel")"
+  fi
 
   _find_osi_root
   local sfdisk_layout="${OSI_ROOT}/bits/part.sfdisk"

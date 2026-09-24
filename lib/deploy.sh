@@ -24,6 +24,17 @@ cmd_upgrade() {
   # included (_overlay_local_src picks up its sibling systemd/ dir too).
   _take_local_src "$@"
   set -- "${REST_ARGS[@]}"
+  # --self-update: let shani-deploy update itself first (GitHub main,
+  # SHA-256 + GPG checked, re-exec) - what a real machine does, and what
+  # `gate` tests. Incompatible with --local-src (it would replace the
+  # overlaid copy).
+  local skip_self=--skip-self-update a
+  local -a rest=()
+  for a in "$@"; do
+    if [[ "$a" == --self-update ]]; then skip_self=""; else rest+=("$a"); fi
+  done
+  set -- "${rest[@]}"
+  [[ -z "$skip_self" && -n "${LOCAL_SRC:-}" ]] && die "upgrade: --self-update and --local-src contradict each other"
 
   # Calls shani-deploy directly, not shani-update: shani-update is only an
   # interactive front-end (GUI dialog / console prompt) that then pkexecs
@@ -46,7 +57,7 @@ cmd_upgrade() {
   # process) — cmd_cycle needs cmd_upgrade to actually return so its own
   # cmd_reboot afterward still runs. _prepare_enter_args is the same prep
   # cmd_enter itself uses (single source of truth for the nspawn args).
-  _prepare_in_current_slot shani-deploy --force --channel latest --skip-self-update "$@"
+  _prepare_in_current_slot shani-deploy --force --channel latest ${skip_self:+"$skip_self"} "$@"
   log "Running shani-deploy inside @${CURRENT_SLOT} (real deploy — this will actually switch slots on success)"
   systemd-nspawn "${NSPAWN_ENTER_ARGS[@]}"
 }

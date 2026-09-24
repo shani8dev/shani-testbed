@@ -53,7 +53,7 @@ source "${MEDIA_ROOT}/config/config.sh"
 SCRIPT_DIR="${MEDIA_ROOT}/test-env"
 
 LIB_DIR="${TESTBED_ROOT}/lib"
-for _module in common disk pki install nspawn boot deploy app qemu gui vmspawn suite usage; do
+for _module in common disk pki install nspawn boot deploy app qemu gui vmspawn isoinstall suite gate usage; do
   # shellcheck source=/dev/null
   source "${LIB_DIR}/${_module}.sh"
 done
@@ -84,6 +84,8 @@ case "$COMMAND" in
   rollback)     cmd_rollback "$@" ;;
   cycle)        cmd_cycle "$@" ;;
   suite)        cmd_suite "$@" ;;
+  gate)         cmd_gate "$@" ;;
+  iso-install)  cmd_iso_install "$@" ;;
   status)       cmd_status "$@" ;;
   qemu)         cmd_qemu "$@" ;;
   gui)          cmd_gui "$@" ;;

@@ -88,6 +88,21 @@ containers first.
   window before `type`/`key`; don't remove `_app_ensure_focus`.
 - **at-spi2-core role names changed** (`button`, not `push button`). Take
   role names from a real `tree`, not from memory.
+- **`gate` must stay a test of what users get.** No `--local-src`, no
+  `--local-pkg`, no loosened checks to make a candidate pass: it is what
+  `promote-stable.yml` trusts. A check for a feature newer than an image's
+  packages reports `SKIP` via `since` (fresh-user.sh), never a silent PASS.
+  Verifying downloads uses a public-only keyring (`_release_keyring`);
+  `gpg_prepare_keyring` needs the secret key and would fail on CI.
+- **`iso-install` replays os-installer, it doesn't reinvent it.** The
+  in-guest runner (`_isovm_runner`) mirrors installation_scripting.py /
+  envvar_creator.py from the ISO: live user, pty, cwd `/`, ONLY the step's
+  `OSI_*` vars (prepare gets none - `printf '%q '` with no args yields `''`,
+  which once made every prepare exit 127), and `finished` only after all
+  three steps succeed (it was once written unconditionally: a failed install
+  would have passed). `tests/iso-install-runner.sh` guards both. qemu-base
+  has no virtio-gpu (use `-vga std`); a comma inside a `-smbios` value must
+  be written `,,`.
 - Never read or enumerate `shani-install-media/test-env/disk/` or `cache/`
   contents by hand: loop-mounted images and build artifacts.
 

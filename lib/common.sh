@@ -136,6 +136,21 @@ _take_from_r2() {
   done
 }
 
+# --from-iso=<iso-latest|iso-stable|YYYYMMDD|/path/to.iso> — install from a
+# published (or local) ISO exactly as its live installer would (see
+# _mount_iso). Sets FROM_ISO (empty = not given).
+_take_from_iso() {
+  FROM_ISO=""
+  REST_ARGS=()
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --from-iso=*) FROM_ISO="${a#--from-iso=}" ;;
+      *) REST_ARGS+=("$a") ;;
+    esac
+  done
+}
+
 _take_encrypted() {
   ENCRYPTED=0
   REST_ARGS=()

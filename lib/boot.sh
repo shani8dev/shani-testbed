@@ -269,6 +269,14 @@ runuser -u "$u" -- env -i HOME="/home/$u" USER="$u" LOGNAME="$u" SHELL=/bin/zsh 
   DP_W="$w" DP_H="$h" DP_SETTLE="$settle" DP_HOLD="$hold" DP_EXEC="$exec_cmd" DP_FLAG="$flag" \
   dbus-run-session -- bash -c '
   export XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE KDE_FULL_SESSION=true KDE_SESSION_VERSION=6 XDG_SESSION_TYPE=wayland
+  # what a real login gets from the user manager: the image'"'"'s own
+  # user-environment generators (environment.d, flatpak'"'"'s XDG_DATA_DIRS for
+  # the Flatpak apps'"'"' launchers and icons). env -i above cleared all of it,
+  # so pinned Flatpak apps showed as blank icons.
+  for g in /usr/lib/systemd/user-environment-generators/*; do
+    [ -x "$g" ] || continue
+    while IFS= read -r kv; do case "$kv" in [A-Za-z_]*=*) export "$kv" ;; esac; done < <("$g" 2>/dev/null)
+  done
   # what startplasma does at a first login: apply the user'"'"'s global theme
   # (skel kdeglobals LookAndFeelPackage) into ~/.config/kdedefaults and put
   # that first in XDG_CONFIG_DIRS - without it the shell comes up stock Breeze

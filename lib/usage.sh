@@ -115,6 +115,23 @@ Commands:
               upgrade → rollback → clean) as one command, with per-step
               timing and a PASS/FAIL summary (disk/suite-<epoch>.json).
               --local-src defaults to /opt/shani-deploy/scripts when mounted.
+  iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso>
+              Installs from a real ISO the way a user does: the ISO boots
+              under OVMF (UEFI + software TPM) with install.img as a blank
+              disk; in the live session the ISO's own os-installer scripts
+              run exactly as os-installer runs them (live user, pty, only
+              OSI_* vars, prepare -> install -> configure); then the
+              installed disk boots through the same firmware. KVM if
+              present, else TCG (slow). install.img stays for enter/
+              verify-boot/slot-test/upgrade.
+  gate        -p <profile> [--candidate=<file.zst>] [--skip=fresh,upgrade,desktop] [--keep]
+              Release gate for promote-stable: the PUBLISHED candidate
+              (R2 latest) fresh-installed, and current stable upgraded to
+              it by the image's own shani-deploy then rolled back; each
+              with identity (/etc/shani-version), verify-boot, slot-tests
+              boot-health+fresh-user and a desktop screenshot. On success
+              writes disk/gate-<profile>.passed (the candidate filename)
+              for promote-stable.sh --expect.
   status      Read-only view: images, loop attachments, by-label links,
               slots, overlays (incl. --local-src files pending revert).
   app         <blue|green> --run="cmd" [--local-src=<dir>] [--display=virtual|host]
