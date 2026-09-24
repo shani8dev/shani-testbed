@@ -86,16 +86,14 @@ cmd_suite() {
 # status — read-only: never attaches, mounts or writes anything.
 # ------------------------------------------------------------------
 cmd_status() {
-  local img loops f
+  local img="$INSTALL_IMG" loops f
   log "── images (${DATA_DIR}) ──"
-  for img in "$INSTALL_IMG"; do
-    if [[ -f "$img" ]]; then
-      loops="$(_loops_for_image "$img" | tr '\n' ' ')"
-      log "  $(basename "$img"): $(du -h --apparent-size "$img" | cut -f1) apparent, $(du -h "$img" | cut -f1) used${loops:+, attached: ${loops}}"
-    else
-      log "  $(basename "$img"): absent"
-    fi
-  done
+  if [[ -f "$img" ]]; then
+    loops="$(_loops_for_image "$img" | tr '\n' ' ')"
+    log "  $(basename "$img"): $(du -h --apparent-size "$img" | cut -f1) apparent, $(du -h "$img" | cut -f1) used${loops:+, attached: ${loops}}"
+  else
+    log "  $(basename "$img"): absent"
+  fi
   log "── by-label ──"
   for f in shani_root shani_boot; do
     if [[ -L "/dev/disk/by-label/$f" ]]; then
