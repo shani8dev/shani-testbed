@@ -114,9 +114,8 @@ containers first.
   `build.sh test status` running from `/opt/shani-testbed` in the builder
   container, and `slot-test blue fresh-user` booting a real slot. The same
   staged runner restores the pinned GitHub/SourceForge SSH host keys (checked
-  against the live servers' keys on 2026-09-24: all 6 match). **This repo
-  itself is still not under git** (no `.git`): nothing here has history or a
-  backup until someone runs `git init` and commits.
+  against the live servers' keys on 2026-09-24: all 6 match). This repo got
+  its git history and GitHub remote the same day.
 - **`suite` always exited 1 and truncated its summary — FIXED
   (2026-09-24).** `json+="$([[ $i -gt 0 ]] && echo ,)..."` in the summary
   loop returns 1 on the first row and `set -Eeuo pipefail` killed the
@@ -131,7 +130,11 @@ containers first.
   the harness still held it as lowerdir: shani-deploy's `subvolume sync`
   sat out its full 900 s timeout (rollback 925 s). Now both slots' overlays
   are unmounted before entering either (a real machine never has the
-  non-booted slot mounted).
+  non-booted slot mounted). That alone did not cure it: the real pin was
+  `/mnt` in the builder namespace, where install.sh/configure.sh mount the
+  top level and then @blue and the harness never released them (a real
+  install reboots). `cmd_configure` now detaches `/mnt` after configure.sh;
+  the suite's rollback went from 915 s (sync timeout) to 19 s.
 - **`fresh-user` fails on images built before 2026-09-24 — expected.** It
   reports the tools, `/etc/tmux.conf`, the Nerd Font and the greeting that
   the new `shani-settings`/`shani-tools-extra`/`shani-fonts` add, and the
@@ -147,10 +150,9 @@ containers first.
   heredoc with `@PROG@` substituted by sed; re-run shows 0 executed commands.
   Keep every heredoc that contains backticks quoted.
 
-- **The GitHub remote does not exist yet.** This repo was created locally;
-  a human needs to create `shani8dev/shani-testbed` and push. Until then,
-  `shani-install-media`'s shim needs this checkout next to it (or
-  `SHANI_TESTBED`).
+- **`shani-install-media`'s shim needs this checkout next to it** (or
+  `SHANI_TESTBED`): it is `github.com/shani8dev/shani-testbed` (created and
+  first pushed 2026-09-24), cloned beside shani-install-media.
 - **Native-Wayland input injection is not supported** by `app` (no
   virtual-pointer compositor in the image); apps run on X11 backends. Real
   Wayland-only apps can only be screenshotted via `desktop`.
