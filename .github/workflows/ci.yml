@@ -32,6 +32,22 @@ jobs:
           persist-credentials: false
       - run: tests/run-app-actions.sh
 
+  harness-tests:
+    name: Harness self-tests
+    runs-on: ubuntu-latest
+    needs: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # the real cmd_suite / cmd_gate with stubbed steps (summary, step order,
+      # identity pinning, .passed only on success)
+      - run: tests/suite-summary.sh
+      - run: tests/gate-flow.sh
+      # iso-install's in-guest runner against os-installer's contract, in an
+      # Arch container (docker is on the runner)
+      - run: tests/iso-install-runner.sh
+
   security:
     name: Security
     uses: shani8dev/shani-ci-commons/.github/workflows/security.yml@main
