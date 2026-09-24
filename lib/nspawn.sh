@@ -96,7 +96,30 @@ _enter_prep() {
   _revert_local_src_overlay
   mount -t overlay overlay -o "lowerdir=${SLOT_DIR},upperdir=${NSPAWN_WORK}/upper,workdir=${NSPAWN_WORK}/work" "$NSPAWN_WORK/merged"
   [[ -n "${SHANIOS_TEST_LOCAL_PKGS:-}" ]] && _overlay_local_pkgs "$slot" "$SHANIOS_TEST_LOCAL_PKGS"
+  _mount_etc_overlay
   return 0
+}
+
+# _mount_etc_overlay — what the dracut 99shanios pre-pivot hook
+# (shanios-overlay-etc.sh) does on real hardware: /etc becomes an OverlayFS
+# whose writable layer is @data/overlay/etc/upper, same options. Without it
+# every test boot had a plain /etc: anything conditioned on the real layout
+# silently never ran (shani-user-setup.service is ConditionPathIsMountPoint=/etc
+# - skipped every boot, its marker never consumed, so the .path hit its
+# trigger limit), and /etc writes landed in the harness overlay instead of
+# @data. Mounted after the --local-pkg overlay, so package files under /etc
+# stay in the harness's own (revertable) upper layer.
+_mount_etc_overlay() {
+  local up="${MNT}/@data/overlay/etc/upper" wk="${MNT}/@data/overlay/etc/work" etc="${NSPAWN_WORK}/merged/etc"
+  # test units used to be injected under /etc (they now live in the harness
+  # layer's /usr/lib); an old copy in the harness upper would override them
+  local u="${NSPAWN_WORK}/upper/etc/systemd/system"
+  rm -f "$u"/shani-test-*.service "$u"/data.mount "$u"/*.wants/shani-test-*.service "$u"/*.wants/data.mount 2>/dev/null
+  [[ -d "${MNT}/@data" ]] || { warn "no @data subvolume - /etc stays a plain directory (not like a real boot)"; return 0; }
+  mkdir -p "$up" "$wk"
+  mountpoint -q "$etc" && return 0
+  mount -t overlay overlay -o "rw,lowerdir=${etc},upperdir=${up},workdir=${wk},index=off,metacopy=off" "$etc" \
+    || warn "/etc overlay (as dracut's shanios-overlay-etc does) failed - /etc stays a plain directory"
 }
 
 # _overlay_local_pkgs <slot> <pkg[,pkg...]>  (--local-pkg / SHANIOS_TEST_LOCAL_PKGS)
@@ -136,7 +159,32 @@ _overlay_local_pkgs() {
 
 # Builds nspawn bind arrays shared by `enter` and `verify-boot`.
 # Sets globals: FUSE_BIND, REPO_BIND, EXTRA_BIND_ARR, HOSTS_BIND
+# FSTAB_BIND: the slot's own /etc/fstab Btrfs subvolume mounts (/home,
+# /root, /var/log, /var/cache, /nix, /var/lib/{flatpak,containers,...}),
+# bound from the real disk. systemd's fstab generator skips device mounts in
+# a container ("running in a container, ignoring"), so 14 of them were
+# simply absent from every test boot: logs, homes and container stores went
+# into the slot's own tree instead (that is where the 107 GB cups log
+# ended up). Read from the image's fstab, so the harness follows it.
+# /data, /swap, /boot/efi keep their explicit binds; noauto entries and
+# subvolumes that don't exist (nofail) are skipped.
+_fstab_subvol_binds() {
+  FSTAB_BIND=()
+  local fstab="${NSPAWN_WORK}/merged/etc/fstab" src tgt typ opts sub
+  [[ -f "$fstab" ]] || return 0
+  while read -r src tgt typ opts _; do
+    [[ "$src" == LABEL=shani_root && "$typ" == btrfs ]] || continue
+    case "$tgt" in /data|/swap|/boot/efi) continue ;; esac
+    [[ ",${opts}," == *,noauto,* ]] && continue
+    sub=$(grep -oE '(^|,)subvol=[^,]+' <<<"$opts" | head -1 | sed 's/.*subvol=//') || true
+    sub="${sub#/}"
+    [[ -n "$sub" && -d "${MNT}/${sub}" ]] || continue
+    FSTAB_BIND+=(--bind="${MNT}/${sub}:${tgt}")
+  done < <(grep -vE '^[[:space:]]*(#|$)' "$fstab")
+}
+
 _nspawn_binds() {
+  _fstab_subvol_binds
   FUSE_BIND=()
   [[ -e /dev/fuse ]] && FUSE_BIND=(--bind=/dev/fuse)
 
@@ -223,7 +271,7 @@ _nspawn_binds() {
 # a stand-in for real packaged units).
 _inject_fake_cmdline_unit() {
   local slot="$1"
-  local unit_dir="${NSPAWN_WORK}/merged/etc/systemd/system"
+  local unit_dir="${NSPAWN_WORK}/merged/usr/lib/systemd/system"  # harness layer: /etc is the real @data overlay now
   local unit_name="shani-test-fake-cmdline.service"
   mkdir -p "$unit_dir" "${unit_dir}/sysinit.target.wants"
   cat > "${unit_dir}/${unit_name}" <<EOF
@@ -270,7 +318,7 @@ EOF
 # attempting a real mount syscall that would conflict with the existing
 # nspawn bind-mount.
 _inject_data_mount_unit() {
-  local unit_dir="${NSPAWN_WORK}/merged/etc/systemd/system"
+  local unit_dir="${NSPAWN_WORK}/merged/usr/lib/systemd/system"  # harness layer: /etc is the real @data overlay now
   mkdir -p "$unit_dir"
   cat > "${unit_dir}/data.mount" <<EOF
 [Unit]
@@ -300,19 +348,19 @@ EOF
 # is the --boot-session equivalent, needed because a full boot has no
 # single pre-exec shell hook to run it from.
 _inject_by_label_unit() {
-  local unit_dir="${NSPAWN_WORK}/merged/etc/systemd/system"
+  local unit_dir="${NSPAWN_WORK}/merged/usr/lib/systemd/system"  # harness layer: /etc is the real @data overlay now
   local unit_name="shani-test-by-label.service"
   mkdir -p "$unit_dir" "${unit_dir}/sysinit.target.wants"
   cat > "${unit_dir}/${unit_name}" <<EOF
 [Unit]
-Description=TEST-ONLY: /dev/disk/by-label/shani_root + shani_boot symlinks (no real udev for these loop-backed devices under nspawn)
+Description=TEST-ONLY: /dev/disk/by-label + by-uuid symlinks (no real udev for these loop-backed devices under nspawn; beesd@ needs by-uuid)
 DefaultDependencies=no
 Before=sysinit.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'mkdir -p /dev/disk/by-label && ln -sf ${ROOT_LOOP} /dev/disk/by-label/shani_root && ln -sf ${ESP_LOOP} /dev/disk/by-label/shani_boot'
+ExecStart=/bin/sh -c 'mkdir -p /dev/disk/by-label /dev/disk/by-uuid && ln -sf ${ROOT_LOOP} /dev/disk/by-label/shani_root && ln -sf ${ESP_LOOP} /dev/disk/by-label/shani_boot && u=\$(blkid -s UUID -o value ${ROOT_LOOP} 2>/dev/null) && [ -n "\$u" ] && ln -sf ${ROOT_LOOP} /dev/disk/by-uuid/\$u || true'
 
 [Install]
 WantedBy=sysinit.target
@@ -360,6 +408,7 @@ _nspawn_full_boot_args() {
     "${DOWNLOAD_CACHE_BIND[@]}"
     --bind="$MNT/@swap:/swap"
     --bind="$ESP_MNT:/boot/efi"
+    "${FSTAB_BIND[@]}"
     "${HOSTS_BIND[@]}"
     "${REPO_BIND[@]}"
     "${EXTRA_BIND_ARR[@]}"
@@ -571,6 +620,7 @@ _prepare_enter_args() {
       "${DOWNLOAD_CACHE_BIND[@]}"
       --bind="$MNT/@swap:/swap"
       --bind="$ESP_MNT:/boot/efi"
+      "${FSTAB_BIND[@]}"
       "${HOSTS_BIND[@]}"
       --bind="${INHIBIT_STUB}:/usr/bin/systemd-inhibit"
       "${REPO_BIND[@]}"
