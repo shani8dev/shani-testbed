@@ -221,11 +221,23 @@ cmd_iso_install() {
   fi
   _fetch_published_iso "$profile" "$sel"
 
-  # a fresh machine: blank disk, fresh NVRAM and TPM
+  # a fresh machine: blank disk, fresh NVRAM and TPM. The disk is the
+  # smallest one this ISO's installer accepts (its config.yaml min_size, in
+  # decimal GB - os-installer's GIGABYTE_FACTOR is 1000^3): the worst case a
+  # user can really have, and the size the first update must still fit in.
+  local size="${INSTALL_DISK_SIZE:-}" min_gb
+  if [[ -z "$size" ]]; then
+    _mount_iso "$ISO_FILE"
+    min_gb=$(awk '/^[[:space:]]*min_size:/ {print $2; exit}' "${OSI_ROOT}/config.yaml" 2>/dev/null)
+    _umount_iso; unset OSI_ROOT
+    [[ "$min_gb" =~ ^[0-9]+$ ]] || { warn "iso-install: no disk min_size in the ISO's config.yaml - using 32 GB"; min_gb=32; }
+    size=$(( min_gb * 1000 * 1000 * 1000 ))
+    log "iso-install: target disk ${min_gb} GB (the ISO installer's minimum)"
+  fi
   _detach_all_loops "$INSTALL_IMG"
   _reset_slot_overlays
   rm -f "$INSTALL_IMG"
-  truncate -s "${INSTALL_DISK_SIZE:-24G}" "$INSTALL_IMG"
+  truncate -s "$size" "$INSTALL_IMG"
   rm -rf "$ISOVM"; mkdir -p "$ISOVM/tpm"
   cp "$ISOVM_VARS_TEMPLATE" "$ISOVM/OVMF_VARS.fd"
   trap '_isovm_stop' EXIT
