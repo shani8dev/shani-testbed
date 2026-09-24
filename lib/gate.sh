@@ -184,11 +184,11 @@ cmd_gate() {
       && _gate_step iso:install "${iso_install[@]}" \
       && installed_from="$iso_date" \
       && _gate_identity_step iso:identity "$iso_date" \
-      && _gate_checks iso boot-health fresh-user launchers \
+      && _gate_checks iso boot-health fresh-user launchers disk-layout \
       && _gate_step iso:first-update _gate_deploy --channel=stable --no-force \
       && _gate_identity_step iso:identity-after-update "$after_first" || true
     if _gate_phase_ok && [[ "$after_first" != "$iso_date" ]]; then
-      _gate_checks iso:updated boot-health fresh-user launchers \
+      _gate_checks iso:updated boot-health fresh-user launchers disk-layout \
         && _gate_step iso:rollback cmd_rollback \
         && _gate_identity_step iso:identity-rolledback "$iso_date" \
         && _gate_step iso:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 || true
@@ -218,7 +218,7 @@ cmd_gate() {
       if [[ "$cand_date" > "$before" ]]; then
         _gate_step fresh:deploy _gate_deploy --channel=latest --no-force \
           && _gate_identity_step fresh:identity "$cand_date" \
-          && _gate_checks fresh boot-health fresh-user launchers \
+          && _gate_checks fresh boot-health fresh-user launchers disk-layout \
           && _gate_step fresh:rollback cmd_rollback \
           && _gate_identity_step fresh:identity-rolledback "$before" \
           && _gate_step fresh:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 || true
@@ -237,7 +237,7 @@ cmd_gate() {
       && _gate_identity_step upgrade:identity-stable "$stable_date" \
       && _gate_step upgrade:deploy _gate_deploy --channel=latest --no-force \
       && _gate_identity_step upgrade:identity "$cand_date" \
-      && _gate_checks upgrade boot-health fresh-user \
+      && _gate_checks upgrade boot-health fresh-user disk-layout \
       && _gate_step upgrade:rollback cmd_rollback \
       && _gate_identity_step upgrade:identity-rolledback "$stable_date" \
       && _gate_step upgrade:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 || true
