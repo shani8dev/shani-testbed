@@ -99,24 +99,32 @@ nothing ever detaches them again on its own. Across a long testing session
 this accumulates loop devices indefinitely; only `clean`, a manual
 `losetup -d`, or a reboot releases them.
 
-### Disk layouts: `install.img` vs. `root.img`+`esp.img`
+### One disk: `install.img`
 
-Two different disk artifacts live under `test-env/disk/`, and only one of
-them is ever actually bootable. `cmd_qemu`/`cmd_gui` resolve which one to
-boot through the shared `_resolve_qemu_boot_drives()` helper (env
-`SHANIOS_TEST_QEMU_DISK`, default `auto`):
+`test-env/disk/install.img` (default 24 GB, sparse) is a whole GPT disk,
+exactly what the real `install.sh` writes to on hardware:
 
-| Image | Created by | Populated by | Bootable via OVMF? | Used by |
-|---|---|---|---|---|
-| `disk/install.img` (whole disk, default 24G) | `install` | `install` (partitioning, LUKS, subvolumes, extraction) + `configure` (Secure Boot, UKI, boot entries) — i.e. `bootstrap` runs both | **Yes** — the only bootable layout | `qemu`, `gui` (preferred), `bootstrap`/`install`/`configure` themselves |
-| `disk/root.img` (Btrfs) + `disk/esp.img` (FAT32) | `disk` — both created **empty** | **Nothing** in the supported flow. `bootstrap` writes straight to the `@blue`/`@green` subvolumes on `root.img` for nspawn testing and never touches the ESP; `install.sh` partitions a whole disk itself so it can only ever produce `install.img` | **No** — booting it lands on firmware PXE, not on shanios | `qemu`/`gui` (fallback only, with a warning, when `install.img` is absent), `iso` (as a blank install target — the live installer writes its own) |
+| Partition | Label | Contents |
+|---|---|---|
+| p1 | `shani_boot` | FAT32 ESP: shim, systemd-boot and the signed UKIs (`configure.sh`'s gen-efi) |
+| p2 | `shani_root` | Btrfs: `@blue`, `@green`, `@data`, `@home`, ... |
 
-`SHANIOS_TEST_QEMU_DISK=install|root|auto` (default `auto`) pins the choice:
-`auto` prefers `install.img` when present and falls back to the empty pair
-with a warning; `install`/`root` require the named image(s) and die with a
-pointer to the right command if they're missing. `cmd_iso` is the one caller
-that bypasses this helper entirely — it always uses `root.img`+`esp.img`,
-and only as blank install targets for the live installer.
+`bootstrap` (`install` + `configure`) creates and populates it. Every slot
+command, `suite`, `vmspawn`, `qemu` and `gui` use it, and OVMF boots it like
+firmware boots a laptop disk, so no separate ESP image is needed. The old
+`root.img` + `esp.img` pair, from the `disk` command, was never populated by
+anything and only ever booted to OVMF's PXE fallback. It was removed on
+2026-09-24. `disk` is kept for compatibility: it creates `/dev/disk/by-label`
+and deletes a leftover pair. `iso` attaches `install.img` as the install
+target only with `SHANIOS_TEST_ISO_INSTALL_TARGET=1`, because the live
+installer then overwrites the slots.
+
+**Slot overlays.** `enter`/`--boot` run each slot through an overlay
+(`disk/nspawn-overlay-<slot>/`), whose upper layer keeps a session's
+writes. `install`/`bootstrap` resets both, since upper-layer files from
+an earlier install would shadow the new slot's own. Their contents must
+stay root-owned; `run_in_container.sh` hands the rest of `test-env/disk`
+back to your user but never recurses into them.
 
 ### Loop-device robustness
 
@@ -261,6 +269,56 @@ the final `clean` still runs. `--local-src` defaults to
 ```bash
 ./run_in_container.sh build.sh test suite -p gnome
 ./run_in_container.sh build.sh test status      # read-only: images, loops, slots, overlays
+```
+
+### Any published release: `--from-r2`
+
+`bootstrap`, `install` and `suite` take `--from-r2`: instead of a local
+build under `cache/output/`, they install a **published** release from
+Cloudflare R2's public endpoint (`$R2_PUBLIC_BASE`, default
+`https://downloads.shani.dev`, the layout `scripts/build-iso.sh --from-r2`
+uses): `<profile>/latest.txt` or `stable.txt`, then
+`<profile>/<date>/<image>.zst` plus `.sha256` and `.asc`, and
+`flatpakfs`/`snapfs` layers when published. Each file must pass SHA-256
+and a GPG signature by `GPG_KEY_ID` or it is deleted and the command dies.
+Downloads resume (`curl -C -` into `<file>.part`), log their size every
+30 s, and abandon any transfer slower than 100 KB/s for 60 s. No
+credentials are needed; the pointer falls back to the `r2:` rclone remote
+when `R2_BUCKET` is set.
+
+```bash
+./run_in_container.sh build.sh test bootstrap -p plasma --from-r2
+./run_in_container.sh build.sh test suite -p cosmic --from-r2
+```
+
+### Unpublished packages in a real slot: `--local-pkg`
+
+`desktop` and `probe` take `--local-pkg=<name|file.pkg.tar.zst>`, repeatable
+(or `SHANIOS_TEST_LOCAL_PKGS=a,b` for every command). The package's files
+are extracted over the slot's overlay before it boots, recorded with the
+`--local-src` overlays, and reverted on the next run without it. A bare
+name resolves to the newest build under `/opt/shani-pkgbuilds/<name>/`
+(`run_in_container.sh` mounts the sibling `shani-pkgbuilds` read-only). It is
+a file overlay, not a pacman install: the `.install` scriptlet does not run,
+and files a newer version deletes stay present.
+
+### `desktop` for Plasma
+
+On a Plasma slot, `desktop` logs in a **fresh user created from
+`/etc/skel`**, applying its global theme the way `startplasma` does on a first
+login. It then runs `kwin_wayland` nested on an X11 display with
+`plasmashell`, and captures the X side with `import`. KWin's own
+`ScreenShot2` API is not used: on a headless virtual output every capture
+either came back `Cancelled` (QPainter) or never returned (OpenGL). The GPU
+render node is bound in when the host has one.
+
+```bash
+# headless, on a private Xvfb; screenshot -> test-env/shots/
+./run_in_container.sh build.sh test desktop blue
+# the unpublished package, before publishing it
+./run_in_container.sh build.sh test desktop blue --local-pkg=shani-desktop-plasma
+# on YOUR screen, usable for 10 minutes (run `xhost +local:` on the host first)
+./run_in_container.sh build.sh test desktop blue --display=host --hold=600
 ```
 
 ### `vmspawn`: UEFI + TPM boots without KVM (host-only)

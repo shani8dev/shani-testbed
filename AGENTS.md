@@ -116,6 +116,54 @@ containers first.
   staged runner restores the pinned GitHub/SourceForge SSH host keys (checked
   against the live servers' keys on 2026-09-24: all 6 match). This repo got
   its git history and GitHub remote the same day.
+- **Slot overlays were corrupted by the runner and never reset; one disk
+  instead of three — FIXED (2026-09-24).** `test-env/disk` was 144 GB:
+  `nspawn-overlay-blue/upper` held 121 GB, of which 107 GB was one
+  `var/log/cups/error_log`. Cause: `run_in_container.sh`'s post-run `chown -R
+  <host user> test-env/disk` also recursed into the overlay upper layers, so
+  all 331,467 copied-up slot files were owned by the host user, with setuid
+  stripped (`sudo`, `dbus-daemon-launch-helper`; `/etc/shadow` user-owned);
+  cupsd rejected its "insecure" dbus notifier in an endless retry loop.
+  Every slot test since that chown ran on a broken permission model. And
+  nothing reset the overlays on re-bootstrap, so `/usr` copies from 09-17
+  (13 GB) shadowed newer slots. Fixed: the chown skips `nspawn-overlay-*`;
+  `install` resets both overlays (`_reset_slot_overlays`). Verified: suite
+  PASSED, both upper layers root-only, disk/ 14 GB. The never-bootable
+  `root.img`/`esp.img` pair is removed; `_mount_root` attaches install.img
+  (it called `_ensure_disk_attached`, which only worked because the
+  install path's by-label links made it return early).
+- **`desktop` supports Plasma; `bootstrap --from-r2`; `--local-pkg` (2026-09-24).**
+  Only gnome had ever been built locally, so no other profile could be
+  bootstrapped; `--from-r2` installs a published, SHA-256+GPG-verified
+  release from R2 (first Plasma slot bootstrapped this way). rclone is used
+  only for the pointer fallback: a multi-thread object download can't
+  resume, and one stalled stream crawled at ~13 KB/s for the last 55 MB of
+  3.1 GB (default 5-min idle timeout; its stats print below the default log
+  level, so it looked hung). Plasma `desktop` findings, confirmed live, so
+  nobody re-derives them:
+  - **KWin's `org.kde.KWin.ScreenShot2` does not work on a headless output.**
+    `spectacle -b` blocked for 13+ min; a direct Gio call got `NoAuthorized`
+    (only executables whose .desktop declares the interface may call it;
+    `KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1` lifts that), then `Cancelled`
+    for every capture under QPainter, and never returned under OpenGL even
+    with forced damage. Hence: kwin nested on an X11 display, X-side
+    `import`. Never call an unbounded screenshot command.
+  - **The fresh user needs the render node's group** (in the slot the host's
+    `render` gid maps to `input`); without it kwin dies silently. kwin is
+    silent on success, so an empty log proves nothing.
+  - **Plasma's first-login theme comes from `startplasma`**, not plasmashell:
+    without `plasma-apply-lookandfeel` + kdedefaults first in
+    XDG_CONFIG_DIRS the session is stock Breeze.
+  - kded's bluedevil module re-activates `org.bluez.obex` in a loop without
+    bluetoothd (14k activations in ~2 min) - disabled for the test user.
+  - Image findings, not harness bugs: published plasma 20260922
+    (shani-desktop-plasma 1.0-35) shows the stock wallpaper (`[Wallpaper]
+    Image=file://...png` instead of a package name) and a light panel;
+    1.0-36 via `--local-pkg` shows the full Saturn desktop. R2 has no
+    `flatpakfs.zst` for plasma, so its flatpak dock launchers are blank.
+    `xdg-desktop-portal-gtk` aborts with "Settings schema
+    'org.appmenu.gtk-module' is not installed" in the session - not yet
+    investigated.
 - **`suite` always exited 1 and truncated its summary — FIXED
   (2026-09-24).** `json+="$([[ $i -gt 0 ]] && echo ,)..."` in the summary
   loop returns 1 on the first row and `set -Eeuo pipefail` killed the

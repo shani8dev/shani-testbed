@@ -65,11 +65,11 @@ _enter_prep() {
 
   # Resolve directly from the by-label symlinks rather than a cached
   # .root_loop/.esp_loop file — those were only ever written by cmd_disk's
-  # root.img/esp.img path, never by cmd_install's install.img path (which
+  # (now removed) root.img/esp.img path, never by cmd_install's install.img path (which
   # cmd_bootstrap now always uses), and this naturally does the right thing
   # for an encrypted install too: shani_root then points at the open LUKS
   # mapper (/dev/mapper/shani_root), which is what needs to be bound into
-  # nspawn, not the raw underlying partition. _ensure_disk_attached already
+  # nspawn, not the raw underlying partition. _ensure_install_attached already
   # guarantees both symlinks resolve before this point.
   ROOT_LOOP=$(readlink -f /dev/disk/by-label/shani_root)
   ESP_LOOP=$(readlink -f /dev/disk/by-label/shani_boot)
@@ -95,6 +95,43 @@ _enter_prep() {
   mkdir -p "$NSPAWN_WORK/upper" "$NSPAWN_WORK/work" "$NSPAWN_WORK/merged"
   _revert_local_src_overlay
   mount -t overlay overlay -o "lowerdir=${SLOT_DIR},upperdir=${NSPAWN_WORK}/upper,workdir=${NSPAWN_WORK}/work" "$NSPAWN_WORK/merged"
+  [[ -n "${SHANIOS_TEST_LOCAL_PKGS:-}" ]] && _overlay_local_pkgs "$slot" "$SHANIOS_TEST_LOCAL_PKGS"
+  return 0
+}
+
+# _overlay_local_pkgs <slot> <pkg[,pkg...]>  (--local-pkg / SHANIOS_TEST_LOCAL_PKGS)
+# Test an UNPUBLISHED package in a real slot: its files are extracted over
+# the slot's overlay (upper layer), recorded in the same list --local-src
+# uses, so the next run without it reverts to the image's copies. A booted
+# ShaniOS has no pacman, so this is a file overlay: the package's .install
+# scriptlet does NOT run, and files a newer version deletes stay present.
+# Each entry is a *.pkg.tar.zst path, or a bare package name resolved to the
+# newest build under /opt/shani-pkgbuilds/<name>/ (run_in_container.sh
+# mounts the sibling shani-pkgbuilds checkout there).
+_overlay_local_pkgs() {
+  local slot="$1" list="$2" spec pkg tmp rel n
+  local -a specs
+  IFS=',' read -r -a specs <<<"$list"
+  for spec in "${specs[@]}"; do
+    [[ -n "$spec" ]] || continue
+    if [[ "$spec" == *.pkg.tar.* ]]; then pkg="$spec"
+    else pkg=$(ls -t /opt/shani-pkgbuilds/"$spec"/"$spec"-*.pkg.tar.zst 2>/dev/null | grep -v -- '-debug-' | head -1 || true)
+    fi
+    [[ -n "$pkg" && -f "$pkg" ]] || die "--local-pkg=${spec}: no built package found (build it with shani-pkgbuilds/make_pkg.sh ${spec})"
+    tmp=$(mktemp -d)
+    tar --zstd -xf "$pkg" -C "$tmp" --exclude=.PKGINFO --exclude=.BUILDINFO --exclude=.MTREE --exclude=.INSTALL --exclude=.CHANGELOG \
+      || { rm -rf "$tmp"; die "--local-pkg: cannot extract ${pkg}"; }
+    n=0
+    while IFS= read -r -d '' rel; do
+      rel="${rel#./}"
+      mkdir -p "${NSPAWN_WORK}/merged/$(dirname "$rel")"
+      cp -a --remove-destination "${tmp}/${rel}" "${NSPAWN_WORK}/merged/${rel}"
+      echo "$rel" >> "$(_local_src_record)"
+      n=$((n + 1))
+    done < <(cd "$tmp" && find . \( -type f -o -type l \) -print0)
+    rm -rf "$tmp"
+    log "Overlaid $(basename "$pkg") onto @${slot}: ${n} file(s) (no .install scriptlet run; reverted on the next run without --local-pkg)"
+  done
 }
 
 # Builds nspawn bind arrays shared by `enter` and `verify-boot`.
@@ -556,7 +593,7 @@ _prepare_enter_args() {
 # their container's /dev from the host, and the by-label mount path
 # (/dev/disk/by-label/shani_root, used both by the slot's own data.mount and
 # by shani-deploy's by-label mount) is created HERE on the host by `cmd_disk`
-# (see _ensure_disk_attached, ~line 411) as root:root. These four commands do
+# (see _ensure_by_label_dir) as root:root. These four commands do
 # NOT require `disk` to have been run first, so on an unprivileged host user
 # where that dir simply does not exist yet, systemd-nspawn's own setup dies
 # one layer deep with the opaque, non-actionable:

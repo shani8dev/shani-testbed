@@ -6,7 +6,7 @@
 #
 #   lib/common.sh   paths/state (DATA_DIR, MNT, images...), argument helpers,
 #                   container prerequisites (machine-id, dbus, sudo)
-#   lib/disk.sh     loop devices, root.img/esp.img/install.img, `disk`, `clean`
+#   lib/disk.sh     loop devices, install.img, `disk` (compat), `clean`
 #   lib/pki.sh      throwaway CA + leaf certs, local HTTPS mirror (`ca`, `serve`)
 #   lib/install.sh  real install.sh/configure.sh (`install`, `configure`,
 #                   `bootstrap`), `pacstrap` signature smoke test

@@ -7,14 +7,10 @@ usage() {
 Usage: @PROG@ <command> [options]
 
 Commands:
-  disk        Create loop-backed ESP+root disk images (root.img/esp.img) —
-              a faster, fabricate-only disk pair. NOT used by bootstrap
-              anymore (which creates its own install.img via the real
-              install.sh instead); only relevant if something else in your
-              workflow specifically wants a pre-partitioned pair. Self-heals
-              stale/duplicate loop-device attachments left over from a
-              previous run_in_container.sh session (see "Loop-device
-              attachment" below).
+  disk        Kept for compatibility: ensures /dev/disk/by-label exists and
+              removes the legacy root.img/esp.img pair. The only disk is
+              disk/install.img (a whole GPT disk: ESP + btrfs), which
+              `bootstrap` creates with the real install.sh.
   ca          [extra-host ...]   Generate a throwaway CA + a leaf server cert
               for downloads.shani.dev, plus one more per extra hostname given
               (e.g. ca raw.githubusercontent.com) — see "The local mirror"
@@ -27,7 +23,7 @@ Commands:
               instead of a full 30+ min image build. Extra package names are
               installed on top of base. On failure the partial target is
               removed and the pacman log kept (target-<id>.log).
-  bootstrap   -p <profile> [-d latest|stable|<date>] [--encrypted]   Runs the
+  bootstrap   -p <profile> [-d latest|stable|<date>] [--encrypted] [--from-r2]   Runs the
               REAL install.sh+configure.sh (calls cmd_install/cmd_configure
               directly) to produce @blue/@green, plus one genuinely
               test-only step: trust-anchoring this session's throwaway CA
@@ -50,17 +46,24 @@ Commands:
   verify-boot [blue|green] [seconds]   Headless boot smoke test: full systemd
               --boot, console captured to disk/boot-<slot>-console.log, then
               reports reached target / failed units. No display or TTY needed.
-  desktop     <blue|green> [--exec="cmd"] [--out=<file.png>] [--timeout=N] [--local-src=<dir>]
-              [--settle=N]   Real GNOME desktop verification via nspawn --
-              no VM, no host GPU/display needed (runs inside the container,
-              unlike qemu/gui/iso). Boots the slot for real (--boot, so
-              systemd-logind exists), nsenter's into it once it settles, and
-              runs a controlled `gnome-shell --headless` session, optionally
-              running --exec="..." inside it (e.g. flip a theme setting)
-              before screenshotting via GNOME Shell's own D-Bus Screenshot
-              API. Only GNOME is proven end-to-end so far — Plasma/Cosmic
-              would need the same recipe with kwin_wayland --virtual /
-              cosmic-comp's headless mode instead.
+  desktop     <blue|green> [--de=auto|gnome|plasma] [--display=virtual|host]
+              [--size=WxH] [--hold=SECONDS] [--local-pkg=<name|file>]
+              [--exec="cmd"] [--out=<file.png>] [--timeout=N] [--settle=N]
+              [--local-src=<dir>]   Real desktop verification via nspawn -- no
+              VM. Boots the slot for real (--boot, so systemd-logind exists)
+              and screenshots a real session. The desktop is read from the
+              slot's /etc/shani-profile.
+              GNOME: a controlled `gnome-shell --headless` session,
+              screenshotted over its own D-Bus Screenshot API.
+              Plasma: a FRESH user from /etc/skel (what a new install's first
+              login gets) with its global theme applied as startplasma would;
+              kwin_wayland runs nested on an X11 display with plasmashell, and
+              the X side is captured (KWin's own screenshot API never
+              completes on a headless output). --display=host puts that
+              desktop in a window on YOUR screen (run `xhost +local:` on the
+              host first); --hold=N keeps it up N seconds after the shot.
+              --local-pkg overlays locally built, unpublished packages first
+              (see enter). Screenshots go to test-env/shots/ by default.
   probe       <blue|green> --exec="cmd" [--timeout=N] [--settle=N]
               [--local-src=<dir>]   Generic live-boot diagnostic: boots the
               slot for real (--boot), nsenter's in once a Multi-User/
@@ -75,6 +78,12 @@ Commands:
               Boot the slot ONCE and run in-slot checks from slot-tests/
               (files with '# slot-test-mode: boot'); aggregates their
               RESULT PASS/FAIL lines. Add new in-slot checks there.
+              --from-r2 installs a PUBLISHED release from Cloudflare R2
+              ($R2_PUBLIC_BASE, default https://downloads.shani.dev - the
+              layout build-iso.sh --from-r2 uses; resumable, no credentials)
+              instead of a local build, after SHA-256 + GPG checks - so any
+              profile can be tested without building it here. Also accepted
+              by install and suite.
   install     -p <profile> [-d latest|stable|<date>] [--encrypted]   Runs the
               REAL os-installer-config install.sh (partitioning, LUKS,
               subvolumes, image extraction) against a fresh whole-disk image
@@ -156,17 +165,16 @@ Commands:
               in a throwaway container (image never written, no new files in
               disk/ except the console log). Default image: install.img.
   iso         Boot a real installer ISO via OVMF — HOST-ONLY, see below (requires -p <profile> [-d latest|stable|<date>])
-  clean       Unmount everything and detach root.img/esp.img/install.img's loop devices
+  clean       Unmount everything and detach install.img's loop device
 
 Loop-device attachment does NOT survive across separate
 run_in_container.sh invocations (each is a fresh --rm'd container) — every
-disk/enter/cycle call re-attaches (or reuses) root.img/esp.img's loop
-devices, and every bootstrap/install call re-attaches (or reuses)
-install.img's, on the HOST, but nothing ever detaches them again on its own.
+every bootstrap/install/enter call re-attaches (or reuses) install.img's
+loop device on the HOST, but nothing ever detaches them again on its own.
 Run clean when you're done testing, or loop devices accumulate on the
 host indefinitely across a session (only a reboot or manual losetup -d
-otherwise releases them). root.img/esp.img/install.img themselves are left alone —
-clean only tears down mounts and loop attachments, not the disk images.
+otherwise releases them). install.img itself is left alone - clean only
+tears down mounts and loop attachments, not the disk image.
 
 Options:
   -p <profile>    Profile name (e.g. gnome, plasma) — for bootstrap/cycle/iso

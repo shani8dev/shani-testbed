@@ -29,8 +29,6 @@ DATA_DIR="$(realpath -m "${SHANIOS_TEST_DATA:-${SCRIPT_DIR}/disk}")"
 MNT="$(realpath -m "${SHANIOS_TEST_MNT:-/opt/shanios-toplevel}")"
 ESP_MNT="$(realpath -m "${SHANIOS_TEST_ESP_MNT:-/opt/shanios-esp}")"
 CA_DIR="${DATA_DIR}/ca"
-ROOT_IMG="${DATA_DIR}/root.img"
-ESP_IMG="${DATA_DIR}/esp.img"
 INSTALL_IMG="${DATA_DIR}/install.img"
 INHIBIT_STUB="${DATA_DIR}/.systemd-inhibit-stub.sh"
 # Repo root (shani-install-media). Inside the builder container this is the
@@ -126,6 +124,18 @@ _take_local_src() {
 }
 
 # Pulls --encrypted out of "$@". Sets ENCRYPTED (0/1) and REST_ARGS.
+_take_from_r2() {
+  FROM_R2=0
+  REST_ARGS=()
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --from-r2) FROM_R2=1 ;;
+      *) REST_ARGS+=("$a") ;;
+    esac
+  done
+}
+
 _take_encrypted() {
   ENCRYPTED=0
   REST_ARGS=()

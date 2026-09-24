@@ -59,6 +59,109 @@ cmd_pacstrap() {
 # cmd_install so both ever pick the exact same build for a given selector.
 # Prints the resolved path to stdout; dies with a pointer to the right
 # `./build.sh release` invocation if nothing matches.
+# _reset_slot_overlays — a fresh install creates new @blue/@green, so any
+# overlay upper layer from an earlier install is stale: its copied-up files
+# came from a different image and would shadow the new slot's own (found
+# 2026-09-24: /usr copies from 09-17 over a 09-24 slot, 13 GB).
+_reset_slot_overlays() {
+  local s d
+  for s in blue green; do
+    d="${DATA_DIR}/nspawn-overlay-${s}"
+    [[ -d "$d" ]] || continue
+    if mountpoint -q "$d/merged" 2>/dev/null; then
+      umount -R "$d/merged" 2>/dev/null || umount -l "$d/merged" 2>/dev/null || die "cannot unmount ${d}/merged"
+    fi
+    rm -rf "$d"
+    log "Reset stale overlay for @${s} (new install)"
+  done
+  # (the --local-src/--local-pkg revert record lives inside that dir, so it
+  # goes with it)
+}
+
+# ------------------------------------------------------------------
+# _fetch_published <profile> <latest|stable|YYYYMMDD>
+# ------------------------------------------------------------------
+# Pull a PUBLISHED release from Cloudflare R2 into the same local layout a
+# local build writes (${OUTPUT_DIR}/<profile>/<date>/ + <sel>.txt), so every
+# profile can be installed and tested without first building it here - only
+# gnome had ever been built locally, so plasma/cosmic/server/kiosk could not
+# be bootstrapped at all. Same layout and trust rules as
+# scripts/build-iso.sh --from-r2: files come from R2's public endpoint
+# (R2_PUBLIC_BASE, default https://downloads.shani.dev - no credentials), the
+# pointer falls back to the authenticated r2: rclone remote when R2_BUCKET is
+# set, and the image (plus flatpakfs/snapfs when published) must pass SHA-256
+# and a GPG signature by GPG_KEY_ID (gpg_prepare_keyring, config.sh) or it is
+# deleted and the command dies.
+#
+# Downloads are resumable (<file>.part, `curl -C -`), and a transfer that
+# drops below 100 KB/s for 60 s is abandoned and resumed. rclone was tried
+# first and is NOT used for the large files: a multi-thread object download
+# can't resume, and one stalled stream crawled at ~13 KB/s for the last 55 MB
+# of 3.1 GB (default 5 min idle timeout, stats hidden below INFO).
+_r2_get() {  # <url> <dest> <required:1|0>
+  local url="$1" dest="$2" required="$3" try
+  if [[ -f "$dest" ]]; then return 0; fi
+  if ! curl -fsSI --max-time 30 "$url" >/dev/null 2>&1; then
+    (( required )) && die "Not found on R2: ${url}"
+    return 1
+  fi
+  local pid rc
+  for try in 1 2 3 4 5 6 7 8 9 10; do
+    curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 30 \
+      --speed-limit 102400 --speed-time 60 -C - -o "${dest}.part" "$url" &
+    pid=$!
+    # progress in the log (a silent multi-GB fetch looks hung)
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep 30
+      kill -0 "$pid" 2>/dev/null && log "  $(basename "$dest"): $(du -h "${dest}.part" 2>/dev/null | cut -f1) so far"
+    done
+    rc=0; wait "$pid" || rc=$?
+    if (( rc == 0 )); then mv -f "${dest}.part" "$dest"; return 0; fi
+    warn "download of $(basename "$dest") stopped (curl rc=${rc}, try ${try}/10) - resuming"
+    sleep 5
+  done
+  die "Could not download ${url} after 10 tries"
+}
+
+_fetch_published() {
+  local profile="$1" sel="$2" base filename date_dir dest f layer
+  base="${R2_PUBLIC_BASE:-https://downloads.shani.dev}/${profile}"
+  if [[ "$sel" == latest || "$sel" == stable ]]; then
+    filename=$(curl -fsS --max-time 30 "${base}/${sel}.txt" 2>/dev/null | tr -d '[:space:]') || true
+    if [[ -z "$filename" && -n "${R2_BUCKET:-}" ]] && command -v rclone >/dev/null 2>&1; then
+      filename=$(rclone cat "r2:${R2_BUCKET}/${profile}/${sel}.txt" 2>/dev/null | tr -d '[:space:]') || true
+    fi
+    [[ -n "$filename" ]] || die "No ${sel}.txt for '${profile}' at ${base} - has it been released?"
+    date_dir=$(grep -oE '[0-9]{8}' <<<"$filename" | head -n1) || true
+    [[ -n "$date_dir" ]] || die "Couldn't parse a date out of '${filename}' (${base}/${sel}.txt)"
+  else
+    [[ "$sel" =~ ^[0-9]{8}$ ]] || die "--from-r2 -d wants latest, stable or YYYYMMDD (got '${sel}')"
+    date_dir="$sel"; filename="${OS_NAME}-${sel}-${profile}.zst"
+  fi
+  dest="${OUTPUT_DIR}/${profile}/${date_dir}"
+  mkdir -p "$dest"
+  log "Fetching ${filename} from ${base}/${date_dir} (resumable)"
+  for f in "$filename" flatpakfs.zst snapfs.zst; do
+    local required=0; [[ "$f" == "$filename" ]] && required=1
+    _r2_get "${base}/${date_dir}/${f}" "${dest}/${f}" "$required" || { log "  ${f}: not published - skipped"; continue; }
+    _r2_get "${base}/${date_dir}/${f}.sha256" "${dest}/${f}.sha256" 1
+    _r2_get "${base}/${date_dir}/${f}.asc" "${dest}/${f}.asc" 1
+  done
+
+  gpg_prepare_keyring
+  for f in "${dest}/${filename}" "${dest}/flatpakfs.zst" "${dest}/snapfs.zst"; do
+    [[ -f "$f" ]] || continue
+    ( cd "$dest" && sha256sum --check --status "$(basename "$f").sha256" ) \
+      || { rm -f "$f"; die "SHA-256 mismatch for $(basename "$f") (deleted) - re-run to download again"; }
+    gpg --homedir "${BUILDER_GNUPGHOME}" --batch --verify "${f}.asc" "$f" 2>/dev/null \
+      || { rm -f "$f"; die "GPG signature check failed for $(basename "$f") (deleted)"; }
+    log "  verified $(basename "$f") (SHA-256 + GPG ${GPG_KEY_ID: -8})"
+  done
+  if [[ "$sel" == latest || "$sel" == stable ]]; then
+    printf '%s\n' "$filename" > "${OUTPUT_DIR}/${profile}/${sel}.txt"
+  fi
+}
+
 _resolve_build_image() {
   local profile="$1" date_sel="$2"
   local image
@@ -106,7 +209,10 @@ cmd_bootstrap() {
   # production equivalent to call instead: trust-anchoring this session's
   # throwaway CA into each slot, so cmd_serve's local HTTPS mirror
   # verifies for real inside a booted/entered slot.
-  local usage_bootstrap="Usage: $(basename "$0") bootstrap -p <profile> [-d latest|stable|<date>] [--encrypted]"
+  local usage_bootstrap="Usage: $(basename "$0") bootstrap -p <profile> [-d latest|stable|<date>] [--encrypted] [--from-r2]"
+  _take_from_r2 "$@"
+  set -- "${REST_ARGS[@]}"
+  local from_r2="$FROM_R2"
   _take_encrypted "$@"
   set -- "${REST_ARGS[@]}"
   local encrypted="$ENCRYPTED"
@@ -126,6 +232,7 @@ cmd_bootstrap() {
 
   local -a install_args=(-p "$profile" -d "$date_sel")
   (( encrypted )) && install_args+=(--encrypted)
+  (( from_r2 )) && install_args+=(--from-r2)
   cmd_install "${install_args[@]}"
   local -a configure_args=(-p "$profile")
   (( encrypted )) && configure_args+=(--encrypted)
@@ -268,6 +375,9 @@ _export_osi_encryption() {
 cmd_install() {
   check_dependencies_install
 
+  _take_from_r2 "$@"
+  set -- "${REST_ARGS[@]}"
+  local from_r2="$FROM_R2"
   _take_encrypted "$@"
   set -- "${REST_ARGS[@]}"
   local encrypted="$ENCRYPTED"
@@ -280,8 +390,10 @@ cmd_install() {
       *) ;;
     esac
   done
-  [[ -n "$profile" ]] || die "Usage: $(basename "$0") install -p <profile> [-d latest|stable|<date>] [--encrypted]"
+  [[ -n "$profile" ]] || die "Usage: $(basename "$0") install -p <profile> [-d latest|stable|<date>] [--encrypted] [--from-r2]"
 
+  (( from_r2 )) && _fetch_published "$profile" "$date_sel"
+  _reset_slot_overlays
   local image
   image="$(_resolve_build_image "$profile" "$date_sel")"
 

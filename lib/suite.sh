@@ -16,12 +16,13 @@
 cmd_suite() {
   _take_local_src "$@"
   set -- "${REST_ARGS[@]}"
-  local local_src="$LOCAL_SRC" keep=0 profile="gnome" date_sel="latest" encrypted=0 a
+  local local_src="$LOCAL_SRC" keep=0 profile="gnome" date_sel="latest" encrypted=0 from_r2=0 a
   local -a rest=()
   for a in "$@"; do
     case "$a" in
       --keep) keep=1 ;;
       --encrypted) encrypted=1 ;;
+      --from-r2) from_r2=1 ;;
       *) rest+=("$a") ;;
     esac
   done
@@ -31,7 +32,7 @@ cmd_suite() {
     case "$opt" in
       p) profile="$OPTARG" ;;
       d) date_sel="$OPTARG" ;;
-      *) die "Usage: $(basename "$0") suite [-p <profile>] [-d <sel>] [--local-src=<dir>] [--keep] [--encrypted]" ;;
+      *) die "Usage: $(basename "$0") suite [-p <profile>] [-d <sel>] [--local-src=<dir>] [--keep] [--encrypted] [--from-r2]" ;;
     esac
   done
   if [[ -z "$local_src" && -d /opt/shani-deploy/scripts ]]; then
@@ -41,6 +42,7 @@ cmd_suite() {
   [[ -n "$local_src" ]] && src_arg=("--local-src=${local_src}")
   local -a boot_args=(-p "$profile" -d "$date_sel")
   (( encrypted )) && boot_args+=(--encrypted)
+  (( from_r2 )) && boot_args+=(--from-r2)
 
   local -a names=() rcs=() secs=()
   local failed=0
@@ -86,7 +88,7 @@ cmd_suite() {
 cmd_status() {
   local img loops f
   log "── images (${DATA_DIR}) ──"
-  for img in "$INSTALL_IMG" "$ROOT_IMG" "$ESP_IMG"; do
+  for img in "$INSTALL_IMG"; do
     if [[ -f "$img" ]]; then
       loops="$(_loops_for_image "$img" | tr '\n' ' ')"
       log "  $(basename "$img"): $(du -h --apparent-size "$img" | cut -f1) apparent, $(du -h "$img" | cut -f1) used${loops:+, attached: ${loops}}"

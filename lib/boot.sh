@@ -204,6 +204,132 @@ cmd_verifyboot() {
 # ------------------------------------------------------------------
 
 # ------------------------------------------------------------------
+# _desktop_plasma — `desktop` for Plasma slots
+# ------------------------------------------------------------------
+# A real, fresh-user Plasma session inside the booted slot: the display
+# manager is stopped, a user is created from /etc/skel (what a new install's
+# first login gets), and kwin_wayland runs NESTED on an X11 display with
+# plasmashell inside it. The screenshot is an X-side `import` of that display
+# - KWin's own org.kde.KWin.ScreenShot2 is NOT used: on a headless virtual
+# output every capture (spectacle, or a direct call) either never returned
+# or came back "Cancelled" (QPainter) / blocked (OpenGL), confirmed live.
+#   --display=virtual  a private Xvfb in the builder (reuses app's helpers)
+#   --display=host     your real screen (the display run_in_container.sh
+#                      forwards; run `xhost +local:` on the host first) - the
+#                      desktop appears in a window you can use; --hold=N keeps
+#                      it up N seconds after the screenshot.
+# The GPU render node, when the host has one, is bound in so KWin composites
+# with real OpenGL (the fresh user is added to its group). Every wait is
+# bounded; the slot is always stopped via _boot_bg_stop.
+_desktop_plasma() {
+  local slot="$1" exec_cmd="$2" out_file="$3" boot_timeout="$4" settle="$5" local_src="$6"
+  local display_mode="$7" size="$8" hold="$9"
+  [[ "$display_mode" == virtual || "$display_mode" == host ]] || die "--display must be virtual or host"
+  [[ "$size" =~ ^[0-9]+x[0-9]+$ ]] || die "--size must be WxH"
+  [[ "$hold" =~ ^[0-9]+$ ]] || die "--hold must be a number of seconds"
+  APP_OUT="${DATA_DIR}/desktop-${slot}"; mkdir -p "$APP_OUT"
+  _app_ensure_tools
+  _app_start_display "$display_mode" "$size"
+  local disp="$APP_DISPLAY"
+  local rnode
+  for rnode in /dev/dri/renderD*; do
+    [[ -c "$rnode" ]] || continue
+    export SHANIOS_TEST_EXTRA_BINDS="${SHANIOS_TEST_EXTRA_BINDS:+${SHANIOS_TEST_EXTRA_BINDS},}${rnode}:${rnode}"
+    break
+  done
+
+  _prepare_boot "$slot" "$local_src"
+  local logfile="${DATA_DIR}/desktop-${slot}-console.log"
+  local tag="desktop-$$" data_host="${MNT}/@data"
+  rm -rf "${data_host}/.${tag}"
+  log "Booting @${slot} (real systemd/logind) for a live Plasma desktop on ${disp} (${display_mode})..."
+  _boot_bg_start "shanios-desktop-${slot}" "$slot" "$logfile"
+  _wait_for_leader "$logfile"
+  _wait_boot "$logfile" "$boot_timeout" "Login Prompts" _desktop_login_reached
+
+  local w="${size%x*}" h="${size#*x}"
+  nsenter --target "$LEADER_PID" --all -- bash -s -- "$disp" "$w" "$h" "$settle" "$hold" "$exec_cmd" "/data/.${tag}" \
+    >"${APP_OUT}/session.log" 2>&1 <<'PLASMA_EOF' &
+set -u
+disp="$1" w="$2" h="$3" settle="$4" hold="$5" exec_cmd="$6" dir="$7"
+systemctl stop display-manager.service >/dev/null 2>&1 || true
+u=shanidesk
+userdel -r "$u" >/dev/null 2>&1
+groups=""; [[ -c /dev/dri/renderD128 ]] && groups="-G $(stat -c %G /dev/dri/renderD128)"
+useradd -m $groups -s /bin/zsh "$u"
+uid=$(id -u "$u"); rt="/run/user/${uid}"
+mkdir -p "$rt"; chown "$u:" "$rt"; chmod 700 "$rt"
+# handshake + logs: a dir the session user owns (/data itself is root-only)
+mkdir -p "$dir"; chown "$u:" "$dir"; flag="$dir/s"
+# kded's Bluetooth module re-activates org.bluez.obex in a loop without
+# bluetoothd (14k activations in 2 min, observed live) - off for this user
+runuser -u "$u" -- kwriteconfig6 --file kded5rc --group Module-bluedevil --key autoload false
+runuser -u "$u" -- env -i HOME="/home/$u" USER="$u" LOGNAME="$u" SHELL=/bin/zsh PATH=/usr/local/bin:/usr/bin \
+  XDG_RUNTIME_DIR="$rt" LANG=C.UTF-8 DISPLAY="$disp" \
+  DP_W="$w" DP_H="$h" DP_SETTLE="$settle" DP_HOLD="$hold" DP_EXEC="$exec_cmd" DP_FLAG="$flag" \
+  dbus-run-session -- bash -c '
+  export XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE KDE_FULL_SESSION=true KDE_SESSION_VERSION=6 XDG_SESSION_TYPE=wayland
+  # what startplasma does at a first login: apply the user'"'"'s global theme
+  # (skel kdeglobals LookAndFeelPackage) into ~/.config/kdedefaults and put
+  # that first in XDG_CONFIG_DIRS - without it the shell comes up stock Breeze
+  lnf=$(kreadconfig6 --file kdeglobals --group KDE --key LookAndFeelPackage)
+  [ -n "$lnf" ] && QT_QPA_PLATFORM=offscreen plasma-apply-lookandfeel -a "$lnf" >/dev/null 2>&1
+  export XDG_CONFIG_DIRS="$HOME/.config/kdedefaults:${XDG_CONFIG_DIRS:-/etc/xdg}"
+  echo "look-and-feel: ${lnf:-none}" > "$DP_FLAG.lnf"
+  kwin_wayland --x11-display="$DISPLAY" --width "$DP_W" --height "$DP_H" --no-lockscreen --xwayland >"$DP_FLAG.kwin.log" 2>&1 &
+  KW=$!
+  for i in $(seq 1 40); do [ -S "$XDG_RUNTIME_DIR/wayland-0" ] && break; kill -0 $KW 2>/dev/null || break; sleep 1; done
+  [ -S "$XDG_RUNTIME_DIR/wayland-0" ] || { echo "kwin_wayland did not start"; exit 1; }
+  export WAYLAND_DISPLAY=wayland-0 QT_QPA_PLATFORM=wayland
+  dbus-update-activation-environment --all >/dev/null 2>&1
+  plasmashell >"$DP_FLAG.shell.log" 2>&1 &
+  sleep "$DP_SETTLE"
+  if [ -n "$DP_EXEC" ]; then bash -c "$DP_EXEC" || echo "--exec exited non-zero (continuing)"; sleep 3; fi
+  dbus-send --session --print-reply --dest=org.kde.KWin /KWin org.kde.KWin.supportInformation 2>/dev/null \
+    | grep -m2 -iE "Compositing Type|OpenGL renderer" > "$DP_FLAG.info"
+  touch "$DP_FLAG.ready"
+  for i in $(seq 1 60); do [ -e "$DP_FLAG.shot" ] && break; sleep 1; done
+  sleep "$DP_HOLD"
+  pkill -x plasmashell; kill $KW 2>/dev/null; wait $KW 2>/dev/null; true'
+PLASMA_EOF
+  local sess=$!
+  local ready=0 i
+  for (( i=0; i<settle+120; i++ )); do
+    [[ -e "${data_host}/.${tag}/s.ready" ]] && { ready=1; break; }
+    kill -0 "$sess" 2>/dev/null || break
+    sleep 1
+  done
+  local rc=0
+  if (( ready )); then
+    cat "${data_host}/.${tag}/s.lnf" "${data_host}/.${tag}/s.info" 2>/dev/null | sed 's/^ */  /' | while IFS= read -r l; do log "$l"; done
+    if [[ "$display_mode" == host ]]; then
+      local wid; wid=$(DISPLAY="$disp" xdotool search --name "KDE Wayland Compositor" 2>/dev/null | tail -1 || true)
+      if [[ -n "$wid" ]]; then import -display "$disp" -window "$wid" "$out_file" || rc=$?
+      else import -display "$disp" -window root "$out_file" || rc=$?; fi
+      (( hold > 0 )) && log "Plasma is on your screen for ${hold}s (--hold) - the slot stops after that"
+    else
+      import -display "$disp" -window root "$out_file" || rc=$?
+    fi
+  else
+    warn "Plasma session never became ready; last lines of its logs (agents: don't read disk/ by hand):"
+    { grep -v -iE 'bluez|obex' "${APP_OUT}/session.log" 2>/dev/null | tail -8
+      grep -v -iE 'bluez|obex' "${data_host}/.${tag}/s.kwin.log" 2>/dev/null | tail -5; } | sed 's/^/    /' >&2
+    rc=1
+  fi
+  touch "${data_host}/.${tag}/s.shot"
+  for (( i=0; i<hold+60; i++ )); do kill -0 "$sess" 2>/dev/null || break; sleep 1; done
+  kill "$sess" 2>/dev/null || true
+  cp -f "${data_host}/.${tag}/s.kwin.log" "${APP_OUT}/kwin.log" 2>/dev/null || true
+  cp -f "${data_host}/.${tag}/s.shell.log" "${APP_OUT}/plasmashell.log" 2>/dev/null || true
+  rm -rf "${data_host}/.${tag}"
+  _boot_bg_stop
+  trap - EXIT
+  [[ -n "${APP_XVFB_PID:-}" ]] && kill "$APP_XVFB_PID" 2>/dev/null
+  [[ $rc -eq 0 && -s "$out_file" ]] || die "no Plasma screenshot produced (logs: ${APP_OUT}/)"
+  log "Screenshot saved: ${out_file}"
+}
+
+# ------------------------------------------------------------------
 # probe   <blue|green> --exec="cmd" [--timeout=N] [--settle=N] [--local-src=<dir>]
 # ------------------------------------------------------------------
 # Generic live-boot diagnostic: boots a slot for real (--boot), waits for
@@ -229,6 +355,7 @@ cmd_probe() {
       --timeout=*)   boot_timeout="${arg#--timeout=}" ;;
       --settle=*)    settle="${arg#--settle=}" ;;
       --local-src=*) local_src="${arg#--local-src=}" ;;
+      --local-pkg=*) export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${arg#--local-pkg=}" ;;
       *) die "Usage: $(basename "$0") probe <blue|green> --exec=\"cmd\" [--timeout=N] [--settle=N] [--local-src=<dir>]" ;;
     esac
   done
@@ -265,6 +392,7 @@ cmd_desktop() {
   command -v nsenter >/dev/null 2>&1 || die "nsenter is required (util-linux) — should already be present."
 
   local exec_cmd="" out_file="" boot_timeout=180 settle=25 local_src="" arg
+  local de=auto display_mode=virtual size=1600x900 hold=0
   for arg in "$@"; do
     case "$arg" in
       --local-src=*) local_src="${arg#--local-src=}" ;;
@@ -272,13 +400,35 @@ cmd_desktop() {
       --out=*)     out_file="${arg#--out=}" ;;
       --timeout=*) boot_timeout="${arg#--timeout=}" ;;
       --settle=*)  settle="${arg#--settle=}" ;;
+      --de=*)      de="${arg#--de=}" ;;
+      --local-pkg=*) export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${arg#--local-pkg=}" ;;
+      --display=*) display_mode="${arg#--display=}" ;;
+      --size=*)    size="${arg#--size=}" ;;
+      --hold=*)    hold="${arg#--hold=}" ;;
       *)
-        echo "Usage: $(basename "$0") desktop <blue|green> [--exec=\"cmd\"] [--out=<file.png>] [--timeout=N] [--settle=N] [--local-src=<dir>]" >&2
+        echo "Usage: $(basename "$0") desktop <blue|green> [--de=auto|gnome|plasma] [--display=virtual|host] [--size=WxH] [--hold=SECONDS] [--local-pkg=<name|file>] [--exec=\"cmd\"] [--out=<file.png>] [--timeout=N] [--settle=N] [--local-src=<dir>]" >&2
         exit 1
         ;;
     esac
   done
-  [[ -n "$out_file" ]] || out_file="${DATA_DIR}/desktop-screenshot-${slot}-$(date +%s).png"
+  # default outside disk/: that directory is loop images + state nobody should
+  # have to browse; screenshots are for looking at
+  if [[ -z "$out_file" ]]; then
+    mkdir -p "${SCRIPT_DIR}/shots"
+    out_file="${SCRIPT_DIR}/shots/desktop-${slot}-$(date +%s).png"
+  fi
+  if [[ "$de" == auto ]]; then
+    _mount_root
+    de=$(tr -d '[:space:]' < "${MNT}/@${slot}/etc/shani-profile" 2>/dev/null || true)
+    [[ "$de" == plasma ]] || de=gnome
+    log "desktop: @${slot} is a '${de}' slot"
+  fi
+  if [[ "$de" == plasma ]]; then
+    _desktop_plasma "$slot" "$exec_cmd" "$out_file" "$boot_timeout" "$settle" "$local_src" "$display_mode" "$size" "$hold"
+    return
+  fi
+  [[ "$display_mode" == virtual && "$hold" == 0 ]] \
+    || die "--display=host / --hold are Plasma-only so far (GNOME uses gnome-shell --headless and its own Screenshot API)"
 
   _prepare_boot "$slot" "$local_src"
 

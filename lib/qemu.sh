@@ -69,11 +69,10 @@ _locate_ovmf() {
 # ISO you built actually boots: firmware -> shim -> systemd-boot -> the
 # live UKI -> kernel -> systemd -> the installer GUI, all unmodified.
 #
-# If disk/root.img + disk/esp.img already exist (run `disk` first), they're
-# attached as a second virtio drive so a human can actually run the
-# installer's partitioning/install step onto a real (throwaway) target
-# disk for a full end-to-end test — entirely optional, the ISO boots fine
-# without them.
+# With SHANIOS_TEST_ISO_INSTALL_TARGET=1, disk/install.img is attached as a
+# second virtio drive so a human can run the installer's partitioning/install
+# step onto it for a full end-to-end test (it overwrites the current slots);
+# entirely optional, the ISO boots fine without it.
 # ------------------------------------------------------------------
 cmd_iso() {
   if _in_container; then
@@ -120,10 +119,13 @@ cmd_iso() {
 
   _qemu_base_args OVMF_VARS_ISO.fd
 
+  # Optional install target: install.img, only when asked for, since the live
+  # installer will repartition it (the old root.img+esp.img pair is gone).
   local target_disk_args=()
-  if [[ -f "$ROOT_IMG" && -f "$ESP_IMG" ]]; then
-    log "Attaching disk/root.img + disk/esp.img as an install target (optional — the ISO boots without them)"
-    target_disk_args=(-drive if=virtio,format=raw,file="$ROOT_IMG" -drive if=virtio,format=raw,file="$ESP_IMG")
+  if [[ "${SHANIOS_TEST_ISO_INSTALL_TARGET:-0}" == 1 ]]; then
+    [[ -f "$INSTALL_IMG" ]] || truncate -s "${INSTALL_SIZE:-24G}" "$INSTALL_IMG"
+    warn "Attaching disk/install.img as the install target - installing from the ISO will OVERWRITE the current slots"
+    target_disk_args=(-drive if=virtio,format=raw,file="$INSTALL_IMG")
   fi
 
   echo "==> Booting ${iso} via OVMF (close the window / send SIGTERM to stop)"
@@ -142,64 +144,34 @@ cmd_iso() {
 # ------------------------------------------------------------------
 # _resolve_qemu_boot_drives — pick which backing image(s) cmd_qemu/cmd_gui boot
 #
-# Two distinct disk layouts exist in this harness, and only one of them is
-# ever bootable:
-#   install.img — a whole-disk image written by `install` (real
-#     os-installer-config install.sh), then partitioned and populated by
-#     `configure` (real configure.sh). It is the ONLY thing install.sh can
-#     write to — it partitions a whole disk itself, so it can only ever
-#     produce install.img, never the root.img/esp.img pair.
-#   root.img + esp.img — a fabricate-only pair created empty by `cmd_disk`
-#     (a raw Btrfs volume + a blank FAT32 ESP). Nothing in the supported
-#     install+configure/bootstrap flow populates them; they are only ever
-#     used as blank install targets by `cmd_iso` and as the fallback for
-#     qemu/gui when no bootable install.img exists. Booting them via OVMF
-#     therefore lands on firmware PXE, not on shanios.
+# There is one disk: install.img, a whole GPT disk written by `install` (the
+# real os-installer-config install.sh partitions it: p1 = ESP shani_boot,
+# p2 = btrfs shani_root) and populated by `configure` (real configure.sh:
+# gen-efi.sh puts shim/systemd-boot/the signed UKI on its ESP). OVMF boots it
+# like real firmware boots a laptop disk - no separate ESP image. (A
+# root.img+esp.img pair used to exist; nothing ever populated it, so it only
+# ever booted to firmware PXE. Removed 2026-09-24.)
 #
-# Booting the real install.img when it exists is strictly better: it is the
-# exact artifact a real install produces, so a boot failure there is signal
-# about the image/deploy, not about this harness. Falls back to the empty
-# root.img/esp.img pair only when install.img is absent (or explicitly
-# forbidden), with a warning so the empty-pair case is never silent.
-#
-# Honors SHANIOS_TEST_QEMU_DISK (default auto):
-#   auto    — prefer install.img if it exists, else root.img+esp.img (warn)
-#   install — require install.img; die with a pointer to install+configure
-#   root    — require root.img+esp.img; die with a pointer to `test disk`
+# SHANIOS_TEST_QEMU_DISK is kept for existing callers: auto (default) and
+# install both mean install.img; `root` dies with an explanation.
 # Sets globals:
 #   QEMU_BOOT_DRIVES — bash array of complete `-drive ...` args for QEMU
 #   QEMU_BOOT_DESC   — short human string naming the booted image set
 _resolve_qemu_boot_drives() {
+  # One disk: install.img, the whole-disk image the real install.sh +
+  # configure.sh produce (bootstrap/install). The old root.img+esp.img pair
+  # was never populated by anything and only ever booted to OVMF's PXE
+  # fallback, so it is gone; SHANIOS_TEST_QEMU_DISK is kept for callers but
+  # only `auto`/`install` remain valid.
   local mode="${SHANIOS_TEST_QEMU_DISK:-auto}"
   case "$mode" in
-    auto)
-      if [[ -f "$INSTALL_IMG" ]]; then
-        QEMU_BOOT_DRIVES=(-drive if=virtio,format=raw,file="$INSTALL_IMG")
-        QEMU_BOOT_DESC="disk/install.img (whole-disk image from install+configure)"
-      elif [[ -f "$ROOT_IMG" && -f "$ESP_IMG" ]]; then
-        QEMU_BOOT_DRIVES=(-drive if=virtio,format=raw,file="$ROOT_IMG" \
-                         -drive if=virtio,format=raw,file="$ESP_IMG")
-        QEMU_BOOT_DESC="disk/root.img + disk/esp.img (fabricate-only pair)"
-        warn "No bootable disk/install.img found — booting the empty root.img+esp.img pair instead. This pair is created by 'test disk' and nothing in the supported install+configure/bootstrap flow populates it (install.sh partitions a whole disk itself, so it can only ever produce install.img); run 'install -p <profile>' + 'configure -p <profile>' to produce a bootable install.img."
-      else
-        die "No bootable disk image found: neither $INSTALL_IMG nor ($ROOT_IMG and $ESP_IMG). Run 'install -p <profile>' + 'configure -p <profile>' to produce install.img, or 'test disk' to create the fabricate-only root.img/esp.img pair."
-      fi
-      ;;
-    install)
-      [[ -f "$INSTALL_IMG" ]] || die "SHANIOS_TEST_QEMU_DISK=install requires $INSTALL_IMG — run 'install -p <profile>' then 'configure -p <profile>' to produce it."
-      QEMU_BOOT_DRIVES=(-drive if=virtio,format=raw,file="$INSTALL_IMG")
-      QEMU_BOOT_DESC="disk/install.img (whole-disk image from install+configure, forced by SHANIOS_TEST_QEMU_DISK=install)"
-      ;;
-    root)
-      [[ -f "$ROOT_IMG" && -f "$ESP_IMG" ]] || die "SHANIOS_TEST_QEMU_DISK=root requires $ROOT_IMG and $ESP_IMG — run 'test disk' to create the fabricate-only pair."
-      QEMU_BOOT_DRIVES=(-drive if=virtio,format=raw,file="$ROOT_IMG" \
-                       -drive if=virtio,format=raw,file="$ESP_IMG")
-      QEMU_BOOT_DESC="disk/root.img + disk/esp.img (fabricate-only pair, forced by SHANIOS_TEST_QEMU_DISK=root)"
-      ;;
-    *)
-      die "Invalid SHANIOS_TEST_QEMU_DISK value '$mode' — expected one of: auto (default), install, root."
-      ;;
+    auto|install) ;;
+    root) die "SHANIOS_TEST_QEMU_DISK=root: the root.img+esp.img pair was removed (it was never bootable) - run 'bootstrap -p <profile>' and boot install.img" ;;
+    *) die "Invalid SHANIOS_TEST_QEMU_DISK value '$mode' - expected auto or install." ;;
   esac
+  [[ -f "$INSTALL_IMG" ]] || die "No $INSTALL_IMG - run 'bootstrap -p <profile>' (or install + configure) first."
+  QEMU_BOOT_DRIVES=(-drive if=virtio,format=raw,file="$INSTALL_IMG")
+  QEMU_BOOT_DESC="disk/install.img (whole-disk image from install+configure)"
 }
 
 # ------------------------------------------------------------------
@@ -208,25 +180,19 @@ _resolve_qemu_boot_drives() {
 # Boots the real bootable disk image via OVMF, exactly like real hardware
 # would. Which image is booted is resolved by _resolve_qemu_boot_drives
 # (env SHANIOS_TEST_QEMU_DISK, default auto):
-#   install.img — the whole-disk image a real `install`+`configure` flow
+#   install.img - the whole-disk image a real `install`+`configure` flow
 #     produces: install.sh partitions it itself and configure.sh runs
 #     gen-efi.sh/finalize_boot_entries to lay down the ESP + signed UKI inside
-#     it. The only layout in this harness that is actually bootable.
-#   root.img + esp.img — the fabricate-only pair `cmd_disk` creates empty;
-#     nothing in the supported flow populates it, so booting it lands on
-#     firmware PXE, not on shanios. Used only as a fallback or as an install
-#     target for `cmd_iso`.
+#     it. The only disk this harness has.
   #
-  # For whichever image set is booted, the chain that makes it bootable is:
-  #   - the ESP (inside install.img for the whole-disk case, or in the
-  #     separate esp.img for the pair case) contains
+  # The chain that makes install.img bootable:
+  #   - its ESP partition (p1, shani_boot) contains
   #     /EFI/BOOT/BOOTX64.EFI (shim) -> grubx64.efi (systemd-boot, renamed —
   #     see update_bootloader() in gen-efi.sh) -> the UKI for whichever slot
   #     loader.conf points at. OVMF's firmware boot manager finds this via the
   #     standard "removable media" fallback path, same as booting an installer
   #     USB stick — no NVRAM boot-entry setup needed for this to work.
-  #   - the root filesystem (the Btrfs volume inside install.img, or the
-  #     separate root.img for the pair case, LABEL=shani_root) is where the
+  #   - its root filesystem (p2, the Btrfs volume, LABEL=shani_root) is where the
   #     kernel cmdline baked into the UKI points root= / rootflags=subvol=@<slot>.
 #
 # This is a genuine UEFI boot of the real bootloader/kernel/UKI shani-deploy
@@ -256,10 +222,10 @@ cmd_qemu() {
   # neither — just a network socket, which `run_in_container.sh`'s
   # `--network=host` already shares straight through to the host's own
   # 127.0.0.1 — so let `--vnc` run through the container instead, where it's
-  # already root and doesn't hit root.img/esp.img's host-side permissions
+  # already root and doesn't hit install.img's host-side permissions
   # (those land root:root from the privileged container that created them;
   # confirmed live: running plain `qemu`/`--vnc` as the unprivileged host
-  # user hits "Could not open root.img: Permission denied" otherwise).
+  # user hits "Could not open install.img: Permission denied" otherwise).
   if [[ -z "$vnc_ws_port" ]] && _in_container; then
     echo "qemu needs your GPU/display — it can't run inside the build container." >&2
     echo "Run this file directly on the HOST instead, from the repo root:" >&2

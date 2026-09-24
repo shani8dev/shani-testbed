@@ -1,11 +1,11 @@
 # ------------------------------------------------------------------
 # shared helpers
 # ------------------------------------------------------------------
-# Loop-device attachment (unlike root.img/esp.img themselves, which are
+# Loop-device attachment (unlike install.img itself, which is
 # bind-mounted and persist on the host) does NOT survive across separate
 # `run_in_container.sh` invocations — each is a fresh container, so its
 # /dev/disk/by-label/* symlinks (created by cmd_disk) start out empty even
-# when root.img/esp.img already exist from an earlier session. Re-attach to
+# when install.img already exists from an earlier session. Re-attach to
 # the existing images instead of requiring a fresh `disk` (which would wipe
 # and reformat them) every time a new container needs them.
 #
@@ -99,33 +99,10 @@ _ensure_single_loop() {
   losetup --find --show "$img" || die "Failed to attach loop device for $img"
 }
 
-# Points /dev/disk/by-label/{shani_root,shani_boot} at the root.img/esp.img
-# loop devices and records them in .root_loop/.esp_loop. Shared by `disk`
-# (fresh images) and _ensure_disk_attached (re-attach in a new container).
-_link_disk_pair() {
-  local root_loop="$1" esp_loop="$2"
-  mkdir -p /dev/disk/by-label
-  ln -sf "$root_loop" /dev/disk/by-label/shani_root
-  ln -sf "$esp_loop" /dev/disk/by-label/shani_boot
-  echo "$root_loop" > "${DATA_DIR}/.root_loop"
-  echo "$esp_loop" > "${DATA_DIR}/.esp_loop"
-}
-
-_ensure_disk_attached() {
-  [[ -e /dev/disk/by-label/shani_root && -e /dev/disk/by-label/shani_boot ]] && return 0
-
-  [[ -f "$ROOT_IMG" && -f "$ESP_IMG" ]] \
-    || die "root.img/esp.img not found under $DATA_DIR — run '$(basename "$0") disk' first"
-
-  local root_loop esp_loop
-  root_loop=$(_ensure_single_loop "$ROOT_IMG")
-  esp_loop=$(_ensure_single_loop "$ESP_IMG")
-  _link_disk_pair "$root_loop" "$esp_loop"
-  log "Re-attached existing disk images from a prior session: root=$root_loop esp=$esp_loop"
-}
-
 _mount_root() {
-  _ensure_disk_attached
+  # install.img is the only disk (GPT: p1 ESP shani_boot, p2 btrfs shani_root)
+  [[ -e /dev/disk/by-label/shani_root && -e /dev/disk/by-label/shani_boot ]] \
+    || _ensure_install_attached >/dev/null
   mkdir -p "$MNT"
   # compress=zstd matches production's BTRFS_TOP_OPTS (install.sh/build-base-image.sh).
   # Without it, a rootfs that fits comfortably in production's compressed
@@ -148,56 +125,30 @@ _current_slot() {
 # disk   (was 00-create-disk.sh)
 # ------------------------------------------------------------------
 cmd_disk() {
-  if ! command -v mkfs.fat &>/dev/null && command -v pacman &>/dev/null; then
-    log "mkfs.fat not found — installing dosfstools"
-    pacman -Sy --needed --noconfirm dosfstools || warn "Could not auto-install dosfstools — install it manually if the ESP step below fails"
-  fi
-
-  check_dependencies_test
-
-  # 32G disk (~28GB usable after btrfs metadata overhead) for deployment testing.
-  local root_size="${ROOT_SIZE:-32G}"
-  local esp_size="${ESP_SIZE:-512M}"
-
+  # Kept so documented `build.sh test disk` invocations keep working. It used
+  # to fabricate an empty root.img+esp.img pair that nothing ever populated
+  # (bootstrap runs the real install.sh onto install.img instead); now it
+  # only prepares what boot commands need and removes that legacy pair.
+  # create it (as the old disk did) - _ensure_by_label_dir only checks, and
+  # its error message points here
   mkdir -p "$DATA_DIR" /dev/disk/by-label
-
-  # Preflight: this command is about to wipe and recreate both images, so any
-  # loop device already attached to them — whether left over cleanly from a
-  # previous session (documented in `clean`'s help text) or a stale/duplicate
-  # attachment (more than one loop device bound to the same backing file,
-  # which happens if an earlier session's disk/enter/bootstrap was
-  # interrupted) — must go first. setup_btrfs_image() (config.sh) only
-  # detaches a single, already-known attachment for root.img; do the same
-  # (and cover the duplicate case) for both images here explicitly, rather
-  # than leaving a human to `losetup -d` + re-disk + re-bootstrap by hand.
-  _detach_all_loops "$ROOT_IMG"
-  _detach_all_loops "$ESP_IMG"
-
-  log "Setting up root.img (Btrfs, LABEL=shani_root, ${root_size})"
-  setup_btrfs_image "$ROOT_IMG" "$root_size"
-  local root_loop="$LOOP_DEVICE"
-  btrfs filesystem label "$root_loop" shani_root
-
-  log "Setting up esp.img (FAT32, LABEL=shani_boot, ${esp_size})"
-  rm -f "$ESP_IMG"
-  truncate -s "$esp_size" "$ESP_IMG"
-  local esp_loop
-  esp_loop=$(losetup --find --show "$ESP_IMG") || die "Failed to set up loop device for $ESP_IMG"
-  mkfs.fat -F32 -n shani_boot "$esp_loop" || die "Failed to format $ESP_IMG as FAT32"
-
-  _link_disk_pair "$root_loop" "$esp_loop"
-
-  log "root loop: $root_loop  (LABEL=shani_root)"
-  log "esp  loop: $esp_loop  (LABEL=shani_boot)"
-  log "Disk images written under: $DATA_DIR"
+  _ensure_by_label_dir
+  local img
+  for img in "${DATA_DIR}/root.img" "${DATA_DIR}/esp.img"; do
+    [[ -f "$img" ]] || continue
+    _detach_all_loops "$img"
+    rm -f "$img"
+    log "Removed legacy $(basename "$img") (no longer used)"
+  done
+  log "Nothing else to do: 'bootstrap -p <profile>' creates disk/install.img with the real install.sh."
 }
 
 # ------------------------------------------------------------------
-# clean — undo everything _ensure_disk_attached/cmd_disk/cmd_enter leave
-# behind, without touching root.img/esp.img/install.img themselves.
+# clean — undo everything _ensure_install_attached/cmd_enter leave
+# behind, without touching install.img itself.
 #
 # Nothing else in this file ever calls losetup -d on a successful path:
-# _ensure_disk_attached() re-attaches or reuses the existing loop device on
+# _ensure_install_attached() re-attaches or reuses the existing loop device on
 # every invocation (correct — it can't know a later command still needs it),
 # and every run_in_container.sh invocation is a fresh --rm'd container, so
 # there's no container-exit hook to detach on either. Loop devices just
@@ -230,7 +181,7 @@ cmd_clean() {
   fi
 
   local img loop
-  for img in "$ROOT_IMG" "$ESP_IMG" "$INSTALL_IMG"; do
+  for img in "$INSTALL_IMG" "${DATA_DIR}/root.img" "${DATA_DIR}/esp.img"; do
     [[ -f "$img" ]] || continue
     # Whole-disk images (install.img) also have the no-'p' partition compat
     # symlinks cmd_install creates for install.sh (_make_loop_partition_compat);
@@ -248,7 +199,7 @@ cmd_clean() {
   rm -f "${DATA_DIR}/.root_loop" "${DATA_DIR}/.esp_loop" "${DATA_DIR}/.install_loop"
 
   if (( any )); then
-    log "Clean complete — root.img/esp.img/install.img left in place, everything else torn down"
+    log "Clean complete — install.img left in place, everything else torn down"
   else
     log "Nothing to clean up"
   fi
@@ -275,7 +226,7 @@ _make_loop_partition_compat() {
 # in both scripts and in bits/part.sfdisk) — on real hardware a live udevd
 # creates those from each filesystem's on-disk label; this container runs no
 # udevd, same reason cmd_disk creates shani_root/shani_boot's by-label
-# symlinks by hand instead of relying on one (see _ensure_disk_attached).
+# symlinks by hand instead of relying on one (see _ensure_install_by_label_symlinks).
 # Safe to create/refresh before the partitions or LUKS mapping actually
 # exist — symlinks resolve lazily, and by the time install.sh/configure.sh
 # actually dereference them (mount_boot_partition, mount_target), the real
@@ -297,7 +248,7 @@ _ensure_install_by_label_symlinks() {
 
 # Re-attaches install.img's loop device across separate run_in_container.sh
 # invocations (same principle, and same _ensure_single_loop machinery, as
-# _ensure_disk_attached uses for root.img/esp.img), and recreates the
+# _ensure_install_attached uses), and recreates the
 # loop-partition compat symlinks + by-label symlinks above (they live under
 # /dev, so device NUMBERS don't survive a fresh container, even though the
 # symlink files themselves would via the host /dev bind mount). Prints the
