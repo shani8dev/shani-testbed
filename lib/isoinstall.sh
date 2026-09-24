@@ -3,7 +3,7 @@
 #
 #   iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso>
 #               [--encrypted] [--live-timeout=S] [--install-timeout=S]
-#               [--boot-timeout=S] [--boot-only]
+#               [--boot-timeout=S] [--boot-only] [--disk-size=BYTES]
 #
 # --boot-only: skip 1-2 and boot the disk the last iso-install installed,
 # with its NVRAM and TPM state (debugging the firmware boot without a
@@ -189,8 +189,8 @@ _isovm_boot_installed() {
 }
 
 cmd_iso_install() {
-  local usage="Usage: $(basename "$0") iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso> [--encrypted] [--live-timeout=S] [--install-timeout=S] [--boot-timeout=S]"
-  local profile="" sel="" encrypted=0 live_to=1800 inst_to=10800 boot_to=1800 boot_only=0
+  local usage="Usage: $(basename "$0") iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso> [--encrypted] [--live-timeout=S] [--install-timeout=S] [--boot-timeout=S] [--boot-only] [--disk-size=BYTES]"
+  local profile="" sel="" encrypted=0 live_to=1800 inst_to=10800 boot_to=1800 boot_only=0 disk_size=""
   while (( $# )); do
     case "$1" in
       -p) profile="${2:-}"; shift ;;
@@ -200,6 +200,7 @@ cmd_iso_install() {
       --install-timeout=*) inst_to="${1#*=}" ;;
       --boot-timeout=*) boot_to="${1#*=}" ;;
       --boot-only) boot_only=1 ;;
+      --disk-size=*) disk_size="${1#*=}" ;;
       *) die "$usage" ;;
     esac
     shift
@@ -225,7 +226,7 @@ cmd_iso_install() {
   # smallest one this ISO's installer accepts (its config.yaml min_size, in
   # decimal GB - os-installer's GIGABYTE_FACTOR is 1000^3): the worst case a
   # user can really have, and the size the first update must still fit in.
-  local size="${INSTALL_DISK_SIZE:-}" min_gb
+  local size="${disk_size:-${INSTALL_DISK_SIZE:-}}" min_gb
   if [[ -z "$size" ]]; then
     _mount_iso "$ISO_FILE"
     min_gb=$(awk '/^[[:space:]]*min_size:/ {print $2; exit}' "${OSI_ROOT}/config.yaml" 2>/dev/null)
@@ -233,6 +234,8 @@ cmd_iso_install() {
     [[ "$min_gb" =~ ^[0-9]+$ ]] || { warn "iso-install: no disk min_size in the ISO's config.yaml - using 32 GB"; min_gb=32; }
     size=$(( min_gb * 1000 * 1000 * 1000 ))
     log "iso-install: target disk ${min_gb} GB (the ISO installer's minimum)"
+  else
+    log "iso-install: target disk ${size} bytes (--disk-size / INSTALL_DISK_SIZE)"
   fi
   _detach_all_loops "$INSTALL_IMG"
   _reset_slot_overlays

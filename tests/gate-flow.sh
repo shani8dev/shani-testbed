@@ -31,7 +31,7 @@ run() {
       for s in ca clean verifyboot desktop; do eval "cmd_$s() { echo CALL $s \"\$*\"; }"; done
       cmd_slot_test() { echo CALL slot_test "$*"; [[ "${FAIL_STEP:-}" != slot_test ]] || return 3; }
       install_as() { echo blue > "$MNT/@data/current-slot"; echo "$1" > "$MNT/@blue/etc/shani-version"; rm -f "$MNT/@green/etc/shani-version"; }
-      cmd_iso_install() { echo CALL iso_install "$*"; [[ -n "${FAIL_ISO:-}" && "$*" == *20260921* ]] && return 4; install_as "$(grep -oE "[0-9]{8}" <<<"$*")"; }
+      cmd_iso_install() { echo CALL iso_install "$*"; [[ -n "${FAIL_ISO:-}" && "$*" == *20260921* ]] && return 4; install_as "$(grep -oP "(?<=--iso=)[0-9]{8}" <<<"$*")"; }
       cmd_bootstrap()   { echo CALL bootstrap "$*"; install_as "$(grep -oE "[0-9]{8}" <<<"$*")"; }
       cmd_upgrade() {
         echo CALL upgrade "$*"
@@ -87,7 +87,7 @@ check "skip-iso: no iso marker, image tested"    "[[ -z \$ISO && \$IMG == shanio
 
 run for-image "" --for=image
 check "for=image: image marker only"             "[[ \$IMG == shanios-20260922-gnome.zst && -z \$ISO && $RC -eq 0 ]]"
-check "for=image: new user from iso-stable"      "has 'CALL iso_install -p gnome --iso=20260518' && ! has 'CALL iso_install -p gnome --iso=20260921'"
+check "for=image: new user from iso-stable"      "has 'CALL iso_install -p gnome --iso=20260518 --disk-size=32000000000' && ! has 'CALL iso_install -p gnome --iso=20260921'"
 
 run for-iso "" --for=iso
 check "for=iso: ISO marker only"                 "[[ \$ISO == 20260921 && -z \$IMG && $RC -eq 0 ]]"

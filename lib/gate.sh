@@ -199,7 +199,10 @@ cmd_gate() {
   fi
 
   # ---- fresh: a new user reaching the candidate image. On the ISO phase's
-  # machine when it installed; otherwise installed from iso-stable.
+  # machine when it installed; otherwise installed from iso-stable on a disk
+  # of the documented minimum (32 GB). Not that ISO's own accepted floor:
+  # whether an ISO's install leaves room for updates on its smallest disk is
+  # the ISO gate's question (iso phase), and an image can't change it.
   if [[ "$skip" != *,fresh,* ]]; then
     failed=0
     if [[ -z "$installed_from" ]]; then
@@ -207,6 +210,7 @@ cmd_gate() {
       if [[ "$iso_stable" =~ ^[0-9]{8}$ ]]; then
         _gate_step fresh:clean cmd_clean \
           && _gate_step fresh:install cmd_iso_install -p "$profile" "--iso=${iso_stable}" \
+               "--disk-size=${SHANIOS_TEST_NEW_USER_DISK:-32000000000}" \
           && installed_from="$iso_stable" || true
       else
         warn "gate: no ISO installed and no iso-stable.txt - the new-user path to ${candidate} is untested"
