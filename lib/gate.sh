@@ -45,14 +45,14 @@ _gate_wait_net() {
 
 # The deploy, once more if (and only if) shani-deploy stopped at its own
 # connectivity check; any other failure stands.
-_gate_deploy() {
+_gate_deploy() {  # [upgrade args...]
   local out="${DATA_DIR}/gate-deploy-$$.log" rc=0
   _gate_wait_net
-  cmd_upgrade --self-update 2>&1 | tee "$out"; rc=${PIPESTATUS[0]}
+  cmd_upgrade --self-update "$@" 2>&1 | tee "$out"; rc=${PIPESTATUS[0]}
   if (( rc != 0 )) && grep -aq 'No internet connection' "$out"; then
     warn "gate: shani-deploy found no network - retrying the deploy once"
     _gate_wait_net
-    cmd_upgrade --self-update; rc=$?
+    cmd_upgrade --self-update "$@"; rc=$?
   fi
   rm -f "$out"
   return "$rc"
@@ -68,13 +68,19 @@ _gate_identity() {  # <expected YYYYMMDD> — current slot must run that build
 }
 
 cmd_gate() {
-  local usage_gate="Usage: $(basename "$0") gate -p <profile> [--candidate=<file.zst>] [--skip=fresh,upgrade,desktop] [--keep] [--reuse-install]"
-  local profile="" candidate="" skip="" keep=0 reuse=0 a
+  local usage_gate="Usage: $(basename "$0") gate -p <profile> [--candidate=<file.zst>] [--for=image|iso] [--skip=iso,fresh,upgrade,desktop] [--keep] [--reuse-install]"
+  local profile="" candidate="" skip="" keep=0 reuse=0 for="" a
   local -a rest=()
   for a in "$@"; do
     case "$a" in
       --candidate=*) candidate="${a#--candidate=}" ;;
-      --skip=*)      skip=",${a#--skip=}," ;;
+      --skip=*)      skip+=",${a#--skip=}," ;;
+      # separate gates for the two artifacts (built and promoted separately):
+      # image = the new-user (from iso-stable) and existing-user journeys to
+      # the candidate image; iso = the candidate ISO's install + first update
+      --for=image)   for=image; skip+=",iso," ;;
+      --for=iso)     for=iso; skip+=",fresh,upgrade," ;;
+      --for=*)       die "gate: --for must be image or iso" ;;
       --keep)        keep=1 ;;
       --reuse-install) reuse=1 ;;  # local iteration only: see below
       *)             rest+=("$a") ;;
@@ -106,15 +112,15 @@ cmd_gate() {
   cand_date=$(grep -oE '[0-9]{8}' <<<"$candidate" | head -n1) || true
   [[ -n "$cand_date" ]] || die "gate: can't parse a build date out of ${candidate}"
   [[ -n "$stable" ]] && { stable_date=$(grep -oE '[0-9]{8}' <<<"$stable" | head -n1) || true; }
-  if [[ -z "$stable_date" ]]; then
-    warn "gate: no stable.txt for '${profile}' - skipping the upgrade phase (nothing to upgrade from)"
+  if [[ -z "$stable_date" && "$skip" != *,upgrade,* ]]; then
+    warn "gate: no stable.txt for '${profile}' - the existing-user path can't be tested"
     skip+=",upgrade,"
   elif [[ "$stable_date" == "$cand_date" ]]; then
     warn "gate: stable already is ${candidate} - the upgrade phase re-deploys the same build"
   fi
   if [[ ! "$iso_date" =~ ^[0-9]{8}$ ]]; then
-    warn "gate: no usable iso-latest.txt for '${profile}' ('${iso_date}') - skipping the fresh phase"
-    skip+=",fresh,"; iso_date=""
+    warn "gate: no usable iso-latest.txt for '${profile}' ('${iso_date}') - skipping the ISO phase"
+    skip+=",iso,"; iso_date=""
   fi
   local want_desktop=1
   [[ "$skip" == *,desktop,* ]] && want_desktop=0
@@ -157,45 +163,100 @@ cmd_gate() {
   # --reuse-install: boot (through firmware) the disk the last iso-install
   # of this same ISO left, instead of a 25-min reinstall under TCG. For local
   # iteration only - that disk has been through earlier checks, so it is not
-  # a fresh install, and such a run never writes the .passed marker.
+  # a fresh install, and such a run never writes a .passed marker.
   local -a iso_install=(cmd_iso_install -p "$profile" "--iso=${iso_date}")
   if (( reuse )) && [[ "$(cat "${DATA_DIR}/isovm/installed-date" 2>/dev/null)" == "$iso_date" ]]; then
     warn "gate: --reuse-install - reusing the ISO ${iso_date} install (booted via firmware, NOT reinstalled)"
     iso_install+=(--boot-only)
   fi
-  if (( ! failed )) && [[ "$skip" != *,fresh,* ]]; then
-    _gate_step fresh:clean cmd_clean \
-      && _gate_step fresh:install-iso "${iso_install[@]}" \
-      && _gate_identity_step fresh:identity-iso "$iso_date" \
-      && _gate_checks fresh:iso boot-health fresh-user launchers \
-      && _gate_step fresh:deploy _gate_deploy \
-      && _gate_identity_step fresh:identity "$cand_date" \
-      && _gate_checks fresh boot-health fresh-user launchers \
-      && _gate_step fresh:rollback cmd_rollback \
-      && _gate_identity_step fresh:identity-rolledback "$iso_date" \
-      && _gate_step fresh:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 || true
+  # each phase starts from failed=0 and reports its own result
+  _gate_phase_ok() { (( failed == 0 )); }
+  local iso_ok=0 fresh_ok=0 up_ok=0 installed_from=""
+
+  # ---- iso: the candidate ISO, for iso-stable.txt. Its first update is what
+  # the update timer does on a new install: the default (stable) channel, no
+  # --force - an older stable is "no update needed", never a downgrade.
+  if [[ "$skip" != *,iso,* ]]; then
+    failed=0
+    local after_first="$iso_date"
+    [[ -n "$stable_date" && "$stable_date" > "$iso_date" ]] && after_first="$stable_date"
+    _gate_step iso:clean cmd_clean \
+      && _gate_step iso:install "${iso_install[@]}" \
+      && installed_from="$iso_date" \
+      && _gate_identity_step iso:identity "$iso_date" \
+      && _gate_checks iso boot-health fresh-user launchers \
+      && _gate_step iso:first-update _gate_deploy --channel=stable --no-force \
+      && _gate_identity_step iso:identity-after-update "$after_first" || true
+    if _gate_phase_ok && [[ "$after_first" != "$iso_date" ]]; then
+      _gate_checks iso:updated boot-health fresh-user launchers \
+        && _gate_step iso:rollback cmd_rollback \
+        && _gate_identity_step iso:identity-rolledback "$iso_date" \
+        && _gate_step iso:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 || true
+    elif _gate_phase_ok; then
+      log "gate: stable (${stable_date:-none}) is not newer than ISO ${iso_date}: no first update, as on a real install"
+    fi
+    _gate_phase_ok && iso_ok=1
   fi
 
-  if (( ! failed )) && [[ "$skip" != *,upgrade,* ]]; then
+  # ---- fresh: a new user reaching the candidate image. On the ISO phase's
+  # machine when it installed; otherwise installed from iso-stable.
+  if [[ "$skip" != *,fresh,* ]]; then
+    failed=0
+    if [[ -z "$installed_from" ]]; then
+      local iso_stable; iso_stable="$(_gate_pointer "$profile" iso-stable)" || true
+      if [[ "$iso_stable" =~ ^[0-9]{8}$ ]]; then
+        _gate_step fresh:clean cmd_clean \
+          && _gate_step fresh:install cmd_iso_install -p "$profile" "--iso=${iso_stable}" \
+          && installed_from="$iso_stable" || true
+      else
+        warn "gate: no ISO installed and no iso-stable.txt - the new-user path to ${candidate} is untested"
+        names+=(fresh:install); rcs+=(1); secs+=(0); failed=1
+      fi
+    fi
+    if _gate_phase_ok; then
+      local before; before=$(tr -cd '0-9' < "${MNT}/@$(_current_slot)/etc/shani-version" 2>/dev/null || true)
+      if [[ "$cand_date" > "$before" ]]; then
+        _gate_step fresh:deploy _gate_deploy --channel=latest --no-force \
+          && _gate_identity_step fresh:identity "$cand_date" \
+          && _gate_checks fresh boot-health fresh-user launchers \
+          && _gate_step fresh:rollback cmd_rollback \
+          && _gate_identity_step fresh:identity-rolledback "$before" \
+          && _gate_step fresh:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 || true
+      else
+        log "gate: this install already runs ${before} (not older than ${cand_date}): the new-user path is the install itself"
+      fi
+    fi
+    _gate_phase_ok && fresh_ok=1
+  fi
+
+  # ---- upgrade: an existing user on the current stable image
+  if [[ "$skip" != *,upgrade,* ]]; then
+    failed=0
     _gate_step upgrade:clean cmd_clean \
       && _gate_step upgrade:install-stable cmd_bootstrap -p "$profile" -d "$stable_date" --from-r2 \
       && _gate_identity_step upgrade:identity-stable "$stable_date" \
-      && _gate_step upgrade:deploy _gate_deploy \
+      && _gate_step upgrade:deploy _gate_deploy --channel=latest --no-force \
       && _gate_identity_step upgrade:identity "$cand_date" \
       && _gate_checks upgrade boot-health fresh-user \
       && _gate_step upgrade:rollback cmd_rollback \
       && _gate_identity_step upgrade:identity-rolledback "$stable_date" \
       && _gate_step upgrade:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 || true
+    _gate_phase_ok && up_ok=1
   fi
 
+  failed=0
   if (( keep )); then log "gate: --keep, leaving mounts/loops attached"
   else _gate_step clean cmd_clean || true; fi
 
-  local stamp out passed i json
+  # image promotable: both user journeys to it passed (a phase skipped with
+  # --skip counts as not tested, so no marker)
+  local image_ok=0
+  (( fresh_ok && up_ok )) && image_ok=1
+  local stamp out i json iso_m img_m
   stamp="$(date +%s)"
   out="${DATA_DIR}/gate-${profile}-${stamp}.json"
-  passed="${DATA_DIR}/gate-${profile}.passed"
-  rm -f "$passed"
+  img_m="${DATA_DIR}/gate-${profile}.image.passed"; iso_m="${DATA_DIR}/gate-${profile}.iso.passed"
+  rm -f "$img_m" "$iso_m" "${DATA_DIR}/gate-${profile}.passed"
   json="{\"profile\":\"${profile}\",\"candidate\":\"${candidate}\",\"iso\":\"${iso_date}\",\"baseline\":\"${stable:-}\",\"skip\":\"${skip//,/ }\",\"steps\":["
   log "════ gate summary (profile=${profile} candidate=${candidate} iso=${iso_date:-none} baseline=${stable:-none}) ════"
   for i in "${!names[@]}"; do
@@ -203,11 +264,20 @@ cmd_gate() {
     (( i == 0 )) || json+=","
     json+="{\"step\":\"${names[$i]}\",\"rc\":${rcs[$i]},\"seconds\":${secs[$i]}}"
   done
-  echo "${json}],\"passed\":$(( failed == 0 ? 1 : 0 ))}" > "$out"
+  echo "${json}],\"iso_passed\":${iso_ok},\"image_passed\":${image_ok}}" > "$out"
   log "  results: ${out}"
-  (( failed == 0 )) || die "gate FAILED for ${candidate}"
-  (( reuse )) && { log "gate PASSED (--reuse-install: not a release result, no .passed marker)"; return 0; }
-  # line 2 only when the fresh phase really installed that ISO
-  printf '%s\n%s\n' "$candidate" "$([[ "$skip" == *,fresh,* ]] || echo "$iso_date")" > "$passed"
-  log "gate PASSED for ${candidate} (${passed})"
+  log "  ISO ${iso_date:-none}:  $( ((iso_ok)) && echo PASSED || echo 'not passed')"
+  log "  image ${candidate}: $( ((image_ok)) && echo PASSED || echo "not passed (new user: $( ((fresh_ok)) && echo ok || echo no), existing user: $( ((up_ok)) && echo ok || echo no))")"
+  if (( reuse )); then
+    warn "gate: --reuse-install run - not a release result, no .passed markers"
+  else
+    (( iso_ok )) && printf '%s\n' "$iso_date" > "$iso_m" && log "  -> ${iso_m}"
+    (( image_ok )) && printf '%s\n' "$candidate" > "$img_m" && log "  -> ${img_m}"
+  fi
+  case "$for" in
+    image) (( image_ok )) || die "gate: image ${candidate} not passed"; log "gate PASSED: image ${candidate}" ;;
+    iso)   (( iso_ok ))   || die "gate: ISO ${iso_date} not passed";   log "gate PASSED: ISO ${iso_date}" ;;
+    *)     (( iso_ok && image_ok )) || die "gate: not everything passed (see above)"
+           log "gate PASSED for ${candidate} and ISO ${iso_date}" ;;
+  esac
 }

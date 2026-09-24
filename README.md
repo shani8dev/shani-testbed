@@ -273,29 +273,31 @@ the final `clean` still runs. `--local-src` defaults to
 ./run_in_container.sh build.sh test status      # read-only: images, loops, slots, overlays
 ```
 
-### `gate`: only a tested build becomes stable
+### `gate`: only tested builds become stable - image and ISO separately
 
-`gate -p <profile>` tests the **published** candidates (R2 `latest.txt` and
-`iso-latest.txt`) along both journeys users take, using only what users get
-(SHA-256 + GPG checked against the pinned fingerprint, the self-updated
-shani-deploy, no `--local-src`):
+`gate -p <profile>` tests the **published** candidates the way users get them
+(SHA-256 + GPG against the pinned fingerprint, the self-updated
+shani-deploy, updates run like the timer runs them: a channel, no `--force`,
+so an older remote is "no update needed", never a downgrade). The base image
+(`latest.txt`) and the ISO (`iso-latest.txt`) are separate artifacts, built
+on different days, and get separate results:
 
-| phase | steps |
-|---|---|
-| fresh (a new user) | `iso-install` of the candidate ISO → identity → verify-boot → slot-tests → desktop → `upgrade --self-update` to the candidate image → identity → verify-boot → slot-tests → desktop → rollback → identity → verify-boot |
-| upgrade (an existing user) | install current stable → `upgrade --self-update` → identity → verify-boot → slot-tests → desktop → rollback → identity → verify-boot |
+| phase | journey | steps | counts for |
+|---|---|---|---|
+| iso | a new user installing the candidate ISO | `iso-install` → identity → checks (+launchers) → first update on the **stable** channel → identity → (if it updated) checks → rollback | `gate-<profile>.iso.passed` |
+| fresh | a new user reaching the candidate image | on the iso phase's machine (or an `iso-stable` install if that ISO failed): update on the **latest** channel → identity → checks (+launchers) → rollback | `gate-<profile>.image.passed` (with upgrade) |
+| upgrade | an existing user on stable | stable image → update to the candidate → identity → checks → rollback | `gate-<profile>.image.passed` (with fresh) |
 
-*identity* reads `/etc/shani-version` in the slot `current-slot` names, so
-a build published mid-gate fails instead of being promoted untested.
-Slot-tests are `boot-health`, `fresh-user` (features newer than the image's
-packages report `SKIP (<pkg> <ver> predates …)`) and, on the ISO path,
-`launchers` (every pinned dock/favorite app installed - the Flatpak layer
-only ships inside ISOs). On success it writes `disk/gate-<profile>.passed`
-(line 1 the image, line 2 the ISO folder when the fresh phase ran), which
-`promote-stable.sh --expect= --expect-iso=` compare before promoting.
-`--skip=fresh,upgrade,desktop`, `--keep`. Downloads are verified with a
-public-only keyring (`SHANIOS_TEST_SIGNING_KEY=<file>`, the local builder
-keyring, or shani-keyring's `shani.gpg`), so it runs on CI without secrets.
+checks = verify-boot, slot-tests (`boot-health`, `fresh-user` - features
+newer than the image's packages report `SKIP` - and `launchers` where the
+Flatpak layer exists, i.e. ISO installs) and a desktop screenshot. identity
+reads `/etc/shani-version`, so a build published mid-gate fails instead of
+being promoted untested. `promote-stable.sh --only=image --expect=<file>`
+and `--only=iso --expect-iso=<date>` promote each one only from its marker;
+`promote-stable.yml` runs both steps independently. `--skip=iso,fresh,
+upgrade,desktop`, `--keep`, `--reuse-install` (local iteration: boots the
+last iso-install instead of reinstalling; never writes markers). Downloads
+use a public-only keyring, so CI needs no secrets for the gate.
 
 ```bash
 ./run_in_container.sh build.sh test gate -p plasma

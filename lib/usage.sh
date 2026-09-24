@@ -124,14 +124,13 @@ Commands:
               installed disk boots through the same firmware. KVM if
               present, else TCG (slow). install.img stays for enter/
               verify-boot/slot-test/upgrade.
-  gate        -p <profile> [--candidate=<file.zst>] [--skip=fresh,upgrade,desktop] [--keep]
-              Release gate for promote-stable: the PUBLISHED candidate
-              (R2 latest) fresh-installed, and current stable upgraded to
-              it by the image's own shani-deploy then rolled back; each
-              with identity (/etc/shani-version), verify-boot, slot-tests
-              boot-health+fresh-user and a desktop screenshot. On success
-              writes disk/gate-<profile>.passed (the candidate filename)
-              for promote-stable.sh --expect.
+  gate        -p <profile> [--candidate=<file.zst>] [--skip=iso,fresh,upgrade,desktop] [--keep] [--reuse-install]
+              Release gate for promote-stable, the image and the ISO
+              separately: iso = the candidate ISO via iso-install, first
+              update on the stable channel; fresh = a new user updated to
+              the candidate; upgrade = stable updated to the candidate.
+              Writes disk/gate-<profile>.iso.passed / .image.passed for
+              promote-stable.sh --only=iso|image --expect(-iso).
   status      Read-only view: images, loop attachments, by-label links,
               slots, overlays (incl. --local-src files pending revert).
   app         <blue|green> --run="cmd" [--local-src=<dir>] [--display=virtual|host]

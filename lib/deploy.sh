@@ -28,10 +28,18 @@ cmd_upgrade() {
   # SHA-256 + GPG checked, re-exec) - what a real machine does, and what
   # `gate` tests. Incompatible with --local-src (it would replace the
   # overlaid copy).
-  local skip_self=--skip-self-update a
+  # --channel=<latest|stable> (default latest) and --no-force: `gate` runs
+  # an update the way the update timer does - the system's channel, no
+  # --force, so an older remote is "no update needed", never a downgrade.
+  local skip_self=--skip-self-update channel=latest force=--force a
   local -a rest=()
   for a in "$@"; do
-    if [[ "$a" == --self-update ]]; then skip_self=""; else rest+=("$a"); fi
+    case "$a" in
+      --self-update) skip_self="" ;;
+      --channel=*)   channel="${a#--channel=}" ;;
+      --no-force)    force="" ;;
+      *)             rest+=("$a") ;;
+    esac
   done
   set -- "${rest[@]}"
   [[ -z "$skip_self" && -n "${LOCAL_SRC:-}" ]] && die "upgrade: --self-update and --local-src contradict each other"
@@ -57,7 +65,7 @@ cmd_upgrade() {
   # process) — cmd_cycle needs cmd_upgrade to actually return so its own
   # cmd_reboot afterward still runs. _prepare_enter_args is the same prep
   # cmd_enter itself uses (single source of truth for the nspawn args).
-  _prepare_in_current_slot shani-deploy --force --channel latest ${skip_self:+"$skip_self"} "$@"
+  _prepare_in_current_slot shani-deploy ${force:+"$force"} --channel "$channel" ${skip_self:+"$skip_self"} "$@"
   log "Running shani-deploy inside @${CURRENT_SLOT} (real deploy — this will actually switch slots on success)"
   systemd-nspawn "${NSPAWN_ENTER_ARGS[@]}"
 }
