@@ -57,18 +57,45 @@ cmd_suite() {
     return "$rc"
   }
 
+  # What upgrade/rollback promise, not just their exit codes: a rollback that
+  # overwrote the previous system with a copy of the new one exited 0 and
+  # passed this suite for weeks. Versions from each slot's /etc/shani-version.
+  _suite_ver() { tr -cd '0-9' < "${MNT}/@$1/etc/shani-version" 2>/dev/null; }
+  _suite_other() { [[ $1 == blue ]] && echo green || echo blue; }
+  local cur0="" ver0="" cur1="" ver1=""
+  _suite_check() {  # <label> <expr> <detail>
+    local t0; t0=$(date +%s)
+    log "════ suite: $1 ════"
+    local rc=0; eval "$2" || rc=1
+    (( rc == 0 )) && log "  $1: $3" || warn "  $1 FAILED: $3"
+    names+=("$1"); rcs+=("$rc"); secs+=("$(( $(date +%s) - t0 ))")
+    (( rc == 0 )) || failed=1
+  }
+
   _suite_step clean cmd_clean
   if (( ! failed )); then _suite_step ca cmd_ca || true; fi
   if (( ! failed )); then _suite_step bootstrap cmd_bootstrap "${boot_args[@]}" || true; fi
+  if (( ! failed )); then cur0=$(_current_slot); ver0=$(_suite_ver "$cur0"); fi
   if (( ! failed )); then _suite_step upgrade cmd_upgrade "${src_arg[@]}" || true; fi
+  if (( ! failed )); then
+    cur1=$(_current_slot); ver1=$(_suite_ver "$cur1")
+    _suite_check upgrade:switched \
+      '[[ $cur1 != "$cur0" && -n $ver1 && $ver1 -ge ${ver0:-0} && $(_suite_ver "$cur0") == "$ver0" ]]' \
+      "@${cur0} v${ver0} -> @${cur1} v${ver1}; @${cur0} now v$(_suite_ver "$cur0")"
+  fi
   if (( ! failed )); then _suite_step rollback cmd_rollback "${src_arg[@]}" || true; fi
+  if (( ! failed )); then
+    _suite_check rollback:restored \
+      '[[ $(_current_slot) == "$cur0" && $(_suite_ver "$cur0") == "$ver0" && $(_suite_ver "$cur1") == "$ver1" ]]' \
+      "current @$(_current_slot); @${cur0} v$(_suite_ver "$cur0") (was v${ver0}); @${cur1} v$(_suite_ver "$cur1") (was v${ver1})"
+  fi
   if (( keep )); then log "suite: --keep, leaving mounts/loops attached"
   else _suite_step clean cmd_clean || true; fi
 
   local out="${DATA_DIR}/suite-$(date +%s).json" i json="["
   log "════ suite summary (profile=${profile} date=${date_sel} local-src=${local_src:-none}) ════"
   for i in "${!names[@]}"; do
-    log "$(printf '  %-10s %-5s %5ss' "${names[$i]}" "$([[ ${rcs[$i]} -eq 0 ]] && echo PASS || echo "FAIL(${rcs[$i]})")" "${secs[$i]}")"
+    log "$(printf '  %-18s %-5s %5ss' "${names[$i]}" "$([[ ${rcs[$i]} -eq 0 ]] && echo PASS || echo "FAIL(${rcs[$i]})")" "${secs[$i]}")"
     # (not `json+="$([[ $i -gt 0 ]] && echo ,)..."`: under set -e that
     # assignment takes the substitution's status 1 on the first row and
     # killed the harness mid-summary - no JSON, no PASSED/FAILED, exit 1

@@ -22,9 +22,18 @@ run_case() {  # <name> <failing-step|none>
       warn() { echo "[WARN] $*"; }
       die()  { echo "[ERROR] $*"; exit 1; }
       _take_local_src() { LOCAL_SRC=""; REST_ARGS=("$@"); }
-      for s in clean ca bootstrap upgrade rollback; do
+      MNT="$DATA_DIR/mnt"; mkdir -p "$MNT/@blue/etc" "$MNT/@green/etc" "$MNT/@data"
+      _current_slot() { cat "$MNT/@data/current-slot"; }
+      for s in clean ca; do
         eval "cmd_$s() { [[ \"\$FAILING\" != $s ]] || return 3; }"
       done
+      # slots behave like the real thing (or like the old destructive rollback)
+      cmd_bootstrap() { [[ "$FAILING" != bootstrap ]] || return 3; echo blue > "$MNT/@data/current-slot"
+        echo 20260821 > "$MNT/@blue/etc/shani-version"; echo 20260821 > "$MNT/@green/etc/shani-version"; }
+      cmd_upgrade() { [[ "$FAILING" != upgrade ]] || return 3; echo green > "$MNT/@data/current-slot"; echo 20260924 > "$MNT/@green/etc/shani-version"; }
+      cmd_rollback() { [[ "$FAILING" != rollback ]] || return 3
+        if [[ "${DESTRUCTIVE:-}" ]]; then echo 20260924 > "$MNT/@blue/etc/shani-version"   # old behaviour: copy of the new slot
+        else echo blue > "$MNT/@data/current-slot"; fi; }
       source "'"$here"'/lib/suite.sh"
       cmd_suite -p gnome
     ' 2>&1
@@ -34,8 +43,8 @@ run_case() {  # <name> <failing-step|none>
   if [[ "$failing" == none ]]; then
     check "$name: exits 0"                    "[[ $rc -eq 0 ]]"
     check "$name: prints suite PASSED"        "grep -q 'suite PASSED' <<<\"\$out\""
-    check "$name: summary lists all 6 steps"  "[[ \$(grep -cE '^\[INFO\]   (clean|ca|bootstrap|upgrade|rollback) +PASS' <<<\"\$out\") -eq 6 ]]"
-    check "$name: JSON has 6 entries"         "[[ \$(grep -o '\"step\"' <<<\"\$json\" | wc -l) -eq 6 ]]"
+    check "$name: summary lists all 8 steps"  "[[ \$(grep -cE '^\[INFO\]   (clean|ca|bootstrap|upgrade|rollback|upgrade:switched|rollback:restored) +PASS' <<<\"\$out\") -eq 8 ]]"
+    check "$name: JSON has 8 entries"         "[[ \$(grep -o '\"step\"' <<<\"\$json\" | wc -l) -eq 8 ]]"
   else
     check "$name: exits non-zero"             "[[ $rc -ne 0 ]]"
     check "$name: prints suite FAILED"        "grep -q 'suite FAILED' <<<\"\$out\""
@@ -48,5 +57,20 @@ run_case() {  # <name> <failing-step|none>
 
 run_case all-pass none
 run_case upgrade-fails upgrade
+# the rollback bug this suite missed: exit 0, previous system overwritten
+tmp2="$(mktemp -d)"
+out="$(FAILING=none DESTRUCTIVE=1 DATA_DIR="$tmp2" bash -c '
+  set -Eeuo pipefail; log(){ echo "[INFO] $*"; }; warn(){ echo "[WARN] $*"; }; die(){ echo "[ERROR] $*"; exit 1; }
+  _take_local_src() { LOCAL_SRC=""; REST_ARGS=("$@"); }
+  MNT="$DATA_DIR/mnt"; mkdir -p "$MNT/@blue/etc" "$MNT/@green/etc" "$MNT/@data"
+  _current_slot() { cat "$MNT/@data/current-slot"; }
+  cmd_clean() { :; }; cmd_ca() { :; }
+  cmd_bootstrap() { echo blue > "$MNT/@data/current-slot"; echo 20260821 > "$MNT/@blue/etc/shani-version"; echo 20260821 > "$MNT/@green/etc/shani-version"; }
+  cmd_upgrade() { echo green > "$MNT/@data/current-slot"; echo 20260924 > "$MNT/@green/etc/shani-version"; }
+  cmd_rollback() { echo 20260924 > "$MNT/@blue/etc/shani-version"; }
+  source "'"$here"'/lib/suite.sh"; cmd_suite -p gnome' 2>&1)" || true
+check "destructive rollback: suite FAILED"          "grep -q 'suite FAILED' <<<\"\$out\""
+check "destructive rollback: rollback:restored FAIL" "grep -qE '^\[INFO\]   rollback:restored +FAIL' <<<\"\$out\""
+rm -rf "$tmp2"
 echo
 (( fails == 0 )) && echo "suite-summary: all checks passed" || { echo "suite-summary: $fails check(s) failed"; exit 1; }
