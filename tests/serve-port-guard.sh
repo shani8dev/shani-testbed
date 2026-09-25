@@ -14,10 +14,18 @@ set -u
 TESTBED_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$TESTBED_ROOT" || exit 1
 
-# lib/common.sh reads these at source time (the real `testbed` entrypoint sets
-# them before loading the modules), and it derives CA_DIR from SHANIOS_TEST_DATA.
-# Point that at a temp dir so the test never touches the real harness state.
-MEDIA_ROOT="${SHANIOS_TEST_MEDIA_ROOT:-/home/shrinivaskumbhar/Documents/shani/shani-install-media}"
+# Locate the media repo the same way the `testbed` entrypoint does: the
+# in-container path, an explicit override, or the sibling checkout. Hardcoding a
+# path here would make this test pass locally and fail in CI, where the repo
+# lives at /home/builduser/build.
+for _c in "${SHANI_INSTALL_MEDIA:-}" /home/builduser/build "${TESTBED_ROOT}/../shani-install-media"; do
+  if [[ -n "$_c" && -f "$_c/config/config.sh" && -d "$_c/image_profiles" ]]; then
+    MEDIA_ROOT="$(realpath "$_c")"; break
+  fi
+done
+if [[ -z "${MEDIA_ROOT:-}" ]]; then
+  echo "cannot find the shani-install-media checkout (set SHANI_INSTALL_MEDIA)"; exit 1
+fi
 SCRIPT_DIR="$MEDIA_ROOT/test-env"
 export SHANIOS_TEST_DATA="${SHANIOS_TEST_DATA:-$(mktemp -d)}"
 mkdir -p "$SHANIOS_TEST_DATA"
