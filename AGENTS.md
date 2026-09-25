@@ -119,6 +119,23 @@ containers first.
 
 ## Audit-verified known issues (confirmed present)
 
+- **A container's `swapon` is the host's.** install.sh / shani-deploy swap
+  on a test disk's swapfile inside the container, i.e. on the host kernel;
+  deleted images then stayed allocated (3 found, 31 GB). `_release_test_swap`
+  (disk.sh) turns them off before loops are detached and after every
+  command — keep it when touching teardown. Check: `cat /proc/swaps` lists
+  only the host's own swap. (2026-09-25)
+- **Console on a firmware-booted install:** `iso-install --boot-only
+  --console-exec=CMD [--console-put=LOCAL:REMOTE]` runs as root in systemd's
+  debug shell on a virtio console (hvc0). Not a second serial port (OVMF
+  stopped at the boot menu); not a login (the ISO installer creates no
+  user, `skip_user`). `--expect-tpm-unlock` fails a boot that asks for the
+  passphrase. Used to verify TPM2 enroll → prompt-free boot → remove.
+- **LUKS on the serial console is plymouth's prompt:** type one key at a
+  time (a burst lost all but 2 characters). The kernel prints
+  "Kernel **c**ommand line:" (lower-case c) — the slot check matches it
+  case-insensitively.
+
 - **The shim was never applied until 2026-09-24 — FIXED.** After the split,
   `shani-install-media/test-env/test.sh` was still the old 3544-line harness
   and `run_in_container.sh` never mounted this repo, so every `build.sh test`
