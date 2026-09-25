@@ -44,6 +44,10 @@ jobs:
       # identity pinning, .passed only on success)
       - run: tests/suite-summary.sh
       - run: tests/gate-flow.sh
+      # update-check is the read-only compatibility shim for the retired
+      # `update` command: it must route to shani-deploy --status --check
+      # --json and never install, switch a slot, or run the notification agent
+      - run: tests/update-check.sh
       # iso-install's in-guest runner against os-installer's contract, in an
       # Arch container (docker is on the runner)
       - run: tests/iso-install-runner.sh
