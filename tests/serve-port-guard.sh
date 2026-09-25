@@ -14,32 +14,23 @@ set -u
 TESTBED_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$TESTBED_ROOT" || exit 1
 
-# Locate the media repo the same way the `testbed` entrypoint does: the
-# in-container path, an explicit override, or the sibling checkout. Hardcoding a
-# path here would make this test pass locally and fail in CI, where the repo
-# lives at /home/builduser/build.
-for _c in "${SHANI_INSTALL_MEDIA:-}" /home/builduser/build "${TESTBED_ROOT}/../shani-install-media"; do
-  if [[ -n "$_c" && -f "$_c/config/config.sh" && -d "$_c/image_profiles" ]]; then
-    MEDIA_ROOT="$(realpath "$_c")"; break
-  fi
-done
-if [[ -z "${MEDIA_ROOT:-}" ]]; then
-  echo "cannot find the shani-install-media checkout (set SHANI_INSTALL_MEDIA)"; exit 1
-fi
-SCRIPT_DIR="$MEDIA_ROOT/test-env"
+# This test needs only lib/pki.sh, and must NOT depend on the shani-install-media
+# checkout: in CI shani-testbed is checked out standalone, so there is no sibling
+# media repo and no /home/builduser/build (the other self-tests here are
+# self-contained for the same reason). The media repo's config.sh is where the
+# real die()/log() come from, so provide the same two functions here instead of
+# sourcing across repos — that also keeps the test runnable from a bare checkout.
+die() { echo "[ERROR] $*" >&2; exit 1; }
+log() { echo "[INFO] $*"; }
+
+# lib/common.sh reads SCRIPT_DIR/MEDIA_ROOT at source time (the real `testbed`
+# entrypoint sets them before loading modules) and derives CA_DIR from
+# SHANIOS_TEST_DATA. Point that at a temp dir so the test never touches real
+# harness state.
+MEDIA_ROOT="$TESTBED_ROOT"
+SCRIPT_DIR="$TESTBED_ROOT/test-env"
 export SHANIOS_TEST_DATA="${SHANIOS_TEST_DATA:-$(mktemp -d)}"
 mkdir -p "$SHANIOS_TEST_DATA"
-
-# die()/log() are defined in the media repo's config/config.sh (which `testbed`
-# sources before loading the modules) — without it the guard's die() is undefined
-# and the script falls through to python's bind error instead of refusing.
-# config.sh resolves its paths relative to CWD, so source it from the media repo
-# exactly as `testbed` does (it cd's to MEDIA_ROOT first for this reason), then
-# cd back. It must be sourced in THIS shell, not a subshell: it defines the
-# die()/log() functions cmd_serve calls, and a subshell would discard them.
-# shellcheck source=/dev/null
-source "$MEDIA_ROOT/config/config.sh" || { echo "cannot source $MEDIA_ROOT/config/config.sh (need die/log)"; exit 1; }
-cd "$TESTBED_ROOT" || exit 1
 # shellcheck source=/dev/null
 source lib/common.sh
 # shellcheck source=/dev/null
