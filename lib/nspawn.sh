@@ -422,9 +422,9 @@ _nspawn_full_boot_args() {
 # ------------------------------------------------------------------
 # Local source overlay for `enter --local-src=<dir>`
 # ------------------------------------------------------------------
-# Copies edited shani-deploy/gen-efi/shani-update/check-boot-failure scripts
-# over the package-installed versions inside the slot that's about to be
-# entered — the thing both agents used to do by hand (stage files under
+# Copies edited shani-deploy/gen-efi/check-boot-failure scripts over the
+# package-installed versions inside the slot that's about to be entered —
+# the thing both agents used to do by hand (stage files under
 # test-env/edited-*/, then `cp` them into the running slot from inside an
 # nspawn session) every time they needed to test an unreleased fix.
 #
@@ -432,7 +432,6 @@ _nspawn_full_boot_args() {
 # shani-pkgbuilds/shani-deploy/PKGBUILD installs at /usr/local/bin/<name> —
 # its package() step strips the .sh extension at build time. So:
 #   shani-deploy.sh        -> /usr/local/bin/shani-deploy
-#   shani-update.sh        -> /usr/local/bin/shani-update
 #   gen-efi.sh             -> /usr/local/bin/gen-efi
 #   check-boot-failure.sh  -> /usr/local/bin/check-boot-failure
 # run_in_container.sh bind-mounts the sibling shani-deploy checkout

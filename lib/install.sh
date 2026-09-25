@@ -411,8 +411,8 @@ _ensure_systemd_target_services() {
 # (btrfs receive + snapshot, then a manual gen-efi call and a hand-rolled
 # copy of shani-deploy.sh's loader-entry conventions) and skip
 # install.sh/configure.sh entirely — fine for exercising shani-deploy/
-# shani-update/gen-efi against an already-installed system, but it never
-# actually ran the real install path, and left three separate hand-
+# gen-efi against an already-installed system, but it never actually ran
+# the real install path, and left three separate hand-
 # maintained reimplementations of real production logic in this file with
 # no way to notice when the real thing they copied changed. cmd_install/
 # cmd_configure instead run THOSE two scripts — unmodified, from the
