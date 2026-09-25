@@ -60,7 +60,7 @@ the ISO — not a home for the deploy/update scripts themselves. `shani-deploy`
 ships as a real pacman package baked into every profile image (see
 `image_profiles/*/package-list.txt`); this harness exercises exactly that
 packaged binary, unmodified, from inside a real received image. Nothing here
-vendors or patches `shani-deploy`/`shani-update`/`gen-efi`.
+vendors or patches `shani-deploy`/`gen-efi`.
 
 ## What it does
 
@@ -75,14 +75,14 @@ directly by the dispatcher at the bottom:
 | `ca [extra-host ...]` | `test.sh`'s `cmd_ca` | Generates a throwaway CA + a leaf cert for `downloads.shani.dev`, plus one more per extra hostname given — see "The local mirror" below |
 | `bootstrap -p <profile> [-d latest\|stable\|<date>] [--encrypted]` | `test.sh`'s `cmd_bootstrap` | Runs the REAL `install.sh`+`configure.sh` (calls `cmd_install`/`cmd_configure` directly — real partitioning, optional LUKS, Btrfs subvolumes, image extraction, UKI generation/signing, boot-entry write), then one genuinely test-only step: trust-anchoring this session's throwaway CA into both `@blue`/`@green` slots. Requires `ca` to have been run first. As a side effect of its real install+configure pass it produces `disk/install.img` — the bootable whole-disk image `qemu`/`gui` prefer |
 | `serve [port] [docroot] [cert-host]` | `test.sh`'s `cmd_serve` | Serves a docroot (default `OUTPUT_DIR`) as-is over real HTTPS as a stand-in for a CA'd hostname (default `downloads.shani.dev`) — see "The local mirror" below for standing up a second instance for a second hostname |
-| `enter <blue\|green> [--boot] [--local-src=<dir>]` | `test.sh`'s `cmd_enter` | Enters a slot via `systemd-nspawn`, looking exactly like a booted ShaniOS system to `shani-deploy`/`shani-update`. `--local-src=/opt/shani-deploy/scripts` overlays the sibling `shani-deploy` checkout's CURRENT scripts (and its `systemd/{system,user}/` units) over the package-installed ones — see "Testing edited scripts" below |
+| `enter <blue\|green> [--boot] [--local-src=<dir>]` | `test.sh`'s `cmd_enter` | Enters a slot via `systemd-nspawn`, looking exactly like a booted ShaniOS system to the deploy and system tools. `--local-src=/opt/shani-deploy/scripts` overlays the sibling `shani-deploy` checkout's CURRENT scripts (and its `systemd/{system,user}/` units) over the package-installed ones — see "Testing edited scripts" below |
 | `verify-boot [blue\|green] [seconds] [--local-src=<dir>]` | `test.sh`'s `cmd_verifyboot` | Headless boot smoke test: full `systemd --boot`, console captured to `disk/boot-<slot>-console.log`, then reports whether the target/failed units look healthy. No display or TTY needed — CI-friendly. `--local-src` works exactly as it does for `enter` — **use it whenever verifying a unit-file change**, since a bootstrapped image's baked-in units can be stale relative to the repo's current working tree otherwise |
 | `install -p <profile> [-d latest\|stable\|<date>] [--encrypted]` | `test.sh`'s `cmd_install` | Runs the REAL, unmodified `os-installer-config/scripts/install.sh` against a fresh whole-disk loop image (partitioning, optional LUKS, Btrfs subvolumes, image extraction) — see "install / configure" below. Writes `disk/install.img` (default 24G, override with `INSTALL_DISK_SIZE`): the only layout `install.sh` can produce (it partitions a whole disk itself) and the only one that's actually bootable via OVMF, since `qemu`/`gui` prefer it |
 | `configure -p <profile> [--encrypted]` | `test.sh`'s `cmd_configure` | Runs the REAL, unmodified `os-installer-config/scripts/configure.sh` (locale/hostname/user/Secure Boot/UKI) against `install`'s result — see "install / configure" below. Populates `disk/install.img`'s ESP with the signed UKI and boot entries (`gen-efi.sh`/`finalize_boot_entries`) — what makes `install.img` bootable for `qemu`/`gui` |
-| `upgrade [--local-src=<dir>] [extra shani-deploy args]` | `test.sh`'s `cmd_upgrade` | Calls `shani-deploy` **directly** (`--force --channel latest --skip-self-update`) — a real, complete deploy: download, SHA256+GPG verify, extract, `gen-efi` UKI generation/signing, boot-entry write. Does NOT go through `shani-update` (which needs a real display to open its progress terminal) |
-| `update-check [--local-src=<dir>] [extra shani-update args]` | `test.sh`'s `cmd_updatecheck` | Exercises `shani-update.sh` **itself**: its GUI-dialog fallback chain (fails over — no display here) then a genuine console-approval prompt, fed `y` via an allocated pty (`script`). Proves shani-update's own dialog/prompt/decision logic; its `shani-deploy` hand-off (and its `--rollback` path) still needs a real display, so this does **not** complete an actual deploy — use `upgrade` for that |
+| `upgrade [--local-src=<dir>] [extra shani-deploy args]` | `test.sh`'s `cmd_upgrade` | Calls `shani-deploy` **directly** (`--force --channel latest --skip-self-update`) — a real, complete deploy: download, SHA256+GPG verify, extract, `gen-efi` UKI generation/signing, boot-entry write. |
+| `update-check [--local-src=<dir>]` | `test.sh`'s `cmd_updatecheck` | Compatibility smoke check for the replacement update path: runs the read-only `shani-deploy --status --check --json` contract consumed by Shani Cassini and its update agent. It does not install, switch slots, run the notification agent, or change state; use `upgrade` or `rollback` for those operations |
 | `reboot` | `test.sh`'s `cmd_reboot` | Re-enters whichever slot `/data/current-slot` now points at |
-| `rollback [--local-src=<dir>]` | `test.sh`'s `cmd_rollback` | Calls `shani-deploy --rollback` directly, same direct-call reasoning as `upgrade` — `shani-update`'s `--rollback` also routes through the display-needing terminal wrapper |
+| `rollback [--local-src=<dir>]` | `test.sh`'s `cmd_rollback` | Calls `shani-deploy --rollback` directly, same direct-call reasoning as `upgrade` |
 | `cycle -p <profile>` | `test.sh`'s inline `cycle` case | `ca` (if missing) → `bootstrap` → `serve` (background) → `upgrade` → `reboot` in one go |
 | `qemu [--vnc[=port]]` | `test.sh`'s `cmd_qemu` | A genuine UEFI boot (via OVMF) of the real bootloader/kernel/UKI `shani-deploy` produced — **host-only**, run `test-env/test.sh qemu` directly, not through `build.sh test`. Which image it boots is resolved by `_resolve_qemu_boot_drives` (env `SHANIOS_TEST_QEMU_DISK`, default `auto`): prefers `disk/install.img` (produced by `install`+`configure`/`bootstrap` — the only bootable layout), falling back to the empty `disk/root.img`+`disk/esp.img` pair with a warning. Also wires up a virtio-serial channel for `qemu-guest-agent` (every profile ships it via `shani-video-guest`), matching what a real libvirt-managed VM provides. `--vnc[=port]` (default 5700) serves the real framebuffer over VNC-over-websocket instead of opening a local GTK window — confirmed live: QEMU's own `websocket=` vnc suboption opens both raw VNC (5900) and the websocket bridge, no separate `websockify` needed — open it via `watch`'s Desktop panel, or any VNC client at `localhost:5900` |
 | `watch [--port=N]` | `test.sh`'s `cmd_watch` | **Host-only** local dashboard (default `http://127.0.0.1:8090/`) to actually *see* a boot instead of grepping log files afterward: live-tails whichever `*-console.log` is newest (from `desktop` or `verify-boot`), plus a noVNC panel for a `qemu --vnc` session. Pure stdlib `python3 http.server`, nothing leaves `127.0.0.1` |
@@ -159,7 +159,7 @@ stale.
 
 ### Testing edited scripts
 
-Testing an unreleased fix to `shani-deploy`/`gen-efi`/`shani-update`/
+Testing an unreleased fix to `shani-deploy`/`gen-efi`/
 `check-boot-failure` no longer means manually `cp`-ing edited files into a
 running `nspawn` session and remembering that it only "sticks" because the
 overlay's upper layer persists across `enter` calls. `enter <slot>
@@ -182,10 +182,11 @@ Naming convention: `<dir>/<name>.sh`, where `<name>` matches exactly what
 `shani-pkgbuilds/shani-deploy/PKGBUILD`'s `package()` installs at
 `/usr/local/bin/<name>` (it strips the `.sh` extension at package time) —
 so `shani-deploy.sh` overlays `/usr/local/bin/shani-deploy`, `gen-efi.sh`
-overlays `/usr/local/bin/gen-efi`, and so on for `shani-update.sh`/
-`check-boot-failure.sh`. Any other `*.sh` file is applied the same way if a
-same-named file already exists at `/usr/local/bin` in the slot; anything
-that doesn't match is skipped with a warning rather than silently ignored.
+overlays `/usr/local/bin/gen-efi`, and `check-boot-failure.sh` overlays
+`/usr/local/bin/check-boot-failure`. Any other `*.sh` file is applied the
+same way if a same-named file already exists under `/usr/local/bin` in the
+slot; anything that doesn't match is skipped with a warning rather than
+silently ignored.
 
 This lands in the `nspawn` overlay's upper layer — exactly like any other
 write made from inside a session — never in `@blue`/`@green` itself and
@@ -417,10 +418,10 @@ would mean testing a modified binary, not what actually ships). Instead:
   matches, and swaps in the `systemd-inhibit` stub script (there's no
   logind session in a one-shot `nspawn` invocation)
 
-Net effect: the real, unmodified `shani-update`/`shani-deploy` binaries
-already inside the received image hit `https://downloads.shani.dev` exactly
-as they would in production, and land on `cmd_serve` instead — real
-HTTPS, real cert validation, zero code changes anywhere.
+Net effect: the real, unmodified `shani-deploy` binary already inside the
+received image hits `https://downloads.shani.dev` exactly as it would in
+production, and lands on `cmd_serve` instead — real HTTPS, real cert
+validation, zero code changes anywhere.
 
 The on-disk layout of `OUTPUT_DIR` and the real R2/SourceForge remote are
 **identical** (compare `scripts/upload.sh`'s `R2_SUBPATH="${PROFILE}/${RESOLVED_DATE}"`
@@ -486,7 +487,7 @@ needed, since the slot already trusts the whole CA from `bootstrap`.
 `os-installer-config/scripts/install.sh`/`configure.sh`, driven purely by
 the `OSI_*` environment variables the real `os-installer` GUI sets — no GUI
 involved or needed, same principle as this harness exercising the real
-`shani-deploy`/`shani-update` binaries unmodified. **`cmd_bootstrap` now
+`shani-deploy` binary unmodified. **`cmd_bootstrap` now
 calls these two directly** (this used to be a separate, faster
 fabricate-only path — `btrfs receive` + snapshot + a manual `gen-efi
 configure` call, skipping install.sh/configure.sh entirely — since
@@ -586,9 +587,8 @@ builder image doesn't already carry (`sudo`, `parted`, `cryptsetup`,
 ./run_in_container.sh build.sh test reboot
 ./run_in_container.sh build.sh test rollback   # if you want to test the recovery path
 
-# to exercise shani-update.sh itself (the interactive dialog/prompt layer
-# upgrade/rollback skip — see the command table above for what it does and
-# does not prove):
+# to smoke-test the read-only status contract used by Shani Cassini's
+# update agent (it does not install or change system state):
 ./run_in_container.sh build.sh test update-check --local-src=/opt/shani-deploy/scripts
 
 # or all of the above in one go:
@@ -700,9 +700,9 @@ paper over them:
 ## Running GUI apps from the test harness (X11/Wayland forwarding)
 
 `cmd_enter`/`cmd_desktop` boot a slot headlessly; there is no desktop to see.
-To actually *render* a GTK app (yad dialogs, gnome-terminal, the
-`shani-update` progress window) against the host's real display, the harness
-forwards the host's X11 or Wayland socket through both layers:
+To actually *render* a GTK app (for example, Shani Cassini's Updates page)
+against the host's real display, the harness forwards the host's X11 or
+Wayland socket through both layers:
 
 1. **Docker layer** (`run_in_container.sh`) — `X11_FORWARD_ARGS` /
    `WAYLAND_FORWARD_ARGS`, conditional on the host actually having a socket
@@ -733,7 +733,7 @@ plain 2D dialog, and required no changes to any real (non-test) code.
 # onto the slot's /usr/local/bin, so you're testing the real edited code.
 ./run_in_container.sh build.sh test enter blue \
     --local-src=/opt/shani-deploy/scripts \
-    -- bash -c 'shani-update --health --terminal'
+    -- bash -c '(shani-cassini --section=updates &); sleep 25'
 ```
 
 To *see* the result, screenshot it from inside the slot — ImageMagick's
@@ -760,7 +760,7 @@ build in the slot:
 - **`--image-on-top` was never a yad flag.** Every yad invocation failed to
   parse its command line ("Unknown option --image-on-top", exit 255) *before*
   ever opening a display, and the backend-detection logic treated rc=255 as a
-  "bad backend, try next" — so every shani-update dialog had **never actually
+  "bad backend, try next" — so every update dialog had **never actually
   rendered via yad, on any real system, ever**, silently falling through to
   notify-send. Removed; `--image=`/`--on-top` already provide the functionality.
 - **Three yad icon crashes** (broken SVG rasterizer via glycin-svg bwrap
