@@ -99,6 +99,45 @@ cmd_serve() {
     bind_host="0.0.0.0"
   fi
 
+  # Refuse to start if the port is already held. A previous `serve` that was
+  # killed at the shell level (or a container left running because the wrapper
+  # was interrupted) keeps answering with ITS docroot, so this invocation dies
+  # with "Address already in use" while the stale server silently serves the
+  # wrong content. That is far worse than a hard failure: the caller sees a
+  # reachable feed that is missing exactly the files it is looking for, which
+  # looks identical to "the feed is unreachable" and cost a long debugging
+  # session to trace. Fail here instead, naming the port and the likely cause.
+  #
+  # Probe by actually BINDING the port rather than by parsing `ss`: a listener
+  # owned by a process in another network namespace is invisible to `ss -ltn`
+  # from here, so the ss check silently passes and we land in python's bind
+  # error anyway — the exact case this is meant to catch. A bind probe asks the
+  # kernel the same question python will, in this namespace, and closes the
+  # socket again immediately.
+  #
+  # Exit-code convention matches the shell, so the `if` below reads correctly:
+  # 0 = the port is free (we bound it), 1 = it is held. Only EADDRINUSE (98)
+  # means "a previous serve is still holding it"; any other errno — notably
+  # EACCES (13) on a privileged port when not root, or EADDRNOTAVAIL (99, which
+  # is 48 on macOS but never on Linux) — is a different problem and must NOT be
+  # reported as a stale server, or the guard refuses a port that is actually free.
+  if ! python3 - "$bind_host" "$port" <<'PROBE'
+import errno, socket, sys
+host, port = sys.argv[1], int(sys.argv[2])
+# 0.0.0.0 must be probed as 0.0.0.0 (the wildcard), not as a connectable addr.
+s = socket.socket()
+try:
+    s.bind((host, port))
+except OSError as e:
+    sys.exit(1 if e.errno == errno.EADDRINUSE else 0)  # 1 = held; 0 = some other reason
+finally:
+    s.close()
+sys.exit(0)   # bound it, so the port was free
+PROBE
+  then
+    die "Port ${port} is already in use — a previous 'test serve' is probably still running and would serve ITS docroot instead of ${docroot}. Stop it first (docker ps / pkill -f 'test serve'), or pass a different port."
+  fi
+
   log "Serving ${docroot} on https://${bind_host}:${port} (CN=${cert_host})"
   log "Available profiles: $(find "$docroot" -maxdepth 1 -mindepth 1 -type d -printf '%f ' 2>/dev/null)"
 

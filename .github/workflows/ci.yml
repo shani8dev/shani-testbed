@@ -44,6 +44,10 @@ jobs:
       # identity pinning, .passed only on success)
       - run: tests/suite-summary.sh
       - run: tests/gate-flow.sh
+      # serve must refuse a port a previous serve still holds: a stale server
+      # keeps answering with ITS docroot, which is indistinguishable from an
+      # unreachable feed (found live, cost a long debugging session)
+      - run: tests/serve-port-guard.sh
       # update-check is the read-only compatibility shim for the retired
       # `update` command: it must route to shani-deploy --status --check
       # --json and never install, switch a slot, or run the notification agent
