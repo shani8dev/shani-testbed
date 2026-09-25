@@ -8,8 +8,8 @@ Two groups of tools:
     virtual display, then screenshot it, read its accessibility tree, click,
     type, press keys, scroll, drag, wait for windows — and finally get the
     app's stdout and exit code. Backed by `test.sh app --control=...`.
-  * Harness commands: status, verify-boot, probe, upgrade, rollback, suite,
-    vmspawn, ... (an allow-list), returning their output.
+  * Harness commands: status, verify-boot, probe, update-check, upgrade,
+    rollback, suite, vmspawn, ... (an allow-list), returning their output.
 
 Transport: MCP over stdio (newline-delimited JSON-RPC 2.0), stdlib only.
 
@@ -222,7 +222,7 @@ TOOLS = [
     ("app_focus", "Give keyboard focus to the window matching the title regex.", {"title": {"type": "string"}}, ["title"]),
     ("app_status", "Is the app still running (or its exit code)?", {}, []),
     ("app_stop", "Stop the session; returns the app's stdout, stderr and exit code.", {}, []),
-    ("harness_run", "Run a harness command (e.g. status, verify-boot blue, probe blue --exec=..., upgrade --local-src=..., suite). Returns exit code + output tail.",
+    ("harness_run", "Run a harness command (e.g. status, update-check, verify-boot blue, probe blue --exec=..., upgrade --local-src=..., suite). Returns exit code + output tail.",
      {"command": {"type": "string"}, "args": {"type": "array", "items": {"type": "string"}, "default": []}, "timeout": {"type": "integer", "default": 3600}}, ["command"]),
 ]
 
