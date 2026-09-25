@@ -1,4 +1,4 @@
-# Shared by upgrade / update-check / rollback: resolve the current slot, make
+# Shared by update-check / upgrade / rollback: resolve the current slot, make
 # sure the container can run nspawn, and build NSPAWN_ENTER_ARGS for <cmd...>
 # (honouring --local-src via LOCAL_SRC, set by _take_local_src). Sets
 # CURRENT_SLOT. Doesn't exec: cycle needs control back afterwards.
@@ -44,19 +44,13 @@ cmd_upgrade() {
   set -- "${rest[@]}"
   [[ -z "$skip_self" && -n "${LOCAL_SRC:-}" ]] && die "upgrade: --self-update and --local-src contradict each other"
 
-  # Calls shani-deploy directly, not shani-update: shani-update is only an
-  # interactive front-end (GUI dialog / console prompt) that then pkexecs
-  # shani-deploy — and unconditionally wraps that in a gnome-terminal
-  # window for user visibility, which needs a real display even after the
-  # prompt is approved (confirmed live: "Cannot open display" once
-  # shani-update tried to launch it, even after the console-approval path
-  # was fully proven to work via an allocated pty). shani-deploy is the
-  # real script that does the actual work, and its own check_root() only
-  # pkexecs/sudo's when EUID != 0 — since this nspawn session already runs
-  # as root, calling it directly needs none of that, and shani-deploy has
-  # no interactive prompts of its own (verified: no `read -rp` anywhere in
-  # it) — it's designed to run fully unattended already, same as
-  # shani-update's pkexec'd child and the production systemd timer units.
+  # Calls shani-deploy directly. The deploy engine is the production path;
+  # its status contract is also what Shani Cassini and its agent consume.
+  # shani-deploy's own check_root() only pkexecs/sudo's when EUID != 0 —
+  # since this nspawn session already runs as root, calling it directly
+  # needs none of that, and shani-deploy has no interactive prompts of its
+  # own (verified: no `read -rp` anywhere in it) — it's designed to run
+  # fully unattended, same as the production systemd timer units.
   # --skip-self-update is essential here, not optional: without it,
   # shani-deploy's OWN self_update() would fetch and exec the "official"
   # published script mid-run, silently discarding the --local-src-overlaid
@@ -70,49 +64,20 @@ cmd_upgrade() {
   systemd-nspawn "${NSPAWN_ENTER_ARGS[@]}"
 }
 
+
 # ------------------------------------------------------------------
-# update-check   [--local-src=<dir>] [extra shani-update args...]
+# update-check   [--local-src=<dir>]
 # ------------------------------------------------------------------
-# cmd_upgrade calls shani-deploy directly and never touches shani-update.sh
-# at all — this command exists specifically to exercise shani-update.sh
-# itself for real: its GUI-dialog fallback chain, its console-approval
-# prompt, and its decision logic (install/postpone). Complements
-# cmd_upgrade, doesn't replace it.
+# Compatibility smoke check for the replacement update path. It runs the
+# read-only status contract used by Shani Cassini and its agent; it never
+# installs, switches slots, or runs the notification agent.
 cmd_updatecheck() {
   _take_local_src "$@"
   set -- "${REST_ARGS[@]}"
-
-  _prepare_in_current_slot shani-update --force --skip-self-update "$@"
-
-  # shani-update.sh is real and unmodified — it tries a GUI dialog first
-  # (no display here, so yad/zenity/kdialog all correctly fail over), then
-  # falls back to a genuine console prompt, but ONLY when
-  # `[[ -t 0 && -t 1 ]]` — confirmed live that a plain non-tty invocation
-  # always logs "No interactive interface — defaulting to postpone" and
-  # never even reaches its decision logic. There's no flag to skip this
-  # (by design), so give it exactly what a human at a real terminal would:
-  # `script` allocates a genuine pty and relays its own stdin into it like
-  # a real keystroke, so feeding it "y\n" is the same input a person
-  # approving the update would type.
-  #
-  # NOTE what this does NOT prove: shani-update's own _launch_deploy (the
-  # actual shani-deploy hand-off, and its --rollback path too) always
-  # wraps that in a gnome-terminal window for visibility — confirmed live
-  # this fails with "Cannot open display" even right after the approval
-  # prompt succeeds, in a container with no real display. This command
-  # proves shani-update's own dialog/prompt/decision code works; it does
-  # NOT complete an actual deploy — use `upgrade` for that (it calls
-  # shani-deploy directly, skipping this whole layer).
-  if ! command -v script &>/dev/null; then
-    warn "'script' (util-linux) not found — can't allocate a pty for shani-update's console approval; it will default to postponing"
-    systemd-nspawn "${NSPAWN_ENTER_ARGS[@]}"
-    return $?
-  fi
-
-  log "Running shani-update inside @${CURRENT_SLOT} via an allocated pty, answering the update-approval prompt with 'y' (the same input a real interactive session would give)"
-  local cmd_str
-  printf -v cmd_str '%q ' systemd-nspawn "${NSPAWN_ENTER_ARGS[@]}"
-  printf 'y\n' | script -qec "$cmd_str" /dev/null
+  [[ $# -eq 0 ]] || die "update-check takes no extra arguments; it is a read-only status check"
+  _prepare_in_current_slot shani-deploy --status --check --json
+  log "Checking shani-deploy's read-only status consumed by Shani Cassini's update agent"
+  systemd-nspawn "${NSPAWN_ENTER_ARGS[@]}"
 }
 
 cmd_reboot() {
@@ -127,12 +92,8 @@ cmd_rollback() {
   _take_local_src "$@"
   set -- "${REST_ARGS[@]}"
 
-  # shani-deploy --rollback directly, not shani-update --rollback: same
-  # reason as cmd_upgrade — shani-update's _run_rollback() ALSO routes
-  # through _launch_deploy (the gnome-terminal wrapper that needs a real
-  # display), even though it's not asking for any interactive approval
-  # first. shani-deploy's own -r/--rollback flag does the identical real
-  # work directly.
+  # shani-deploy --rollback directly. Rollback is a deploy-engine operation,
+  # just like upgrade; no interactive update front-end is involved.
   _prepare_in_current_slot shani-deploy --rollback "$@"
   log "Rolling back FROM @${CURRENT_SLOT} (this restores the *other* slot and repoints boot at it)"
   systemd-nspawn "${NSPAWN_ENTER_ARGS[@]}"

@@ -13,7 +13,7 @@
 #   lib/nspawn.sh   slot overlay, --local-src overlay, nspawn args, the
 #                   shared background-boot lifecycle
 #   lib/boot.sh     `enter`, `verify-boot`, `probe`, `desktop`
-#   lib/deploy.sh   real shani-deploy/shani-update (`upgrade`, `update-check`,
+#   lib/deploy.sh   real shani-deploy (`update-check`, `upgrade`,
 #                   `rollback`, `reboot`, `cycle`)
 #   lib/app.sh      `app`: run a GUI app inside a slot and drive it (click,
 #                   type, key, screenshot, window waits/asserts)

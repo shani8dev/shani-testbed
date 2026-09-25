@@ -72,7 +72,9 @@ check "fresh: firmware boot of the updated slot" "has 'CALL iso_install -p gnome
 check "fresh: firmware boot after rollback"      "has 'CALL iso_install -p gnome --iso=installed --boot-only --expect-slot=blue'"
 check "no firmware boot on the R2 install"       "[[ \$(grep -c 'boot-only' <<<\"\$OUT\") -eq 2 ]]"
 check "upgrade: existing user from stable"       "has 'CALL bootstrap -p gnome -d 20260807 --from-r2'"
-check "upgrade: no launchers on R2 install"      "has 'CALL slot_test green boot-health fresh-user disk-layout'"
+check "upgrade: no launchers on R2 install"      "has 'CALL slot_test green boot-health fresh-user disk-layout apparmor deploy-status'"
+check "fresh: candidate checks apparmor + status" "has 'CALL slot_test green boot-health fresh-user launchers disk-layout apparmor deploy-status'"
+check "iso: no candidate-only checks on stable"   "has 'CALL slot_test blue boot-health fresh-user launchers disk-layout' && ! grep 'CALL slot_test blue' <<<\"\$OUT\" | grep -q apparmor"
 check "no --force anywhere in the gate"          "! grep 'CALL upgrade' <<<\"\$OUT\" | grep -qv -- '--no-force'"
 
 run iso-broken "FAIL_ISO=1"

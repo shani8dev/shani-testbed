@@ -39,7 +39,7 @@ Commands:
               enter blue /mnt/repo/scripts/foo.sh
               --local-src=/opt/shani-deploy/scripts overlays the sibling
               shani-deploy checkout's CURRENT scripts (shani-deploy,
-              gen-efi, shani-update, check-boot-failure, shani-health,
+              gen-efi, check-boot-failure, shani-health,
               shani-reset, shani-user-setup, beesd-setup) and systemd units
               over the package-installed ones — see "Testing edited
               scripts" in README.md.
@@ -94,20 +94,16 @@ Commands:
   upgrade     [--local-src=<dir>] [extra shani-deploy args...]   Real deploy:
               calls shani-deploy directly (--force --channel latest
               --skip-self-update) — download, SHA256+GPG verify, extract,
-              gen-efi UKI generation/signing, boot-entry write. Does NOT go
-              through shani-update (needs a real display for its progress
-              terminal) — see update-check for that layer specifically.
-  update-check [--local-src=<dir>] [extra shani-update args...]   Real
-              shani-update.sh: GUI-dialog fallback chain (fails over, no
-              display here) then a genuine console-approval prompt, fed 'y'
-              via an allocated pty. Proves shani-update's own dialog/prompt/
-              decision logic — its shani-deploy hand-off still needs a real
-              display, so this does NOT complete an actual deploy; use
-              `upgrade` for that.
+              gen-efi UKI generation/signing, boot-entry write.
+  update-check [--local-src=<dir>]   Compatibility smoke check for the
+              replacement update path: enters the current slot and runs
+              `shani-deploy --status --check --json`, the read-only status
+              contract consumed by Shani Cassini and its update agent.
+              It never installs, switches slots, runs the notification agent,
+              or changes state; use `upgrade` or `rollback` for those.
   reboot      Simulate a reboot (re-enters whichever slot is now current)
   rollback    [--local-src=<dir>]   Real rollback: calls shani-deploy
-              --rollback directly (same direct-call reasoning as upgrade —
-              shani-update's --rollback ALSO needs a real display)
+              --rollback directly (as upgrade does)
   cycle       -p <profile> [--local-src=<dir>]   ca (if missing) → bootstrap →
               serve (background) → upgrade → reboot
   suite       [-p <profile>] [-d <sel>] [--local-src=<dir>] [--keep] [--encrypted]
