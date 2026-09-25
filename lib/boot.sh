@@ -498,7 +498,12 @@ set -uo pipefail
 # even with WAYLAND_DISPLAY=wayland-shani-probe exported beforehand) — so
 # this just reflects that reality rather than attempting to override it.
 export WAYLAND_DISPLAY=wayland-0
-MUTTER_NO_XWAYLAND=1 gnome-shell --headless --virtual-monitor=1280x800 >/tmp/desktop-probe-shell.log 2>&1 &
+# GNOME 50 ignores MUTTER_NO_XWAYLAND and starts Xwayland anyway; this
+# environment's Xwayland segfaults (the EGL vendor issue above) and the shell
+# then exits ("X Wayland crashed; exiting"). --no-x11 is its own switch.
+nox11=""
+gnome-shell --help 2>&1 | grep -q -- '--no-x11' && nox11=--no-x11
+MUTTER_NO_XWAYLAND=1 gnome-shell --headless $nox11 --virtual-monitor=1280x800 >/tmp/desktop-probe-shell.log 2>&1 &
 GSPID=$!
 ready=0
 for i in $(seq 1 "$DESKTOP_PROBE_SETTLE"); do
@@ -525,12 +530,37 @@ fi
 # introspect check passed immediately, yet the very next call still hit
 # "Object does not exist at path /org/gnome/Shell/Screenshot" every time.
 # Retry the REAL call itself instead of trusting introspection as a proxy.
+# The Screenshot API only answers a caller that owns one of its allowed bus
+# names (DBusSenderChecker, ui/screenshot.js). GNOME 50 allows only
+# org.gnome.SettingsDaemon.MediaKeys and the screenshot portal backend,
+# org.freedesktop.impl.portal.desktop.gnome (older shells also allowed
+# org.gnome.Screenshot) - neither runs in this headless session, so the
+# probe holds the portal backend's name, the path real screenshot requests
+# take. The shell learns owners from NameOwnerChanged: wait before calling.
+shot() {
+  if python3 -c 'import gi' 2>/dev/null; then
+    python3 - "$DESKTOP_PROBE_OUT" <<'PY'
+import sys, gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+for name in ("org.freedesktop.impl.portal.desktop.gnome", "org.gnome.Screenshot"):
+    bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                  "RequestName", GLib.Variant("(su)", (name, 4)), None, 0, -1, None)
+import time; time.sleep(2)
+ok, _ = bus.call_sync("org.gnome.Shell", "/org/gnome/Shell/Screenshot", "org.gnome.Shell.Screenshot",
+                      "Screenshot", GLib.Variant("(bbs)", (False, False, sys.argv[1])),
+                      None, 0, 30000, None).unpack()
+sys.exit(0 if ok else 1)
+PY
+  else
+    gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Screenshot \
+      --method org.gnome.Shell.Screenshot.Screenshot false false "$DESKTOP_PROBE_OUT"
+  fi
+}
 rc=1
 for i in $(seq 1 "$DESKTOP_PROBE_SETTLE"); do
-  call_err=$(gdbus call --session --dest org.gnome.Shell \
-    --object-path /org/gnome/Shell/Screenshot \
-    --method org.gnome.Shell.Screenshot.Screenshot \
-    false false "$DESKTOP_PROBE_OUT" 2>&1)
+  call_err=$(shot 2>&1)
   rc=$?
   if [ "$rc" -eq 0 ]; then
     break
@@ -538,6 +568,7 @@ for i in $(seq 1 "$DESKTOP_PROBE_SETTLE"); do
   echo "screenshot attempt $i/$DESKTOP_PROBE_SETTLE failed: $call_err" >&2
   sleep 1
 done
+kill -0 "$GSPID" 2>/dev/null || { echo "gnome-shell exited during the probe:" >&2; tail -20 /tmp/desktop-probe-shell.log >&2; }
 kill "$GSPID" 2>/dev/null
 wait 2>/dev/null
 exit $rc
