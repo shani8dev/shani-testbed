@@ -148,6 +148,8 @@ cmd_gate() {
     (( rc == 0 )) || failed=1
     return "$rc"
   }
+  # apparmor / deploy-status run on the CANDIDATE (fresh, upgrade): the ISO
+  # phase runs stable, which may predate a fix they check for.
   _gate_checks() {  # <label> <slot-test...> — the checks on GATE_SLOT
     local ph="$1"; shift
     _gate_step "${ph}:verify-boot" cmd_verifyboot "$GATE_SLOT" 120 || return 1
@@ -233,7 +235,7 @@ cmd_gate() {
       if [[ "$cand_date" > "$before" ]]; then
         _gate_step fresh:deploy _gate_deploy --channel=latest --no-force \
           && _gate_identity_step fresh:identity "$cand_date" \
-          && _gate_checks fresh boot-health fresh-user launchers disk-layout \
+          && _gate_checks fresh boot-health fresh-user launchers disk-layout apparmor deploy-status \
           && _gate_step fresh:firmware-boot-updated _gate_fw_boot "$GATE_SLOT" \
           && _gate_step fresh:rollback cmd_rollback \
           && _gate_identity_step fresh:identity-rolledback "$before" \
@@ -254,7 +256,7 @@ cmd_gate() {
       && _gate_identity_step upgrade:identity-stable "$stable_date" \
       && _gate_step upgrade:deploy _gate_deploy --channel=latest --no-force \
       && _gate_identity_step upgrade:identity "$cand_date" \
-      && _gate_checks upgrade boot-health fresh-user disk-layout \
+      && _gate_checks upgrade boot-health fresh-user disk-layout apparmor deploy-status \
       && _gate_step upgrade:rollback cmd_rollback \
       && _gate_identity_step upgrade:identity-rolledback "$stable_date" \
       && _gate_step upgrade:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 || true
