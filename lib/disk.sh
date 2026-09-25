@@ -252,6 +252,22 @@ _make_loop_partition_compat() {
 # "shani_root", i.e. exactly $ROOTLABEL, and never closes it) or at the raw
 # partition otherwise — so this is correct whether called before install.sh
 # has run at all or reattaching to an already-encrypted disk later.
+# An encrypted disk that this container did not install (iso-install: the
+# VM's installer ran luksFormat; or any later run_in_container.sh) has no
+# open mapper, so shani_root would point at the raw LUKS partition and every
+# mount fails ("Couldn't read current-slot marker"). Open it as install.sh
+# does - mapper "shani_root" - with the test passphrase (the one iso-install
+# typed at boot, else SHANIOS_TEST_LUKS_PIN).
+_ensure_luks_open() {
+  local loop="$1" pin pinfile="${DATA_DIR}/${ISOVM_DIR_NAME:-isovm}/luks-pin"
+  [[ -e /dev/mapper/shani_root ]] && return 0
+  cryptsetup isLuks "${loop}p2" 2>/dev/null || return 0
+  if [[ -f "$pinfile" ]]; then pin=$(cat "$pinfile"); else pin="${SHANIOS_TEST_LUKS_PIN:-shanios-test-passphrase}"; fi
+  printf '%s' "$pin" | cryptsetup open --key-file=- "${loop}p2" shani_root >&2 \
+    || die "cannot open the encrypted root (${loop}p2) with the test passphrase"
+  log "Opened the encrypted root ${loop}p2 as /dev/mapper/shani_root" >&2
+}
+
 _ensure_install_by_label_symlinks() {
   local loop="$1"
   mkdir -p /dev/disk/by-label
@@ -276,6 +292,7 @@ _ensure_install_attached() {
   loop="$(_ensure_single_loop "$INSTALL_IMG")"
   echo "$loop" > "${DATA_DIR}/.install_loop"
   _make_loop_partition_compat "$loop"
+  _ensure_luks_open "$loop"
   _ensure_install_by_label_symlinks "$loop"
   echo "$loop"
 }

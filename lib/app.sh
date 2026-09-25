@@ -348,7 +348,7 @@ _app_control_loop() {
 }
 
 cmd_app() {
-  local usage_app="Usage: $(basename "$0") app <blue|green> --run=\"cmd\" [--local-src=<dir>] [--display=virtual|host] [--size=WxH] [--out-dir=<dir>] [--timeout=SECS] [ACTIONS...|--script=<file>|--interactive|--control=<dir>]  (see lib/app.sh)"
+  local usage_app="Usage: $(basename "$0") app <blue|green> --run=\"cmd\" [--local-src=<dir>] [--local-pkg=<name|file>] [--display=virtual|host] [--size=WxH] [--out-dir=<dir>] [--timeout=SECS] [ACTIONS...|--script=<file>|--interactive|--control=<dir>]  (see lib/app.sh)"
   local slot="${1:-}"; shift || true
   _require_slot "$slot" "$usage_app"
 
@@ -359,6 +359,8 @@ cmd_app() {
     case "$arg" in
       --run=*)          run="${arg#--run=}" ;;
       --local-src=*)    local_src="${arg#--local-src=}" ;;
+      # an unpublished app: overlay its built package first (as enter/desktop)
+      --local-pkg=*)    export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${arg#--local-pkg=}" ;;
       --display=*)      display_mode="${arg#--display=}" ;;
       --size=*)         size="${arg#--size=}" ;;
       --out-dir=*)      out_dir="${arg#--out-dir=}" ;;

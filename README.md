@@ -846,7 +846,7 @@ command (`status`, `verify-boot`, `probe`, `upgrade`, `rollback`, `suite`,
 claude mcp add shani-harness -- python3 /path/to/shani-testbed/mcp/shani_harness_mcp.py
 ```
 
-Typical agent prompt: *"Start `shani-gui` in the blue slot, walk through every
+Typical agent prompt: *"Start `shani-cassini` in the blue slot, walk through every
 tab, and report UI/UX problems with screenshots."*
 
 ## Requirements

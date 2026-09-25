@@ -22,6 +22,10 @@ run() {
       set -Eeuo pipefail
       log()  { echo "[INFO] $*"; }; warn() { echo "[WARN] $*"; }; die() { echo "[ERROR] $*"; exit 1; }
       MNT="$DATA_DIR/mnt"; mkdir -p "$MNT/@blue/etc" "$MNT/@green/etc" "$MNT/@data" "$DATA_DIR/isovm"
+      # source FIRST: gate.sh defines _gate_pointer/_gate_wait_net, and a stub
+      # defined before it was silently replaced - the test then read the
+      # LIVE latest.txt from R2 and passed only while it said 20260922
+      source "'"$here"'/lib/gate.sh"
       _gate_pointer() { case $2 in latest) echo shanios-20260922-gnome.zst ;; stable) echo shanios-20260807-gnome.zst ;;
                                    iso-latest) echo 20260921 ;; iso-stable) echo 20260518 ;; esac; }
       _gate_wait_net() { :; }
@@ -31,7 +35,10 @@ run() {
       for s in ca clean verifyboot desktop; do eval "cmd_$s() { echo CALL $s \"\$*\"; }"; done
       cmd_slot_test() { echo CALL slot_test "$*"; [[ "${FAIL_STEP:-}" != slot_test ]] || return 3; }
       install_as() { echo blue > "$MNT/@data/current-slot"; echo "$1" > "$MNT/@blue/etc/shani-version"; rm -f "$MNT/@green/etc/shani-version"; }
-      cmd_iso_install() { echo CALL iso_install "$*"; [[ -n "${FAIL_ISO:-}" && "$*" == *20260921* ]] && return 4; install_as "$(grep -oP "(?<=--iso=)[0-9]{8}" <<<"$*")"; }
+      cmd_iso_install() { echo CALL iso_install "$*"
+        if [[ "$*" == *--boot-only* ]]; then   # firmware boot: boots what current-slot names
+          local want; want=$(grep -oP "(?<=--expect-slot=)[a-z]+" <<<"$*"); [[ "$(cat "$MNT/@data/current-slot")" == "$want" ]] || return 6; return 0; fi
+        [[ -n "${FAIL_ISO:-}" && "$*" == *20260921* ]] && return 4; install_as "$(grep -oP "(?<=--iso=)[0-9]{8}" <<<"$*")"; }
       cmd_bootstrap()   { echo CALL bootstrap "$*"; install_as "$(grep -oE "[0-9]{8}" <<<"$*")"; }
       cmd_upgrade() {
         echo CALL upgrade "$*"
@@ -43,7 +50,6 @@ run() {
         local o; o=$(other "$cur"); echo "$remote" > "$MNT/@$o/etc/shani-version"; echo "$o" > "$MNT/@data/current-slot"
       }
       cmd_rollback() { echo CALL rollback; other "$(_current_slot)" > "$MNT/@data/current-slot"; }
-      source "'"$here"'/lib/gate.sh"
       cmd_gate -p gnome '"$*"'
     ' 2>&1)" && RC=0 || RC=$?
   IMG="$(cat "$tmp/gate-gnome.image.passed" 2>/dev/null || true)"
@@ -62,6 +68,9 @@ check "iso: first update = stable, no --force"   "has 'CALL upgrade --self-updat
 check "iso: older stable is not a downgrade"     "has 'no update needed' && has 'not newer than ISO 20260921'"
 check "iso: launchers checked on ISO install"    "has 'CALL slot_test blue boot-health fresh-user launchers disk-layout'"
 check "fresh: candidate on the ISO machine"      "has 'CALL upgrade --self-update --channel=latest --no-force'"
+check "fresh: firmware boot of the updated slot" "has 'CALL iso_install -p gnome --iso=installed --boot-only --expect-slot=green'"
+check "fresh: firmware boot after rollback"      "has 'CALL iso_install -p gnome --iso=installed --boot-only --expect-slot=blue'"
+check "no firmware boot on the R2 install"       "[[ \$(grep -c 'boot-only' <<<\"\$OUT\") -eq 2 ]]"
 check "upgrade: existing user from stable"       "has 'CALL bootstrap -p gnome -d 20260807 --from-r2'"
 check "upgrade: no launchers on R2 install"      "has 'CALL slot_test green boot-health fresh-user disk-layout'"
 check "no --force anywhere in the gate"          "! grep 'CALL upgrade' <<<\"\$OUT\" | grep -qv -- '--no-force'"
@@ -96,12 +105,16 @@ check "for=iso: no image journeys"               "! has 'channel=latest' && ! ha
 run for-iso-broken "FAIL_ISO=1" --for=iso
 check "for=iso broken: fails, no marker"         "[[ -z \$ISO && $RC -ne 0 ]]"
 
+run encrypted "" --encrypted
+check "encrypted: ISO installs use LUKS"         "has 'CALL iso_install -p gnome --iso=20260921 --encrypted' && [[ \$ISO == 20260921 ]]"
+
 run reuse "" --reuse-install
 check "reuse: never writes markers"              "[[ -z \$IMG && -z \$ISO ]]"
 
 OUT="$(DATA_DIR=/nonexistent bash -c 'set -Eeuo pipefail; log(){ :; }; warn(){ :; }; die(){ echo "$*"; exit 1; }
+  source "'"$here"'/lib/gate.sh"
   _gate_pointer() { [[ $2 == latest ]] && echo shanios-20260922-gnome.zst; }
-  source "'"$here"'/lib/gate.sh"; cmd_gate -p gnome --candidate=shanios-20260915-gnome.zst' 2>&1)" || true
+  cmd_gate -p gnome --candidate=shanios-20260915-gnome.zst' 2>&1)" || true
 check "stale --candidate refused" "has 'is not what latest.txt names'"
 echo
 (( fails == 0 )) && echo "gate-flow: all checks passed" || { echo "gate-flow: $fails check(s) failed"; exit 1; }

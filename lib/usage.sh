@@ -124,6 +124,15 @@ Commands:
               installed disk boots through the same firmware. KVM if
               present, else TCG (slow). install.img stays for enter/
               verify-boot/slot-test/upgrade.
+              [--encrypted]            LUKS2 install; the passphrase is typed at
+                                       each boot (one key at a time: plymouth)
+              [--boot-only]            boot the last install again (its NVRAM/TPM)
+              [--expect-slot=blue|green] fail unless firmware booted that slot
+              [--expect-tpm-unlock]    fail if the passphrase is asked (TPM2 unlock)
+              [--console-exec=CMD]     run CMD as root on the booted system, in
+                                       systemd's debug shell on a virtio console
+                                       (only on such boots); prints its output
+              [--console-put=LOCAL:REMOTE] copy a file in first (repeatable)
   gate        -p <profile> [--candidate=<file.zst>] [--skip=iso,fresh,upgrade,desktop] [--keep] [--reuse-install]
               Release gate for promote-stable, the image and the ISO
               separately: iso = the candidate ISO via iso-install, first
@@ -133,7 +142,7 @@ Commands:
               promote-stable.sh --only=iso|image --expect(-iso).
   status      Read-only view: images, loop attachments, by-label links,
               slots, overlays (incl. --local-src files pending revert).
-  app         <blue|green> --run="cmd" [--local-src=<dir>] [--display=virtual|host]
+  app         <blue|green> --run="cmd" [--local-src=<dir>] [--local-pkg=<name|file>] [--display=virtual|host]
               [--size=WxH] [ACTIONS...|--script=F|--interactive|--control=DIR]
               Run a GUI app inside the slot on a private virtual display and
               drive it: wait-window, windows, click/doubleclick/rightclick/

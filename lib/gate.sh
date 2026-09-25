@@ -68,8 +68,8 @@ _gate_identity() {  # <expected YYYYMMDD> — current slot must run that build
 }
 
 cmd_gate() {
-  local usage_gate="Usage: $(basename "$0") gate -p <profile> [--candidate=<file.zst>] [--for=image|iso] [--skip=iso,fresh,upgrade,desktop] [--keep] [--reuse-install]"
-  local profile="" candidate="" skip="" keep=0 reuse=0 for="" a
+  local usage_gate="Usage: $(basename "$0") gate -p <profile> [--candidate=<file.zst>] [--for=image|iso] [--skip=iso,fresh,upgrade,desktop] [--encrypted] [--keep] [--reuse-install]"
+  local profile="" candidate="" skip="" keep=0 reuse=0 for="" encrypted=0 a
   local -a rest=()
   for a in "$@"; do
     case "$a" in
@@ -83,6 +83,7 @@ cmd_gate() {
       --for=*)       die "gate: --for must be image or iso" ;;
       --keep)        keep=1 ;;
       --reuse-install) reuse=1 ;;  # local iteration only: see below
+      --encrypted)   encrypted=1 ;;
       *)             rest+=("$a") ;;
     esac
   done
@@ -164,7 +165,15 @@ cmd_gate() {
   # of this same ISO left, instead of a 25-min reinstall under TCG. For local
   # iteration only - that disk has been through earlier checks, so it is not
   # a fresh install, and such a run never writes a .passed marker.
-  local -a iso_install=(cmd_iso_install -p "$profile" "--iso=${iso_date}")
+  # --encrypted: the ISO installs use LUKS (the passphrase is typed at each
+  # firmware boot, as a user would; TPM2 auto-unlock is enrolled only later)
+  local -a enc=(); (( encrypted )) && enc=(--encrypted)
+  local -a iso_install=(cmd_iso_install -p "$profile" "--iso=${iso_date}" "${enc[@]}")
+  # The updated / rolled-back disk through firmware: systemd-boot, the UKI
+  # shani-deploy generated and the boot entry it wrote - nspawn skips all
+  # three. Asserts which slot really booted. ISO-installed machines only
+  # (iso-install keeps their NVRAM + TPM).
+  _gate_fw_boot() { cmd_iso_install -p "$profile" --iso=installed --boot-only "--expect-slot=$1"; }
   if (( reuse )) && [[ "$(cat "${DATA_DIR}/isovm/installed-date" 2>/dev/null)" == "$iso_date" ]]; then
     warn "gate: --reuse-install - reusing the ISO ${iso_date} install (booted via firmware, NOT reinstalled)"
     iso_install+=(--boot-only)
@@ -189,9 +198,11 @@ cmd_gate() {
       && _gate_identity_step iso:identity-after-update "$after_first" || true
     if _gate_phase_ok && [[ "$after_first" != "$iso_date" ]]; then
       _gate_checks iso:updated boot-health fresh-user launchers disk-layout \
+        && _gate_step iso:firmware-boot-updated _gate_fw_boot "$GATE_SLOT" \
         && _gate_step iso:rollback cmd_rollback \
         && _gate_identity_step iso:identity-rolledback "$iso_date" \
-        && _gate_step iso:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 || true
+        && _gate_step iso:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 \
+        && _gate_step iso:firmware-boot-rolledback _gate_fw_boot "$GATE_SLOT" || true
     elif _gate_phase_ok; then
       log "gate: stable (${stable_date:-none}) is not newer than ISO ${iso_date}: no first update, as on a real install"
     fi
@@ -210,7 +221,7 @@ cmd_gate() {
       if [[ "$iso_stable" =~ ^[0-9]{8}$ ]]; then
         _gate_step fresh:clean cmd_clean \
           && _gate_step fresh:install cmd_iso_install -p "$profile" "--iso=${iso_stable}" \
-               "--disk-size=${SHANIOS_TEST_NEW_USER_DISK:-32000000000}" \
+               "--disk-size=${SHANIOS_TEST_NEW_USER_DISK:-32000000000}" "${enc[@]}" \
           && installed_from="$iso_stable" || true
       else
         warn "gate: no ISO installed and no iso-stable.txt - the new-user path to ${candidate} is untested"
@@ -223,9 +234,11 @@ cmd_gate() {
         _gate_step fresh:deploy _gate_deploy --channel=latest --no-force \
           && _gate_identity_step fresh:identity "$cand_date" \
           && _gate_checks fresh boot-health fresh-user launchers disk-layout \
+          && _gate_step fresh:firmware-boot-updated _gate_fw_boot "$GATE_SLOT" \
           && _gate_step fresh:rollback cmd_rollback \
           && _gate_identity_step fresh:identity-rolledback "$before" \
-          && _gate_step fresh:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 || true
+          && _gate_step fresh:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 \
+          && _gate_step fresh:firmware-boot-rolledback _gate_fw_boot "$GATE_SLOT" || true
       else
         log "gate: this install already runs ${before} (not older than ${cand_date}): the new-user path is the install itself"
       fi
