@@ -56,8 +56,39 @@ _close_stale_shani_root_mapper() {
   cryptsetup close shani_root 2>/dev/null || true
 }
 
+# Test disks' swapfiles must never stay active: install.sh and shani-deploy
+# run `swapon` inside the container, and a container shares the HOST
+# kernel - the host then swaps onto a test image, and a deleted install.img
+# stays allocated for as long as its swap is on (found: 3 deleted images,
+# 31 GB, still swapped-on after their containers had exited).
+_swapoff_under() {  # <mountpoint of a test root (subvolid=5)>
+  local f
+  for f in "$1/@swap/swapfile" "$1/swap/swapfile"; do
+    [[ -f "$f" ]] && swapoff "$f" 2>/dev/null && log "Turned off the test disk's swapfile (it was active on the host kernel)"
+  done
+  return 0
+}
+
+_release_test_swap() {  # <image>
+  local img="$1" loop dev tmp
+  grep -q '/swapfile' /proc/swaps 2>/dev/null || return 0
+  while read -r loop; do
+    [[ -n "$loop" ]] || continue
+    dev="${loop}p2"
+    [[ -e /dev/mapper/shani_root ]] && cryptsetup isLuks "$dev" 2>/dev/null && dev=/dev/mapper/shani_root
+    [[ -b "$dev" ]] || continue
+    tmp=$(mktemp -d)
+    if mount -o subvolid=5 "$dev" "$tmp" 2>/dev/null; then
+      _swapoff_under "$tmp"
+      umount "$tmp" 2>/dev/null || umount -l "$tmp" 2>/dev/null || true
+    fi
+    rmdir "$tmp" 2>/dev/null || true
+  done < <(_loops_for_image "$img")
+}
+
 _detach_all_loops() {
   local img="$1" loop
+  _release_test_swap "$img"
   _close_stale_shani_root_mapper
   while read -r loop; do
     [[ -n "$loop" ]] || continue

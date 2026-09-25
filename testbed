@@ -96,3 +96,7 @@ case "$COMMAND" in
   -h|--help|help) usage ;;
   *)            usage ;;
 esac
+# a command that ran install.sh or shani-deploy may have swapped-on the test
+# disk's swapfile - on the host kernel (see _release_test_swap)
+mountpoint -q "${MNT:-/nonexistent}" 2>/dev/null && _swapoff_under "$MNT"
+true
