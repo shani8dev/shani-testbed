@@ -108,6 +108,21 @@ containers first.
 
 ## Boundaries
 
+- ✅ **Always**: pre-seed `cache/pacman_cache/pkg` from the workspace's
+  existing caches before a first `vmspawn` run — it is created **empty**.
+  `lib/vmspawn.sh` sets `pacman_cache="${REPO_ROOT}/cache/pacman_cache/pkg"`
+  (`:60`), `mkdir -p`s it (`:65`), bind-mounts it at `/var/cache/pacman/pkg`
+  (`:73`), and then installs `qemu-base edk2-ovmf swtpm openssh` (`:86`). As
+  checked on 2026-09-26, that directory does not exist in this repo, so the
+  mount is empty and the first run downloads all four — while every one of
+  them is **already** in the sibling caches: `qemu-base` (4 files),
+  `edk2-ovmf` (2), `swtpm` (1), `openssh` (1) in
+  `shani-install-media/cache/pacman_cache/pkg` (6.0G) and
+  `shani-pkgbuilds/cache/pacman_cache/pkg` (3.2G). Symlink those package
+  files in rather than copying them. The same two caches cover the full KDE
+  Plasma stack, so anything else that runs `pacman -S` in a container should
+  mount one too — a from-scratch Plasma install dropped from ~2G of downloads
+  to 681 MiB with them mounted. See the parent `AGENTS.md` for the full list.
 - ✅ **Always**: verify by running the real command; keep every existing
   `build.sh test <cmd>` interface (commands, flags, env vars, paths) working,
   since other repos' AGENTS.md files and CI call them.
