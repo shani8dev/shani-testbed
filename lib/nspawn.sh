@@ -96,6 +96,11 @@ _enter_prep() {
   _revert_local_src_overlay
   mount -t overlay overlay -o "lowerdir=${SLOT_DIR},upperdir=${NSPAWN_WORK}/upper,workdir=${NSPAWN_WORK}/work" "$NSPAWN_WORK/merged"
   [[ -n "${SHANIOS_TEST_LOCAL_PKGS:-}" ]] && _overlay_local_pkgs "$slot" "$SHANIOS_TEST_LOCAL_PKGS"
+  # Env-driven, next to SHANIOS_TEST_LOCAL_PKGS and for the same reason: one
+  # choke point means every command that mounts the merged slot honours it
+  # (app, slot-test, probe, desktop, enter) instead of each needing its own
+  # option handling. The --local-src-chronoa= flags only set this variable.
+  [[ -n "${SHANIOS_TEST_CHRONOA_SRC:-}" ]] && _overlay_chronoa_src "$slot" "$SHANIOS_TEST_CHRONOA_SRC"
   _mount_etc_overlay
   return 0
 }

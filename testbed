@@ -17,6 +17,9 @@
 #                   `rollback`, `reboot`, `cycle`)
 #   lib/app.sh      `app`: run a GUI app inside a slot and drive it (click,
 #                   type, key, screenshot, window waits/asserts)
+#   lib/chronoa.sh  the Chronoa SOURCE overlay (--local-src-chronoa=<dir>):
+#                   its usr/bin launchers, its Python package, and a
+#                   recompiled gschemas.compiled
 #   lib/qemu.sh     OVMF boots (`qemu`, `iso`) and the `watch` page — HOST-ONLY
 #   lib/gui.sh      headless OVMF+QMP+guest-agent desktop driving — HOST-ONLY
 #   lib/vmspawn.sh  systemd-vmspawn UEFI boot + swtpm, works without KVM — HOST-ONLY
@@ -53,7 +56,7 @@ source "${MEDIA_ROOT}/config/config.sh"
 SCRIPT_DIR="${MEDIA_ROOT}/test-env"
 
 LIB_DIR="${TESTBED_ROOT}/lib"
-for _module in common disk pki install nspawn boot deploy app qemu gui vmspawn isoinstall suite gate usage; do
+for _module in common disk pki install nspawn boot deploy app chronoa qemu gui vmspawn isoinstall suite gate usage; do
   # shellcheck source=/dev/null
   source "${LIB_DIR}/${_module}.sh"
 done

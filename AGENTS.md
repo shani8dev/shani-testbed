@@ -259,3 +259,59 @@ containers first.
 - **`root.img`/`esp.img`** (the `disk` command) only feed `qemu`/`gui`'s
   PXE-bound fallback and `iso`'s optional blank target. Proposal (not done):
   make `install.img` the single disk and boot ISOs via `vmspawn`.
+
+- **Chronoa has no testbed coverage yet — ADDED (2026-09-27).** `lib/chronoa.sh`
+  is a Chronoa **source** overlay (`--local-src-chronoa=<dir>`, also
+  `SHANIOS_TEST_CHRONOA_SRC=<dir>`) accepted by `app`, `slot-test`, `enter`,
+  `probe` and `desktop`; it overlays a checkout's `usr/bin` launchers, the
+  Python package and the gsettings schema, recompiles the schema in place, and
+  reverts on the next run like `--local-src`. `slot-tests/chronoa-senses.sh` is
+  the acceptance test for the senses layer, and `tests/chronoa-overlay.sh` is
+  the fast host self-test of the overlay itself. Verified live against a real
+  booted slot: 15/15 checks pass, including real tesseract OCR over a real
+  generated PNG. See README.md, "Testing an unpackaged app: `--local-src-chronoa`".
+
+  Two harness bugs this work found and fixed, both real and both confirmed in
+  the slot before fixing:
+
+  - **`slot-test` accepted no `--local-pkg`.** Every other slot-booting
+    command (`app`, `desktop`, `enter`) parses it; `cmd_slot_test`'s arg loop
+    fell through to `--*) die`, so the tesseract stack could never be got into
+    a booted slot. Wired onto `SHANIOS_TEST_LOCAL_PKGS` so `_enter_prep`
+    applies it through the same path as everything else.
+  - **A slot-test has no session D-Bus, so gsettings writes silently no-op.**
+    `_ensure_dbus` starts only a SYSTEM bus for nspawn itself, and dconf is a
+    session-bus service, so `shani-chronoa-sense enable <sense>` printed
+    "ocr-sense-enabled = true (enabled)" and then failed to commit — the same
+    `run` the test had just "enabled" was refused with exit 4, so the
+    PASS/FAIL pair could not both be green in any environment. Fixed by
+    running each slot-test inside `dbus-run-session`, the same mechanism
+    `desktop` already uses for exactly this reason. Confirmed live: before the
+    fix `enable ocr` → `gsettings get` → `false` → `run ocr` → exit 4; after,
+    `true` → `ok: true`.
+
+  Two findings about `shani-chronoa` itself, reported here rather than patched
+  (this harness does not modify that repo):
+
+  - **`shani-pkgbuilds/shani-chronoa/PKGBUILD` declares neither `tesseract`
+    nor `tesseract-data-eng`**, so no published image ships tesseract and the
+    ocr sense is unusable as packaged. `shani-install-media/image_profiles/*/
+    Packages-Desktop` does pin `tesseract-data-eng`, so a freshly built image
+    gets the data but not the binary — both halves are needed. Supply them for
+    a test with `--local-pkg=...` (the recorded evidence used
+    `tesseract-5.5.3-1`, `tesseract-data-eng-2:4.1.0-5`,
+    `tesseract-data-osd-2:4.1.0-5` and `leptonica-1.87.0-2` from the pacman
+    cache).
+  - **`shani-chronoa-sense percepts` has no `--durable-file` flag** (only
+    `--json`). It is a `run`/`forget` option, not a percepts one — the
+    slot-test asserted it and reported a harness defect. `--durable-file` on a
+    `run memory` is also a known no-op (the memory sense holds its own store),
+    which chronoa's own `AGENTS.md` records; the slot-test deliberately does
+    not assert that as expected behaviour.
+
+  **`run_in_container.sh` does not mount the chronoa checkout.** It mounts
+  `shani-testbed`, `shani-pkgbuilds`, `shani-deploy` and `os-installer-config`
+  at fixed `/opt/*` paths — not `shani-chronoa`. So in the builder container
+  the path you pass must exist *inside* the container: bind the checkout in
+  yourself with an extra `-v <chronoa>:/opt/shani-chronoa:ro`, or set
+  `SHANIOS_TEST_CHRONOA_SRC=<dir>` to a path already visible there.

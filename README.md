@@ -195,6 +195,62 @@ never in `<dir>` on the host. It's a plain `cp -f`, so running `enter
 source file further) just re-copies: no doubling, no error, nothing to
 reset in between.
 
+### Testing an unpackaged app: `--local-src-chronoa`
+
+The same idea, for an app that is not a set of shell scripts: `shani-chronoa`
+is a Python GTK4 assistant whose `senses/` layer is new and not yet shipped in
+any published image. `--local-src-chronoa=<dir>` overlays the checkout's own
+`usr/` tree (the same layout the Arch PKGBUILD copies out of it) over the
+package-installed one, so the harness can drive the real
+`/usr/bin/shani-chronoa-sense` from a working tree today:
+
+```bash
+./run_in_container.sh build.sh test slot-test blue chronoa-senses \
+    --local-src-chronoa=/opt/shani-chronoa \
+    --local-pkg=/opt/shani-pkgbuilds/cache/pacman_cache/pkg/tesseract-5.5.3-1-x86_64.pkg.tar.zst,...
+```
+
+The overlay is reverted at the start of the next run, exactly like
+`--local-src`. Two things this overlay has to do that a script overlay does
+not:
+
+- **It recompiles the GSettings schema.** The image's
+  `/usr/share/glib-2.0/schemas/gschemas.compiled` is a binary blob baked at
+  package-install time; dropping a new `.xml` next to it changes nothing, and
+  the CLI asks `Gio.SettingsSchemaSource`, which reads the compiled blob, so
+  every consent key in the new XML is inert. `glib-compile-schemas` is
+  all-or-nothing (one invalid XML discards the whole directory and still exits
+  0 — chronoa's own `AGENTS.md` records losing every setting silently once),
+  so the compile here is checked, not assumed, and
+  `slot-tests/chronoa-senses.sh` independently re-reads the compiled schema's
+  keys rather than trusting the XML.
+- **It strips bytecode.** A `.pyc` from a developer's machine must never reach
+  the slot — a different-Python build is ignored, but a stale one wins over the
+  `.py` just overlaid. Both source-side `__pycache__` and image-era bytecode
+  are removed, and every path written is recorded for revert.
+
+`--local-src-chronoa` is accepted by `app`, `slot-test`, `enter`, `probe` and
+`desktop`, and may also be set as the env var `SHANIOS_TEST_CHRONOA_SRC`.
+
+**`run_in_container.sh` does not mount the chronoa checkout.** It mounts
+`shani-testbed`, `shani-pkgbuilds`, `shani-deploy` and `os-installer-config`
+at fixed `/opt/*` paths — not `shani-chronoa`. So in the builder container the
+path you pass must exist *inside* the container: bind the checkout in yourself
+with an extra `-v <chronoa>:/opt/shani-chronoa:ro`, or set
+`SHANIOS_TEST_CHRONOA_SRC=<dir>` to a path that is already visible there. The
+resolution order is explicit path → `$SHANIOS_TEST_CHRONOA_SRC` →
+`/opt/shani-chronoa` → `../shani-chronoa` next to this repo, and an explicit
+path is authoritative — a typo'd `--local-src-chronoa` used to silently fall
+through to the real sibling checkout.
+
+`slot-tests/chronoa-senses.sh` is the acceptance test for the senses layer.
+It drives the real CLI against real senses inside a real booted slot, and its
+OCR half is the part that cannot run anywhere else: Ubuntu has no tesseract,
+so the ocr sense's own unit tests can only ever mock the subprocess. Here a
+real PNG is generated with known text, the real tesseract reads it through the
+real sense, and the words that come back are asserted — with a second, different
+image as a negative control, so a stub or a cached result cannot pass.
+
 **Systemd unit files are overlaid too, automatically.** If `<dir>`'s
 parent directory has a sibling `systemd/system/` and/or `systemd/user/`
 (shani-deploy's actual real layout: `scripts/` and `systemd/` side by
@@ -226,6 +282,7 @@ copy-pasted between commands):
 | `lib/boot.sh` | `enter`, `verify-boot`, `probe`, `desktop` |
 | `lib/deploy.sh` | `upgrade`, `update-check`, `rollback`, `reboot`, `cycle` |
 | `lib/app.sh` | `app` — GUI app testing (below) |
+| `lib/chronoa.sh` | the Chronoa **source** overlay (`--local-src-chronoa=<dir>`): overlays a checkout's `usr/bin` launchers, the Python package and the gsettings schema (recompiled in place with `glib-compile-schemas`) over the image's own, so `app`/`slot-test`/`probe`/`desktop`/`enter` can drive the real `/usr/bin/shani-chronoa-sense` from a working tree |
 | `lib/qemu.sh`, `lib/gui.sh`, `lib/qmp_client.py` | OVMF boots (`qemu`, `iso`, `watch`, `gui`); one shared QMP/QGA client |
 | `lib/vmspawn.sh` | `vmspawn` — UEFI + TPM boot without KVM |
 | `lib/suite.sh` | `suite`, `status` |

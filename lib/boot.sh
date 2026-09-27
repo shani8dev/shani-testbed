@@ -2,15 +2,16 @@ cmd_enter() {
   _ensure_host_machine_id
   _ensure_dbus
   _ensure_by_label_dir
-  local slot="${1:?Usage: $(basename "$0") enter <blue|green> [--boot] [--local-src=<dir>] [command...]}"
+  local slot="${1:?Usage: $(basename "$0") enter <blue|green> [--boot] [--local-src=<dir>] [--local-src-chronoa=<dir>] [command...]}"
   shift || true
   [[ "$slot" =~ ^(blue|green)$ ]] || die "slot must be 'blue' or 'green'"
 
   local boot=0 local_src=""
-  while [[ "${1:-}" == "--boot" || "${1:-}" == --local-src=* ]]; do
+  while [[ "${1:-}" == "--boot" || "${1:-}" == --local-src=* || "${1:-}" == --local-src-chronoa=* ]]; do
     case "$1" in
       --boot) boot=1; shift ;;
       --local-src=*) local_src="${1#--local-src=}"; shift ;;
+      --local-src-chronoa=*) _set_chronoa_src "${1#--local-src-chronoa=}"; shift ;;
     esac
   done
 
@@ -363,8 +364,9 @@ cmd_probe() {
       --timeout=*)   boot_timeout="${arg#--timeout=}" ;;
       --settle=*)    settle="${arg#--settle=}" ;;
       --local-src=*) local_src="${arg#--local-src=}" ;;
+      --local-src-chronoa=*) _set_chronoa_src "${arg#--local-src-chronoa=}" ;;
       --local-pkg=*) export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${arg#--local-pkg=}" ;;
-      *) die "Usage: $(basename "$0") probe <blue|green> --exec=\"cmd\" [--timeout=N] [--settle=N] [--local-src=<dir>]" ;;
+      *) die "Usage: $(basename "$0") probe <blue|green> --exec=\"cmd\" [--timeout=N] [--settle=N] [--local-src=<dir>] [--local-src-chronoa=<dir>]" ;;
     esac
   done
   [[ -n "$exec_cmd" ]] || die "probe requires --exec=\"cmd\""
@@ -404,6 +406,7 @@ cmd_desktop() {
   for arg in "$@"; do
     case "$arg" in
       --local-src=*) local_src="${arg#--local-src=}" ;;
+      --local-src-chronoa=*) _set_chronoa_src "${arg#--local-src-chronoa=}" ;;
       --exec=*)    exec_cmd="${arg#--exec=}" ;;
       --out=*)     out_file="${arg#--out=}" ;;
       --timeout=*) boot_timeout="${arg#--timeout=}" ;;
@@ -414,7 +417,7 @@ cmd_desktop() {
       --size=*)    size="${arg#--size=}" ;;
       --hold=*)    hold="${arg#--hold=}" ;;
       *)
-        echo "Usage: $(basename "$0") desktop <blue|green> [--de=auto|gnome|plasma] [--display=virtual|host] [--size=WxH] [--hold=SECONDS] [--local-pkg=<name|file>] [--exec=\"cmd\"] [--out=<file.png>] [--timeout=N] [--settle=N] [--local-src=<dir>]" >&2
+        echo "Usage: $(basename "$0") desktop <blue|green> [--de=auto|gnome|plasma] [--display=virtual|host] [--size=WxH] [--hold=SECONDS] [--local-pkg=<name|file>] [--local-src-chronoa=<dir>] [--exec=\"cmd\"] [--out=<file.png>] [--timeout=N] [--settle=N] [--local-src=<dir>]" >&2
         exit 1
         ;;
     esac
@@ -599,7 +602,7 @@ PROBE_EOF
 }
 
 # ------------------------------------------------------------------
-# slot-test <blue|green> <name...|all> [--local-src=<dir>] [--timeout=N] [--settle=N]
+# slot-test <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=<dir>] [--timeout=N] [--settle=N]
 # ------------------------------------------------------------------
 # Runs in-slot checks from slot-tests/ (visible in every slot at
 # /mnt/testbed/slot-tests). A file takes part when its header declares
@@ -613,14 +616,22 @@ PROBE_EOF
 _slot_test_mode() { sed -n 's/^# slot-test-mode: *\([a-z]*\).*/\1/p' "$1" | head -1; }
 
 cmd_slot_test() {
-  local usage_st="Usage: $(basename "$0") slot-test <blue|green> <name...|all> [--local-src=<dir>] [--timeout=N] [--settle=N]"
+  local usage_st="Usage: $(basename "$0") slot-test <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=<dir>] [--timeout=N] [--settle=N]"
   local slot="${1:-}"; shift || true
   _require_slot "$slot" "$usage_st"
   local local_src="" boot_timeout=240 settle=20 arg
   local -a wanted=()
   for arg in "$@"; do
     case "$arg" in
-      --local-src=*) local_src="${arg#--local-src=}" ;;
+      --local-src=*)        local_src="${arg#--local-src=}" ;;
+      --local-src-chronoa=*) _set_chronoa_src "${arg#--local-src-chronoa=}" ;;
+      # An unpublished package overlay, same as app/desktop/enter: the slot
+      # image predates the thing being tested (here, tesseract, which no
+      # published shani-chronoa image ships — see slot-tests/chronoa-senses.sh)
+      # and --local-pkg is the only way to get it into a booted slot without
+      # rebuilding the image. Wired onto SHANIOS_TEST_LOCAL_PKGS so _enter_prep
+      # applies it through the same path every other command uses.
+      --local-pkg=*)        export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${arg#--local-pkg=}" ;;
       --timeout=*)   boot_timeout="${arg#--timeout=}" ;;
       --settle=*)    settle="${arg#--settle=}" ;;
       --*)           die "$usage_st" ;;
@@ -660,7 +671,19 @@ cmd_slot_test() {
     name="$(basename "$f" .sh)"
     log "── slot-test ${name} ──"
     rc=0
-    out="$(nsenter --target "$LEADER_PID" --all -- bash "/mnt/testbed/slot-tests/$(basename "$f")" 2>&1)" || rc=$?
+    # Run the test inside a private session D-Bus. gsettings writes go through
+    # dconf, which is a session-bus service, and this slot has no session bus
+    # at all: the harness starts only a SYSTEM bus for nspawn itself, so every
+    # `shani-chronoa-sense enable <sense>` silently no-op'd (dconf's warning
+    # was "Cannot autolaunch D-Bus without X11 $DISPLAY"), the consent key was
+    # never written, and the same `run` that the test had just "enabled" was
+    # refused with exit 4 — a PASS/FAIL pair that could not both be green in
+    # any environment. Confirmed live in the slot, then confirmed fixed by
+    # wrapping the same call in `dbus-run-session` (gsettings get returned
+    # true and `run ocr` returned ok:true). `desktop` already uses
+    # dbus-run-session for exactly this reason; this is the same fix for the
+    # slot-test path. Harmless when the test does not touch gsettings.
+    out="$(nsenter --target "$LEADER_PID" --all -- dbus-run-session -- bash "/mnt/testbed/slot-tests/$(basename "$f")" 2>&1)" || rc=$?
     printf '%s\n' "$out" | sed 's/^/  | /'
     pass=$(grep -c '^RESULT .* PASS' <<<"$out" || true)
     fail=$(grep -c '^RESULT .* FAIL' <<<"$out" || true)

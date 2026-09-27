@@ -1,8 +1,14 @@
 # lib/app.sh — `app`: run a GUI app inside a slot and drive it like a user.
 #
-#   app <blue|green> --run="<cmd>" [--local-src=<dir>] [--display=virtual|host]
+#   app <blue|green> --run="<cmd>" [--local-src=<dir>] [--local-src-chronoa=<dir>]
+#       [--display=virtual|host]
 #       [--size=WxH] [--out-dir=<dir>] [--timeout=SECS]
 #       [ACTIONS...] | --script=<file> | --interactive | --control=<dir>
+#
+# --run= is not restricted to GUI apps. A headless command (a real CLI that
+# needs the installed userspace) is driven exactly the same way and its stdout
+# and exit code land in <out-dir>/app.stdout and app.rc — that is how
+# `shani-chronoa-sense` is exercised for real (see lib/chronoa.sh).
 #
 # The app runs INSIDE the slot (nspawn, the real installed userspace, with
 # --local-src overlays like every other command) and draws on an X display
@@ -348,7 +354,7 @@ _app_control_loop() {
 }
 
 cmd_app() {
-  local usage_app="Usage: $(basename "$0") app <blue|green> --run=\"cmd\" [--local-src=<dir>] [--local-pkg=<name|file>] [--display=virtual|host] [--size=WxH] [--out-dir=<dir>] [--timeout=SECS] [ACTIONS...|--script=<file>|--interactive|--control=<dir>]  (see lib/app.sh)"
+  local usage_app="Usage: $(basename "$0") app <blue|green> --run=\"cmd\" [--local-src=<dir>] [--local-src-chronoa=<dir>] [--local-pkg=<name|file>] [--display=virtual|host] [--size=WxH] [--out-dir=<dir>] [--timeout=SECS] [ACTIONS...|--script=<file>|--interactive|--control=<dir>]  (see lib/app.sh)"
   local slot="${1:-}"; shift || true
   _require_slot "$slot" "$usage_app"
 
@@ -359,6 +365,7 @@ cmd_app() {
     case "$arg" in
       --run=*)          run="${arg#--run=}" ;;
       --local-src=*)    local_src="${arg#--local-src=}" ;;
+      --local-src-chronoa=*) _set_chronoa_src "${arg#--local-src-chronoa=}" ;;
       # an unpublished app: overlay its built package first (as enter/desktop)
       --local-pkg=*)    export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${arg#--local-pkg=}" ;;
       --display=*)      display_mode="${arg#--display=}" ;;

@@ -37,12 +37,23 @@ Commands:
               [--local-src=<dir>] [cmd...]). The repo is available read-only
               inside at /mnt/repo — run repo scripts directly, e.g.:
               enter blue /mnt/repo/scripts/foo.sh
-              --local-src=/opt/shani-deploy/scripts overlays the sibling
-              shani-deploy checkout's CURRENT scripts (shani-deploy,
-              gen-efi, check-boot-failure, shani-health,
-              shani-reset, shani-user-setup, beesd-setup) and systemd units
-              over the package-installed ones — see "Testing edited
-              scripts" in README.md.
+               --local-src=/opt/shani-deploy/scripts overlays the sibling
+               shani-deploy checkout's CURRENT scripts (shani-deploy,
+               gen-efi, check-boot-failure, shani-health,
+               shani-reset, shani-user-setup, beesd-setup) and systemd units
+               over the package-installed ones — see "Testing edited
+               scripts" in README.md.
+               --local-src-chronoa=<dir> overlays a shani-chronoa checkout's
+               usr/bin launchers, the Python package, and the gsettings schema
+               (rebuilt in place with glib-compile-schemas) over the image's
+               own — so `app`/`slot-test`/`probe`/`desktop`/`enter` can drive
+               the real /usr/bin/shani-chronoa-sense from a working tree
+               instead of the package-installed copy. The overlay is reverted
+               at the start of the next run (same as --local-src). The
+               chronoa checkout is NOT mounted by run_in_container.sh, so run
+               the builder container with an extra -v <chronoa>:/opt/shani-chronoa:ro
+               and pass --local-src-chronoa=/opt/shani-chronoa, or set
+               SHANIOS_TEST_CHRONOA_SRC=<dir> (resolved inside the slot).
   verify-boot [blue|green] [seconds]   Headless boot smoke test: full systemd
               --boot, console captured to disk/boot-<slot>-console.log, then
               reports reached target / failed units. No display or TTY needed.
@@ -65,20 +76,28 @@ Commands:
               --local-pkg overlays locally built, unpublished packages first
               (see enter). Screenshots go to test-env/shots/ by default.
   probe       <blue|green> --exec="cmd" [--timeout=N] [--settle=N]
-              [--local-src=<dir>]   Generic live-boot diagnostic: boots the
-              slot for real (--boot), nsenter's in once a Multi-User/
-              Graphical target is reached, runs any command (e.g.
-              `systemctl status <unit> --no-pager -l`), prints its output.
-              Built for when verify-boot's console-log capture isn't
-              reliable enough — confirmed live that some units genuinely
-              start/fail without either line appearing in the captured
-              console output, so `probe` asking systemd directly is the
-              only way to get a real answer for those.
-  slot-test   <blue|green> <name...|all> [--local-src=<dir>] [--timeout=N]
-              Boot the slot ONCE and run in-slot checks from slot-tests/
-              (files with '# slot-test-mode: boot'); aggregates their
-              RESULT PASS/FAIL lines. Add new in-slot checks there.
-              --from-r2 installs a PUBLISHED release from Cloudflare R2
+               [--local-src=<dir>] [--local-src-chronoa=<dir>] [--timeout=N]
+               [--settle=N] [--local-pkg=<name|file>]   Generic live-boot
+               diagnostic: boots the slot for real (--boot), nsenter's in once a
+               Multi-User/Graphical target is reached, runs any command (e.g.
+               `systemctl status <unit> --no-pager -l`), prints its output.
+               Built for when verify-boot's console-log capture isn't
+               reliable enough — confirmed live that some units genuinely
+               start/fail without either line appearing in the captured
+               console output, so `probe` asking systemd directly is the
+               only way to get a real answer for those.
+               --local-src-chronoa=<dir> overlays a shani-chronoa checkout
+               (see enter).
+slot-test   <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=<dir>] [--local-pkg=<name|file>] [--timeout=N]
+                Boot the slot ONCE and run in-slot checks from slot-tests/
+                (files with '# slot-test-mode: boot'); aggregates their
+                RESULT PASS/FAIL lines. Add new in-slot checks there.
+                --local-src-chronoa=<dir> overlays a shani-chronoa checkout
+                (see enter) — used by the chronoa-senses slot-test.
+                --local-pkg=<name|file> overlays a built package (e.g. the
+                tesseract stack, which no published shani-chronoa image ships)
+                before the slot boots.
+                --from-r2 installs a PUBLISHED release from Cloudflare R2
               ($R2_PUBLIC_BASE, default https://downloads.shani.dev - the
               layout build-iso.sh --from-r2 uses; resumable, no credentials)
               instead of a local build, after SHA-256 + GPG checks - so any
