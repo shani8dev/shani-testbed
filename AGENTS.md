@@ -315,3 +315,57 @@ containers first.
   the path you pass must exist *inside* the container: bind the checkout in
   yourself with an extra `-v <chronoa>:/opt/shani-chronoa:ro`, or set
   `SHANIOS_TEST_CHRONOA_SRC=<dir>` to a path already visible there.
+
+  ### Running it for real (verified 2026-09-27: 15 pass, 0 fail)
+
+  `run_in_container.sh` has no flag for the extra mount and no flag for
+  tesseract, so the passing run drives the same container itself. This is
+  the whole invocation; only the two `-v` lines and the `--local-pkg` set
+  are specific to chronoa, the rest mirrors `run_in_container.sh` verbatim:
+
+  ```bash
+  cd ../shani-install-media
+  PKG=/var/cache/pacman/pkg
+  docker run --rm --privileged --network=host --cgroupns=host \
+    --tmpfs /tmp --tmpfs /run/lock --tmpfs /run \
+    --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
+    --security-opt seccomp:unconfined \
+    -v /sys/fs/cgroup:/sys/fs/cgroup -v /lib/modules:/lib/modules:ro -v /dev:/dev \
+    -v "$PWD:/home/builduser/build" \
+    -v "$PWD/cache/pacman_cache:/var/cache/pacman" \
+    -v ../shani-testbed:/opt/shani-testbed:ro \
+    -v ../shani-pkgbuilds:/opt/shani-pkgbuilds:ro \
+    -v ../shani-chronoa:/opt/shani-chronoa:ro \
+    -e SHANIOS_TEST_CHRONOA_SRC=/opt/shani-chronoa -e SHANIOS_NO_PULL=1 \
+    -w /home/builduser/build shrinivasvkumbhar/shani-builder:latest \
+    bash -c '/opt/shani-testbed/testbed slot-test blue chronoa-senses \
+      --local-src-chronoa=/opt/shani-chronoa \
+      --local-pkg='"$PKG"'/tesseract-5.5.3-1-x86_64.pkg.tar.zst \
+      --local-pkg='"$PKG"'/tesseract-data-eng-2:4.1.0-5-any.pkg.tar.zst \
+      --local-pkg='"$PKG"'/leptonica-1.87.0-2-x86_64.pkg.tar.zst \
+      --timeout=300 --settle=10'
+  ```
+
+  Three things this run proved that a passing assertion alone would not:
+
+  - **Without `--local-pkg` the test fails 4 assertions, and the failure is
+    the finding, not a broken test.** tesseract is genuinely absent from the
+    image; the test names both causes rather than skipping. Supplying the
+    three packages turns those 4 into passes. That is the difference between
+    "the ocr sense has unit tests" and "the ocr sense reads a real PNG".
+  - **The consent refusal is real, not simulated.** `run ocr` with the key
+    off exits 4 and says `refusing to run sense 'ocr': the ocr sense is
+    turned off` — the negative control runs *before* the positive one, which
+    is what makes the positive result mean anything.
+  - **The overlay's schema step is verified through the running system.**
+    All five `*-sense-enabled` keys are read back out of
+    `GSETTINGS_SCHEMA_DIR` in the booted slot, not out of the XML — the
+    failure mode where `glib-compile-schemas` exits 0 having written nothing
+    is invisible otherwise.
+
+  Without tesseract the 4 failures are `tesseract-binary-present`,
+  `tesseract-eng-data`, `ocr-text-recognized` and `ocr-word-boxes`. Note
+  `ocr-negative-control` passes *vacuously* in that state — both images
+  return the same "not installed" error, so the first string's tokens are
+  trivially absent. Do not read that pass as evidence the control works; it
+  only means something once tesseract is present.
