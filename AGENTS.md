@@ -62,6 +62,47 @@ piped into `probe --exec`):
 A test that only exists in one session's scratchpad is lost the moment the
 session ends, and the next agent re-derives it.
 
+## Slot tests cannot all be unit tests — the distro is part of the contract
+
+`slot-tests/chronoa-machine-state.sh` exists because of a specific, repeated
+failure, and the reason generalises to anything in `shani-chronoa/senses/`.
+
+**The senses were written and unit-tested on an Ubuntu 24.04 dev box. ShaniOS
+is Arch-based.** Four of the nine senses shell out to a binary and one asks the
+package manager a distro-specific question, so the unit suite cannot speak to
+them at all. Three were green while returning a confident wrong answer on Arch:
+
+- `contention` reported every camera and microphone **free** when `fuser`
+  (psmisc) was missing — the OSError was swallowed into "no holders";
+- `privilege` used Debian's `dpkg-query`, so on Arch it found no owner for
+  anything and reported **every process as unmanaged third-party software**;
+- `bluetooth` reported "0 devices" when `bluetoothctl` was not installed.
+
+584 passing unit tests caught none of it. A green suite on the wrong
+distribution is not weak evidence about the right one — it is no evidence, and
+the three failures were all *plausible* rather than loud.
+
+**So a sense test that touches a distro-specific dependency belongs here, not
+in `tests/`.** The test asserts the nine senses register, that all nine consent
+keys are in the *running compiled* schema, that consent genuinely refuses, and
+the two properties this class of bug violates: a sense must not report
+UNKNOWN while its dependency **is** installed, and must never call a device
+"free" while undetermined.
+
+**Status: written and committed (`3ca190e`) but NOT RUN.** No ShaniOS slot
+exists on the development host; creating one needs a full
+`bootstrap -p gnome -d latest`. Run it before trusting any distro-dependent
+claim about the senses layer, and record the result in
+`shani-chronoa/AUDIT-HISTORY.md`.
+
+Two things to know if you are wiring this up yourself, both learned by getting
+them wrong: mount `shani-testbed`/`shani-pkgbuilds`/`shani-chronoa` read-only
+but do **not** mount `shani-install-media` read-only — the testbed writes its
+nspawn overlay under `test-env/disk/`, and a `:ro` mount there makes bootstrap
+fail with a wall of "Read-only file system" `rm` errors. And `SHANI_INSTALL_MEDIA`
+must be set for the builder image; without it the run dies immediately with
+"cannot find the shani-install-media checkout".
+
 ## Never edit a harness file while a harness run is using it
 
 bash reads a script as it executes. Editing `testbed`, a `lib/*.sh` module,
