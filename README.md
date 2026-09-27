@@ -244,6 +244,23 @@ path is authoritative — a typo'd `--local-src-chronoa` used to silently fall
 through to the real sibling checkout.
 
 `slot-tests/chronoa-senses.sh` is the acceptance test for the senses layer.
+
+**Why `--local-pkg` is still needed today.** `shani-pkgbuilds`'s
+`shani-chronoa/PKGBUILD` did not declare `tesseract`, so no published image
+carries the binary — only `shani-install-media`'s profile pins
+`tesseract-data-eng`, which supplies the language data and nothing else, so
+the binary only ever arrived transitively through that `depends` list. The
+slot test therefore fails four assertions (`tesseract-binary-present`,
+`tesseract-eng-data`, `ocr-text-recognized`, `ocr-word-boxes`) on an image
+built before the fix, and passes once the three cached packages are supplied.
+That PKGBUILD has since been repinned to declare both halves, so
+`--local-pkg` should become unnecessary once an image is rebuilt from it.
+
+One caveat when reading a failing run: `ocr-negative-control` passes
+*vacuously* while tesseract is missing, because both images return the same
+"not installed" error and the expected tokens are trivially absent from it.
+It only becomes evidence once tesseract is present.
+
 It drives the real CLI against real senses inside a real booted slot, and its
 OCR half is the part that cannot run anywhere else: Ubuntu has no tesseract,
 so the ocr sense's own unit tests can only ever mock the subprocess. Here a
