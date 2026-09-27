@@ -89,19 +89,23 @@ the two properties this class of bug violates: a sense must not report
 UNKNOWN while its dependency **is** installed, and must never call a device
 "free" while undetermined.
 
-**Status: written and committed (`3ca190e`) but NOT RUN.** No ShaniOS slot
-exists on the development host; creating one needs a full
-`bootstrap -p gnome -d latest`. Run it before trusting any distro-dependent
-claim about the senses layer, and record the result in
-`shani-chronoa/AUDIT-HISTORY.md`.
+**Status: run and green — 35 pass, 0 fail, rc=0** (2026-09-28) on a real
+booted slot, after a full `bootstrap -p gnome -d latest`. The decisive line:
 
-Two things to know if you are wiring this up yourself, both learned by getting
-them wrong: mount `shani-testbed`/`shani-pkgbuilds`/`shani-chronoa` read-only
-but do **not** mount `shani-install-media` read-only — the testbed writes its
-nspawn overlay under `test-env/disk/`, and a `:ro` mount there makes bootstrap
-fail with a wall of "Read-only file system" `rm` errors. And `SHANI_INSTALL_MEDIA`
-must be set for the builder image; without it the run dies immediately with
-"cannot find the shani-install-media checkout".
+```
+RESULT privilege-uses-package-manager  PASS (18 further holder attributed to
+  distribution packages, so the ownership lookup is actually working)
+```
+
+which is exactly the assertion that would have failed before the Arch fix.
+Run it with the invocation already documented under "Running it for real"
+below — that section carries the `--cgroupns=host` and extra-`-v` details, and
+they apply unchanged to this test.
+
+One harness fix came out of the same run: the overlay banner hardcoded "all
+five *-sense-enabled consent keys" and had gone stale. It now counts the keys
+it just read out of the compiled schema, and `slot-tests/chronoa-senses.sh`
+derives its count from the list it checks, so neither can rot silently again.
 
 ## Never edit a harness file while a harness run is using it
 

@@ -90,11 +90,14 @@ res chronoa-sense-list-runs "PASS ($(grep -cE '^  [a-z]+ ' <<<"$list_out}") sens
 # schema is the thing this overlay recompiles, so read the schema.
 keys=$(gsettings list-keys "$SCHEMA_ID" 2>/dev/null || true)
 missing=""
-for k in filesystem ocr web memory vision; do
+CHECKED=(filesystem ocr web memory vision)
+for k in "${CHECKED[@]}"; do
   grep -qx "${k}-sense-enabled" <<<"$keys" || missing+=" ${k}-sense-enabled"
 done
 if [[ -z "$missing" ]]; then
-  res chronoa-consent-keys-compiled "PASS (all five *-sense-enabled keys present in the RUNNING compiled schema: $(tr '\n' ' ' <<<"$keys"))"
+  # "five" was hardcoded here too and went stale the same way; the count is
+  # derived from the very list the loop above checked.
+  res chronoa-consent-keys-compiled "PASS (all ${#CHECKED[@]} *-sense-enabled keys present in the RUNNING compiled schema: $(tr '\n' ' ' <<<"$keys"))"
 else
   res chronoa-consent-keys-compiled "FAIL (the compiled schema declares no:${missing} - present in the XML but not in gschemas.compiled, so the sense is permanently ungrantable)"
 fi

@@ -237,7 +237,11 @@ ${out}"
     if [[ -n "$missing" ]]; then
       warn "--local-src-chronoa: the COMPILED schema declares no consent key for:${missing} (those senses will be reported as having no key at all, which is what the CLI sees)"
     else
-      log "  compiled schema declares all five *-sense-enabled consent keys (read back through GSETTINGS_SCHEMA_DIR, not from the XML)"
+      # Counted from the `keys` read above, never written out: a hardcoded
+      # "five" went stale the moment the senses layer grew, and a banner that
+      # misstates its own scope is worse than no banner.
+      _ck=$(grep -c -- '-sense-enabled$' <<<"$keys" || true)
+      log "  compiled schema declares ${_ck} *-sense-enabled consent keys (read back through GSETTINGS_SCHEMA_DIR, not from the XML)"
     fi
   fi
 
