@@ -351,6 +351,39 @@ cmd_bootstrap() {
     else
       warn "'trust' not found in @${slot#@} — local-mirror TLS verification will fail."
     fi
+    # TEST ONLY: an encrypted slot cannot boot here unattended. configure.sh
+    # writes /etc/crypttab with the keyfile field literally "none" and ships only
+    # /etc/crypttab into the initramfs, because the shipped design is TPM2-first
+    # (rd.luks.options=UUID=tpm2-device=auto) with an interactive console
+    # passphrase as the fallback. A container has neither a TPM to seal against
+    # nor a console to type at, so every later boot re-derives encrypted:false
+    # and any probe of the encryption state is answering about an unencrypted
+    # slot. That is correct gen-efi behaviour, but it makes the encrypted branch
+    # of every consumer untestable. So drop a throwaway keyfile in, point
+    # crypttab at it, and put BOTH into the initramfs - the volume then unlocks
+    # with no TPM and no console. Test-only: a real machine keeps the TPM2 path
+    # and never sees this file.
+    if (( encrypted )); then
+      btrfs property set -f -ts "$MNT/$slot" ro false
+      local kf_rel="/etc/shani-test-luks.key"
+      printf '%s' "$TEST_LUKS_PIN" > "$MNT/$slot${kf_rel}"
+      chmod 600 "$MNT/$slot${kf_rel}"
+      if [[ -f "$MNT/$slot/etc/crypttab" ]]; then
+        awk -v kf="$kf_rel" '$1=="shani_root" && $3=="none" {$3=kf} {print}' \
+            OFS=' ' "$MNT/$slot/etc/crypttab" > "$MNT/$slot/etc/crypttab.new" \
+          && mv "$MNT/$slot/etc/crypttab.new" "$MNT/$slot/etc/crypttab"
+        printf 'install_items+=" /etc/crypttab %s "\n' "$kf_rel" \
+          > "$MNT/$slot/etc/dracut.conf.d/99-shani-test-lukskey.conf"
+      else
+        warn "@${slot#@}: no /etc/crypttab despite --encrypted — cannot add the test unlock key."
+      fi
+      if chroot "$MNT/$slot" dracut --regenerate-all >/dev/null 2>&1; then
+        log "@${slot#@}: initramfs regenerated with the test unlock key (${kf_rel})."
+      else
+        warn "@${slot#@}: dracut --regenerate-all failed — the slot will not boot unattended; check the slot has dracut."
+      fi
+      btrfs property set -f -ts "$MNT/$slot" ro true
+    fi
   done
 
   log "Bootstrap complete (via real install.sh + configure.sh)."
