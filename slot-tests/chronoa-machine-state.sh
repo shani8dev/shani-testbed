@@ -155,7 +155,14 @@ for s in "${SENSES[@]}"; do
     if (( have )); then
       res "real-reading-$s" "FAIL (reported UNKNOWN although its dependency IS installed - a dependency that is present must produce a real reading, not silence)"
     elif [[ -z "$tool" ]]; then
-      res "real-reading-$s" "PASS (UNKNOWN, and this sense has no external dependency to be missing - it reads the kernel directly, so UNKNOWN means it found nothing to read rather than a tool being absent)"
+      # No external binary, so a missing tool cannot explain this UNKNOWN - and
+      # this loop cannot say what did, or whether it was legitimate. Guessing
+      # either way is what produced two bad versions of this assertion: a
+      # digit-counting heuristic that fails senses whose real readings are all
+      # one or two digits (rfsense legitimately reports "link=70/70
+      # level=-29dBm"), and a PASS that asserted a cause nobody had checked.
+      # So: report it as unadjudicated and let a dedicated check own it.
+      res "real-reading-$s" "SKIP (this sense has no external dependency, so no missing tool can account for the UNKNOWN, and this loop cannot tell whether it was honest - see the dedicated check for this sense if it has one)"
     else
       res "real-reading-$s" "PASS (UNKNOWN, which is correct: its dependency is genuinely absent)"
     fi
@@ -196,6 +203,36 @@ if pacman -Qo /usr/bin/bash >/dev/null 2>&1 || dpkg-query -S /usr/bin/bash >/dev
   fi
 else
   res privilege-uses-package-manager "PASS (no ownership tool on this slot; the sense must say so rather than blame every process)"
+fi
+
+# --- 8. modelfit: an unreachable Ollama is UNKNOWN, never "no models" --------
+# This is the one sense whose UNKNOWN has a nameable cause rather than a
+# missing binary. `installed_models()` returns None when Ollama does not
+# answer, and the sense must report that as undetermined - the daemon being
+# down is a normal state, and reporting it as "0 models installed" is a
+# confident answer to a question nobody asked, and would then feed the model
+# resolver a claim that a configured model is absent.
+#
+# The half that must NOT degrade is the hardware half. It reads /proc/meminfo
+# directly and has no reason to be blind, so even with Ollama unreachable the
+# report must still carry real numbers.
+if command -v ollama >/dev/null 2>&1 && ollama list >/dev/null 2>&1; then
+  res modelfit-ollama-unknown-honest "SKIP (Ollama is installed AND answering, so there is no unknown to be honest about - the positive path is covered by real-reading-modelfit)"
+else
+  out=$("$CLI" --json run modelfit 2>&1)
+  if grep -qiE 'no models installed|0 models|zero models' <<<"$out"; then
+    res modelfit-ollama-unknown-honest "FAIL (Ollama did not answer but the sense reported a model count - an unreachable daemon is not an empty model list)"
+  elif grep -q 'UNKNOWN' <<<"$out"; then
+    res modelfit-ollama-unknown-honest "PASS (Ollama did not answer and the sense said UNKNOWN rather than claiming a model count)"
+  else
+    res modelfit-ollama-unknown-honest "FAIL (Ollama did not answer, but the sense neither said UNKNOWN nor reported a count - the unanswered question is being hidden)"
+  fi
+
+  if grep -qE '[1-9][0-9]{2,} MB RAM total' <<<"$out"; then
+    res modelfit-hardware-half-still-real "PASS ($(grep -oE '[0-9]+ MB RAM total, [0-9]+ MB available' <<<"$out" | head -1) - the kernel half read fine even though Ollama did not answer)"
+  else
+    res modelfit-hardware-half-still-real "FAIL (Ollama being unreachable must not blind the /proc/meminfo half, which has no dependency that could be missing)"
+  fi
 fi
 
 echo "== probe done"
