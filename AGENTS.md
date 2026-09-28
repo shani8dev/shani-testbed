@@ -23,7 +23,7 @@ the rest.
 - `Rules that have bitten this harness before`
 
 **On-demand reference — do not page through speculatively:**
-- `Audit-verified known issues (confirmed present)` — ~238 of this file's 450 lines
+- `Audit-verified known issues (confirmed present)` — ~238 lines
 
 This repo has no `AUDIT-HISTORY.md` yet, so the detail lives here. **Grep it for the subsystem you are changing**, then read
 the hits in full; skip the rest.
