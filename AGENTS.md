@@ -68,9 +68,9 @@ session ends, and the next agent re-derives it.
 failure, and the reason generalises to anything in `shani-chronoa/senses/`.
 
 **The senses were written and unit-tested on an Ubuntu 24.04 dev box. ShaniOS
-is Arch-based.** Four of the nine senses shell out to a binary and one asks the
-package manager a distro-specific question, so the unit suite cannot speak to
-them at all. Three were green while returning a confident wrong answer on Arch:
+is Arch-based.** Four of the eleven senses shell out to a binary and one asks
+the package manager a distro-specific question, so the unit suite cannot speak
+to them at all. Three were green while returning a confident wrong answer on Arch:
 
 - `contention` reported every camera and microphone **free** when `fuser`
   (psmisc) was missing — the OSError was swallowed into "no holders";
@@ -83,21 +83,54 @@ distribution is not weak evidence about the right one — it is no evidence, and
 the three failures were all *plausible* rather than loud.
 
 **So a sense test that touches a distro-specific dependency belongs here, not
-in `tests/`.** The test asserts the nine senses register, that all nine consent
-keys are in the *running compiled* schema, that consent genuinely refuses, and
-the two properties this class of bug violates: a sense must not report
-UNKNOWN while its dependency **is** installed, and must never call a device
-"free" while undetermined.
+in `tests/`.** The test asserts the eleven senses register, that all eleven
+consent keys are in the *running compiled* schema, that consent genuinely
+refuses, and the two properties this class of bug violates: a sense must not
+report UNKNOWN while its dependency **is** installed, and must never call a
+device "free" while undetermined.
 
-**Status: run and green — 35 pass, 0 fail, rc=0** (2026-09-28) on a real
-booted slot, after a full `bootstrap -p gnome -d latest`. The decisive line:
+**The count is derived from a list for that reason, and it is still not
+self-maintaining — so the failure mode is a sense with no slot coverage at
+all.** `hwmon` and `modelfit` were added to the registry and were simply
+absent from `SENSES=(...)` here, which is the same rot as the overlay banner's
+hardcoded key count: a literal that adding a sense does not update. A sense
+missing from that list is a sense that regresses to a plausible wrong answer
+the first time it is touched on Arch, while this file reports a comfortable
+pass. Check the list against the registry, not against this paragraph.
+
+**A sense with no external dependency makes the generic step unanswerable, and
+the honest result is SKIP.** `hwmon` and `modelfit` read `/sys` and
+`/proc` directly, so no missing tool can account for an UNKNOWN from them —
+and the loop has no way to know whether the UNKNOWN was legitimate. It
+therefore reports SKIP rather than a verdict, and `modelfit` gets a dedicated
+check below it, because its UNKNOWN has a nameable cause (Ollama not
+answering). Two earlier versions of that branch were wrong and both looked
+fine: one asserted a *reason* for the UNKNOWN that was not true, and one
+required a 3+ digit number as proof the sense had read something, which fails
+`senses` whose real readings are all one or two digits (`rfsense` legitimately
+reports `link=70/70 level=-29dBm`). Neither a confident PASS nor a confident
+FAIL is available here; say so instead of guessing.
+
+**Status: run and green — 42 pass, 0 fail, rc=0** (2026-09-28) on a real
+booted slot (`@blue`, testbed `9be7139`, Chronoa overlaid from `d6b0362` and
+packaged as `shani-chronoa 0.1.0-6`), after a full `bootstrap -p gnome -d
+latest`. The decisive lines:
 
 ```
 RESULT privilege-uses-package-manager  PASS (18 further holder attributed to
   distribution packages, so the ownership lookup is actually working)
 ```
 
-which is exactly the assertion that would have failed before the Arch fix.
+which is exactly the assertion that would have failed before the Arch fix,
+and the modelfit pair that the dedicated check added:
+
+```
+RESULT modelfit-ollama-unknown-honest  PASS (Ollama did not answer and the
+                                  sense said UNKNOWN rather than claiming a count)
+RESULT modelfit-hardware-half-still-real PASS (31795 MB RAM total, 25656 MB
+                                  available - the kernel half read fine even
+                                  though Ollama did not answer)
+```
 Run it with the invocation already documented under "Running it for real"
 below — that section carries the `--cgroupns=host` and extra-`-v` details, and
 they apply unchanged to this test.
