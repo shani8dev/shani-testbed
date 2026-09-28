@@ -12,6 +12,7 @@ of past defects. Read what your change touches; don't page through
 the rest.
 
 **Always read these first:**
+- `What this repo is` — the nspawn slots, vmspawn, and MCP server
 - `Empirical verification (mandatory)`
 - `Fast checks (run first; they are the floor, not the proof)`
 - `Never edit a harness file while a harness run is using it`
@@ -22,8 +23,12 @@ the rest.
 - `Slot tests cannot all be unit tests — the distro is part of the contract`
 - `Rules that have bitten this harness before`
 
-**On-demand reference — do not page through speculatively:**
+**Current known issues — read this before you start:**
 - `Audit-verified known issues (confirmed present)` — ~238 lines
+
+  This section mixes fixed history with issues that are **still open**,
+  including Critical security ones. Grep it for `not fixed`,
+  `still open`, and your subsystem name before you touch anything.
 
 This repo has no `AUDIT-HISTORY.md` yet, so the detail lives here. **Grep it for the subsystem you are changing**, then read
 the hits in full; skip the rest.
