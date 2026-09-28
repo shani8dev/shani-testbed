@@ -51,6 +51,8 @@ trap cleanup EXIT
 SCHEMA_ID="org.shani.chronoa"
 
 # The senses this file covers, and the external binary each one depends on.
+# hwmon and modelfit deliberately have no entry: they read /proc and /sys
+# directly, so there is no binary that can be missing.
 # The binary is the whole point: a sense whose dependency is missing on the
 # target must degrade to UNKNOWN, and that is only observable here.
 declare -A NEEDS=(
@@ -59,7 +61,7 @@ declare -A NEEDS=(
   [bluetooth]=bluetoothctl
   [thermalgrid]=i2cdetect
 )
-SENSES=(contention privilege thermal display network bluetooth camera rfsense thermalgrid)
+SENSES=(contention privilege thermal thermalgrid display network bluetooth camera rfsense hwmon modelfit)
 
 if [[ ! -x "$CLI" ]]; then
   res chronoa-machine-state-cli "FAIL (no $CLI in this slot - the image ships no shani-chronoa at all. Overlay the source with slot-test <slot> chronoa-machine-state --local-src-chronoa=<checkout>, or install a built package with --local-pkg=shani-chronoa)"
@@ -152,6 +154,8 @@ for s in "${SENSES[@]}"; do
     fi
     if (( have )); then
       res "real-reading-$s" "FAIL (reported UNKNOWN although its dependency IS installed - a dependency that is present must produce a real reading, not silence)"
+    elif [[ -z "$tool" ]]; then
+      res "real-reading-$s" "PASS (UNKNOWN, and this sense has no external dependency to be missing - it reads the kernel directly, so UNKNOWN means it found nothing to read rather than a tool being absent)"
     else
       res "real-reading-$s" "PASS (UNKNOWN, which is correct: its dependency is genuinely absent)"
     fi
