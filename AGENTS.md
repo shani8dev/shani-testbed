@@ -5,6 +5,29 @@ This file applies to any AI coding assistant working in this repository
 before editing, and follow the verification steps before calling any change
 done.
 
+## Start here (fast path)
+
+This file holds both the rules you must follow and a dated record
+of past defects. Read what your change touches; don't page through
+the rest.
+
+**Always read these first:**
+- `Empirical verification (mandatory)`
+- `Fast checks (run first; they are the floor, not the proof)`
+- `Never edit a harness file while a harness run is using it`
+- `Boundaries`
+
+**Read when your change touches them:**
+- `Extend the harness — don't write one-off test scripts`
+- `Slot tests cannot all be unit tests — the distro is part of the contract`
+- `Rules that have bitten this harness before`
+
+**On-demand reference — do not page through speculatively:**
+- `Audit-verified known issues (confirmed present)` — ~238 of this file's 450 lines
+
+This repo has no `AUDIT-HISTORY.md` yet, so the detail lives here. **Grep it for the subsystem you are changing**, then read
+the hits in full; skip the rest.
+
 ## What this repo is
 
 The ShaniOS test harness: installs a real ShaniOS image onto loop-backed
