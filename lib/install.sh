@@ -157,7 +157,7 @@ _verify_download() {
   local f="$1"
   _release_keyring
   ( cd "$(dirname "$f")" && sha256sum --check --status "$(basename "$f").sha256" ) \
-    || { rm -f "$f"; die "SHA-256 mismatch for $(basename "$f") (deleted) - re-run to download again"; }
+    || { rm -f "$f" "${f}.sha256" "${f}.asc"; die "SHA-256 mismatch for $(basename "$f") (deleted with its checksum and signature) - re-run to download again"; }
   gpg --homedir "${RELEASE_GNUPGHOME}" --batch --status-fd 1 --verify "${f}.asc" "$f" 2>/dev/null \
       | grep -Eq "^\[GNUPG:\] VALIDSIG .* ${GPG_KEY_ID}\$" \
     || { rm -f "$f"; die "GPG signature check failed for $(basename "$f") (deleted)"; }
@@ -245,6 +245,10 @@ _fetch_published() {
   for f in "$filename" flatpakfs.zst snapfs.zst; do
     local required=0; [[ "$f" == "$filename" ]] && required=1
     _r2_get "${base}/${date_dir}/${f}" "${dest}/${f}" "$required" || { log "  ${f}: not published - skipped"; continue; }
+    # the sidecars are fetched every time: a leftover .sha256 from a LOCAL
+    # build of the same date (same directory) was trusted forever, so the real
+    # download failed its check on every run and was deleted in a loop
+    rm -f "${dest}/${f}.sha256" "${dest}/${f}.asc"
     _r2_get "${base}/${date_dir}/${f}.sha256" "${dest}/${f}.sha256" 1
     _r2_get "${base}/${date_dir}/${f}.asc" "${dest}/${f}.asc" 1
   done

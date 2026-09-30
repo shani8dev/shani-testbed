@@ -240,6 +240,18 @@ containers first.
 
 ## Audit-verified known issues (confirmed present)
 
+- **`bootstrap -d latest` is the LOCAL build, not the published image.**
+  Without `--from-r2` it installs `cache/output/<profile>/latest.txt` - on
+  2026-10-01 a month-old 20260821 build (shani-deploy 62) while R2's
+  latest was 20260925 (87). Overlaying current units onto it failed
+  mark-boot-success (it calls a script that image predates). To test what
+  users run: `bootstrap -p <p> -d latest --from-r2`; check with
+  `enter <slot> cat /etc/shani-version`.
+- **R2 sidecars are re-fetched every time (fixed 2026-10-01).** R2 downloads
+  share `cache/output/<p>/<date>/` with local builds, and `_r2_get` skips
+  files that exist: a local build's `.sha256` was trusted forever, so the
+  real image failed its check and was deleted on every run.
+
 - **A container's `swapon` is the host's.** install.sh / shani-deploy swap
   on a test disk's swapfile inside the container, i.e. on the host kernel;
   deleted images then stayed allocated (3 found, 31 GB). `_release_test_swap`
