@@ -618,7 +618,13 @@ print("suppressed=%s" % getattr(r, "suppressed", None))
 print("reason=%s" % (getattr(r, "reason", "") or ""))
 print("sense=%s" % getattr(r, "name", ""))
 print("registered=%d" % len(names))
-print("has_filesystems=%s" % ("filesystems" in names))' 2>"$WORK/poll.err")
+print("has_filesystems=%s" % ("filesystems" in names))
+# Name the keys, and any key whose value is not a Sense. A key present with a
+# None value makes `name in _senses` true while `_senses.get(name)` is None,
+# which is the only way poll() can report a sense as unregistered.
+print("none_valued=%s" % ",".join(sorted(k for k, v in getattr(sch, "_senses", {}).items() if v is None)) or "-")
+print("file_senses=%s" % ",".join(sorted(
+    f.stem for f in __import__("pathlib").Path(__import__("shani_chronoa.senses.scheduler", fromlist=["x"]).__file__).parent.glob("*.py"))))' 2>"$WORK/poll.err")
 poll_rc=$?
 if (( poll_rc != 0 )); then
   bad senses-a-poll-really-runs "polling a real sense raised in the slot: $(grep -vE '^  File |^Traceback' "$WORK/poll.err" | head -2 | tr '\n' ' ')"
@@ -632,7 +638,7 @@ else
   elif [[ "${P[has_filesystems]:-}" != "True" ]]; then
     bad senses-a-poll-really-runs "the scheduler holds no 'filesystems' sense (registered=${P[registered]:-?}), so nothing was polled at all. A refusal because the sense is MISSING is not a consent refusal and must never read as a pass - this is the false-clean-answer shape this file exists to catch"
   else
-    bad senses-a-poll-really-runs "polling 'filessystems' with consent GRANTED still did not deposit a percept: ok=${P[ok]:-?} denied=${P[denied]:-?} reason='${P[reason]:-}' (registered=${P[registered]:-?}). Consent is not the excuse here - it was opened for this process - so this is a real failure of the poll/deposit path, not a correct refusal"
+    bad senses-a-poll-really-runs "polling 'filessystems' with consent GRANTED still did not deposit a percept: ok=${P[ok]:-?} denied=${P[denied]:-?} reason='${P[reason]:-}' (registered=${P[registered]:-?}, sense files on disk: ${P[file_senses]:-?}, keys holding a non-Sense value: ${P[none_valued]:-?}). Consent is not the excuse here - it was opened for this process - so this is a real failure of the poll/deposit path, not a correct refusal"
   fi
   unset P
 fi
