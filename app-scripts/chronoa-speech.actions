@@ -1,0 +1,77 @@
+# chronoa-speech — Shani Chronoa's GTK4 window, built by the real image's own
+# GTK4/PyGObject and driven like a user, on a real Shanios install:
+#   app <slot> --run=/usr/bin/shani-chronoa --local-src-chronoa=<checkout> \
+#       --strict --script=app-scripts/chronoa-speech.actions
+# --local-src-chronoa is MANDATORY: the image does not install shani-chronoa
+# (no `pacman -Q shani-chronoa`, no /usr/bin/shani-chronoa), so without the
+# overlay the launcher dies with ModuleNotFoundError and nothing below is
+# proved. --strict runs it with G_DEBUG=fatal-criticals, so the first GTK
+# critical aborts the app instead of being printed and ignored.
+#
+# slot-tests/chronoa-speech.sh already proves the speech stack headlessly in
+# the same slot (PiperTTS().synthesize() -> a real 81,698-byte RIFF/WAVE via
+# espeak-ng). This file is the other half: that the WINDOW builds at all, and
+# that it survives being clicked. That is where this project's real bugs have
+# lived and where a headless slot-test cannot see them —
+#   * Gtk.Button.set_relief, removed in GTK4, crashed the app on first window
+#     creation;
+#   * super().do_startup()'s vfunc chain-up threw TypeError on a real
+#     PyGObject build and then SIGSEGV'd (GLib-GIO-CRITICAL "failed to chain
+#     up on ::startup");
+#   * Adw.init() after the window was built rendered an empty window with no
+#     error at all;
+#   * the orb was a Gtk.Button wired to nothing — no set_action_name, no
+#     clicked handler — so voice input was unreachable from the GUI. So the
+#     click-element below is not decoration: it is the assertion that the orb
+#     is wired, and the find= after it asserts the click reached app.py's
+#     real handler.
+#
+# Every window title, role and accessible name below was read out of a real
+# `windows`/`tree` run of this app on @blue, never from memory: the title is
+# "Shani Chronoa", the orb's accessible name is "Start listening (Enter)" (it
+# comes from the tooltip text), and the at-spi role is `button`, not
+# "push button".
+#
+# KNOWN FAILURE — a11y-lint, and it is a real app defect, not a harness one.
+# The message entry (`gui.py`'s `self._input_entry`, built at gui.py:1047) has
+# only `set_placeholder_text("Type a message\u2026")` and never sets
+# `Gtk.AccessibleProperty.LABEL`, so at-spi2 reports its name as ''. Proved on
+# this image with a purpose-built GTK4 probe, not inferred: an entry with only
+# a placeholder reports name='' AND description='' (the placeholder is exposed
+# to AT-SPI as neither), while the same entry with `update_property([LABEL])`
+# next to it reports its label. A screen reader announces that field as bare
+# "text". The sibling send button two lines below (gui.py:1062) DOES set LABEL,
+# so this is an omission rather than a design choice. The one-line fix belongs
+# in shani-chronoa, which this harness does not modify, so the failure is left
+# standing here rather than deleted: an a11y check that no longer runs is
+# indistinguishable from one that passes. Everything else below passes; the
+# script's exit code is 1 because of this one assertion.
+wait-window=Shani Chronoa:90
+sleep=3
+screenshot=@out/chronoa-speech.png
+# The accessibility tree as the image's own at-spi2 sees it: the orb, the two
+# header buttons, the state/detail labels and the suggestion buttons.
+tree
+# Fails today, on the unnamed message entry — see KNOWN FAILURE above. The orb,
+# both header buttons, the send button and all six suggestion buttons are named
+# and pass; 1 of 11 controls does not.
+a11y-lint
+# The voice-input control. On a stock image STT is disabled by design (no
+# whisper-cpp, no ggml model), so the real, honest outcome of pressing the orb
+# is app.py's "Whisper not available for listening" -> orb state error ->
+# the state line reads "Something went wrong". That is the assertion: the
+# click reached the handler and the app reported the missing dependency
+# instead of silently doing nothing. A silent no-op here is the exact bug
+# class this file exists to catch.
+click-element=^Start listening \(Enter\)$
+sleep=3
+find=Something went wrong
+expect-changed=@out/chronoa-speech.png:0.5
+screenshot=@out/chronoa-speech-after-orb.png
+expect-clean-log
+# 20 seeded random clicks on enabled on-screen controls (orb, header buttons,
+# suggestion buttons, send). The seed is printed, so a failure replays.
+monkey=20:20261001
+expect-clean-log
+screenshot=@out/chronoa-speech-after-monkey.png
+quit
