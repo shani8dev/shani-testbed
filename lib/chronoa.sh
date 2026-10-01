@@ -152,6 +152,24 @@ _chronoa_overlay_tree() {
 # Deleting through the merged overlay creates a whiteout in upper/, and
 # _revert_local_src_overlay's `rm -f upper/<path>` removes the whiteout — the
 # image's own file becomes visible again. Same mechanism, opposite direction.
+# Hides the image's modules the checkout no longer has, the same way: an old
+# skills/scan_archive.py from the installed package stayed importable over a
+# checkout without it ("Skipping 'builtin:scan_archive': SKILLS must be a
+# list"), so the slot ran a mix of two versions.
+_chronoa_strip_stale() {
+  local src="$1" lib="$2" n=0 f rel
+  [[ -d "$lib" && -d "$src" ]] || return 0
+  while IFS= read -r -d '' f; do
+    rel="${f#"${lib}/"}"
+    [[ -e "${src}/${rel}" ]] && continue
+    rm -f "$f"
+    echo "${f#"${NSPAWN_WORK}/merged/"}" >> "$(_local_src_record)"
+    n=$(( n + 1 ))
+  done < <(find "$lib" -type f -name '*.py' -print0 2>/dev/null)
+  (( n == 0 )) || log "  hid ${n} module(s) the image has and the checkout does not (reverted next run)"
+  return 0
+}
+
 _chronoa_strip_bytecode() {
   local lib="$1" n=0 f rel
   [[ -d "$lib" ]] || return 0
@@ -193,6 +211,7 @@ _overlay_chronoa_src() {
   # 2. the Python package
   _chronoa_overlay_tree "${src_dir}/usr/lib/shani-chronoa" "${merged}/usr/lib/shani-chronoa"
   _chronoa_strip_bytecode "${merged}/usr/lib/shani-chronoa"
+  _chronoa_strip_stale "${src_dir}/usr/lib/shani-chronoa" "${merged}/usr/lib/shani-chronoa"
 
   # 3. the desktop entry and icons (present so launchers.sh's dock check sees
   #    a real .desktop for a Chronoa that the image never packaged)
