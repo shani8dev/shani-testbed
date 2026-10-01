@@ -728,6 +728,8 @@ def main():
         if len(devices) > 1:
             page.navigate(args.url)
 
+        check_nojs(page, cdp, args)
+
         if args.offline:
             check_offline(page, cdp, args)
 
@@ -747,6 +749,64 @@ def main():
         cdp.close()
         shutil.rmtree(profile, ignore_errors=True)
     return finish(report, args)
+
+
+NOJS_PROBE = r"""
+(() => {
+  // what a visitor sees with scripts off: sample a grid of points, find the
+  // topmost element at each, and whether any visible text is on screen
+  const W = innerWidth, H = innerHeight, hits = new Map(); let n = 0;
+  for (let y = 0.1; y < 1; y += 0.2) for (let x = 0.1; x < 1; x += 0.2) {
+    let e = document.elementFromPoint(W * x, H * y); n++;
+    // the outermost fixed/absolute ancestor is what covers the point
+    let top = null;
+    for (let a = e; a && a !== document.body; a = a.parentElement)
+      if (/fixed|absolute/.test(getComputedStyle(a).position)) top = a;
+    if (top) hits.set(top, (hits.get(top) || 0) + 1);
+  }
+  let cover = null, most = 0;
+  for (const [e, c] of hits) if (c > most) { most = c; cover = e; }
+  const sel = e => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') +
+    (e.classList.length ? '.' + [...e.classList].slice(0, 2).join('.') : '');
+  let text = 0;
+  const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let t; (t = tw.nextNode()) && text < 200;) {
+    const el = t.parentElement, s = t.textContent.trim();
+    // <noscript> content is real, visible text with scripts off: keep it
+    if (!s || !el || el.closest('script, style')) continue;
+    const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+    if (r.width && r.height && r.top < H && r.bottom > 0 && cs.visibility !== 'hidden' && +cs.opacity > 0.1) {
+      // and not under the covering overlay
+      const top = document.elementFromPoint(Math.min(W - 1, Math.max(0, r.left + 1)), Math.min(H - 1, Math.max(0, r.top + 1)));
+      if (top && (top === el || el.contains(top) || top.contains(el))) text += s.length;
+    }
+  }
+  return {covered: most / n, cover: cover ? sel(cover) : '', text};
+})()
+"""
+
+
+def check_nojs(page, cdp, args):
+    """With scripts off, the page must show something: not a blank page and
+    not a full-screen overlay only script removes (shani-blog's loader hid
+    its own "JavaScript is required" notice). A notice is enough to PASS."""
+    cdp.send("Emulation.setScriptExecutionDisabled", {"value": True})
+    try:
+        _, _, err = page.navigate(args.url, settle=4)
+        if err:
+            result("no-js", "FAIL", f"load failed with scripts off: {err}")
+            return
+        r = page.evaluate(NOJS_PROBE) or {}
+    finally:
+        cdp.send("Emulation.setScriptExecutionDisabled", {"value": False})
+    if r.get("covered", 0) >= 0.9 and r.get("text", 0) < 20:
+        result("no-js", "FAIL", f"with scripts off {r['cover']} covers {int(r['covered'] * 100)}% of the screen "
+                                "and no text shows - only script removes it")
+    elif r.get("text", 0) < 20:
+        result("no-js", "FAIL", "with scripts off nothing readable is on screen (a blank page)")
+    else:
+        result("no-js", "PASS", f"with scripts off {r['text']}+ characters of text are readable"
+                                + (f" ({r['cover']} covers {int(r['covered'] * 100)}%)" if r.get("cover") else ""))
 
 
 def check_offline(page, cdp, args):

@@ -70,6 +70,14 @@ smap=$(python3 "$C" --url=http://127.0.0.1:8704/ --crawl=5 2>&1)
 grep -qE '^RESULT crawl +FAIL \(1/2 .*from sitemap.xml' <<<"$smap" && grep -q 'gone.html: HTTP 404' <<<"$smap" \
   && res crawl-falls-back-to-sitemap PASS || res crawl-falls-back-to-sitemap "FAIL ($(grep '^RESULT crawl' <<<"$smap"))"
 
+# with scripts off a page must show something: the good fixture does, and a
+# full-screen loader only script removes (shani-blog's, before its fix) FAILs
+grep -qE '^RESULT no-js +PASS' <<<"$good" && res nojs-good-page-passes PASS || res nojs-good-page-passes "FAIL ($(grep '^RESULT no-js' <<<"$good"))"
+python3 /lib-under-test/web_serve.py "$F/script-only-overlay" 8705 >/dev/null 2>&1 &
+sleep 1
+ov=$(python3 "$C" --url=http://127.0.0.1:8705/ --devices=mobile --schemes=light --no-features 2>&1)
+grep -qE '^RESULT no-js +FAIL .*div#loader covers' <<<"$ov" && res nojs-overlay-caught PASS || res nojs-overlay-caught "FAIL ($(grep '^RESULT no-js' <<<"$ov"))"
+
 # --allow-host and --ignore really relax what they name
 relaxed=$(python3 "$C" --url=http://127.0.0.1:8702/ --resolve='MAP tracker.example 127.0.0.1:8702' \
           --allow-host=tracker.example 2>&1)

@@ -984,6 +984,7 @@ SPA-redirect hop shani-blog's `/bookmarks` relies on). Each check prints a
 | `perf` | LCP / CLS exceed `--budget-lcp` / `--budget-cls`; above CLS 0.1 the elements that shifted are printed |
 | `offline` | (`--offline`) the service worker does not take control and serve the page with the network cut |
 | `spa-fallback` | (`--spa=/path`) an unknown route does not render the app |
+| `no-js` | with scripts disabled, nothing readable is on screen, or one element covers 90 %+ of it and no text shows (a full-screen loader only script removes — shani-blog's covered even its own `<noscript>` notice). A `<noscript>` notice is enough to pass |
 | `crawl` | (`--crawl=N`) a same-origin page linked from the start page has any of the errors above; judged on the document the browser ends on, so a working SPA redirect is not a broken page. **Crawling zero pages is a FAIL, not a pass** — it is reached when the start page has neither a same-origin `<a href>` page nor a `sitemap.xml` naming one, and reporting "0/0 clean" would be a green check with nothing behind it. Where the only links are `onclick` buttons, the sitemap is used instead and the result says so; if neither exists, the detail names the cause rather than just going red |
 
 **Features, used like a visitor uses them** (`lib/web_features.py`, on every

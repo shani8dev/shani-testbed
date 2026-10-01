@@ -209,7 +209,8 @@ slot-test   <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=
               320 px, text spacing, reduced motion, landmarks, headings, ids,
               labels, head metadata, robots/sitemap/404 (--no-features: off).
 Also offline via the service worker, SPA fallback,
-               same-origin crawl (zero pages crawled is a FAIL, not a
+               no-js (with scripts off the page still shows text, not a
+               full-screen loader only script removes), same-origin crawl (zero pages crawled is a FAIL, not a
                pass). --site serves DIR as GitHub Pages does
               (404.html, status 404). Sibling site checkouts: /opt/<repo>.
               Shots + JSON report: disk/web-<epoch>/. No disk lock.

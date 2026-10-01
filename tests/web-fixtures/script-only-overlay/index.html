@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Script-only overlay</title>
+<style>#loader{position:fixed;inset:0;background:#fff;z-index:9999}#loader.hidden{display:none}</style></head>
+<body>
+<!-- shani-blog's shape before its fix: a full-screen loader that only script
+     removes. With scripts on it is gone at once; with them off it covers the
+     page and even the noscript notice. -->
+<noscript><p>JavaScript is required to view this page.</p></noscript>
+<div id="loader" aria-hidden="true"></div>
+<main id="main"><h1>Script-only overlay</h1><p>Content that a visitor without scripts never sees.</p></main>
+<script>document.getElementById('loader').classList.add('hidden');</script>
+</body></html>
