@@ -225,6 +225,45 @@ _app_start_mic_tap() {
   ( _pw pw-record --target testbed-mic --rate 16000 --channels 1 --format s16 - > "${APP_OUT}/mic.raw" 2>/dev/null ) &
   APP_MIC_PID=$!
 }
+# FILE-highlights.mp4: only the moments around speech (+-2 s, merged when
+# closer than 4 s), sound and picture cut together. A run spends most of its
+# time silent - a small model on a CPU took minutes per turn - and a demo
+# should not.
+_app_record_highlights() {
+  local in="$1" hl="${1%.mp4}-highlights.mp4" segs
+  segs=$(ffmpeg -nostdin -i "$in" -map 0:a -af silencedetect=noise=-40dB:d=0.5 -f null - 2>&1 | python3 -c '
+import re, sys
+log = sys.stdin.read()
+m = re.search(r"Duration: (\d+):(\d+):([\d.]+)", log)
+total = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else 0
+starts = [float(x) for x in re.findall(r"silence_start: ([\d.]+)", log)]
+ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", log)]
+# speech = the gaps between silences
+speech, t = [], 0.0
+for a, b in zip(starts, ends + [total]):
+    if a > t: speech.append((t, a))
+    t = b
+if t < total: speech.append((t, total))
+out = []
+for a, b in speech:
+    a, b = max(0, a - 2), min(total, b + 2)
+    if out and a - out[-1][1] < 4: out[-1] = (out[-1][0], b)
+    else: out.append((a, b))
+print(" ".join(f"{a:.2f}-{b:.2f}" for a, b in out))
+')
+  [[ -n "$segs" ]] || return 0
+  local f="" i=0 seg n
+  for seg in $segs; do
+    f+="[0:v]trim=start=${seg%-*}:end=${seg#*-},setpts=PTS-STARTPTS[v${i}];[0:a]atrim=start=${seg%-*}:end=${seg#*-},asetpts=PTS-STARTPTS[a${i}];"
+    i=$((i + 1))
+  done
+  for ((n = 0; n < i; n++)); do f+="[v${n}][a${n}]"; done
+  f+="concat=n=${i}:v=1:a=1[v][a]"
+  ffmpeg -nostdin -loglevel error -y -i "$in" -filter_complex "$f" -map "[v]" -map "[a]" \
+    -c:v libx264 -preset veryfast -crf 26 -pix_fmt yuv420p -c:a aac -b:a 128k "$hl" 2>>"${APP_OUT}/record.log" \
+    && log "Highlights: ${hl} (${i} moment(s) around speech)" || warn "--record: the highlights cut failed"
+}
+
 _app_finish_recording() {
   [[ -n "${APP_REC_PID:-}" ]] || return 0
   kill -INT "$APP_REC_PID" 2>/dev/null; wait "$APP_REC_PID" 2>/dev/null || true
@@ -237,9 +276,10 @@ _app_finish_recording() {
     ffmpeg -nostdin -loglevel error -y -i "$v" \
       -itsoffset "$so" -f s16le -ar 16000 -ac 1 -i "${APP_OUT}/speaker.raw" \
       -itsoffset "$mo" -f s16le -ar 16000 -ac 1 -i "${APP_OUT}/mic.raw" \
-      -filter_complex "[1:a][2:a]amix=inputs=2:duration=longest:normalize=0[a]" \
-      -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 96k -shortest "$out" 2>>"${APP_OUT}/record.log" \
+      -filter_complex "[1:a][2:a]amix=inputs=2:duration=longest:normalize=0,aresample=48000,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-1.5[a]" \
+      -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 128k -shortest "$out" 2>>"${APP_OUT}/record.log" \
       || { warn "--record: muxing the audio failed; keeping the silent video"; cp "$v" "$out"; }
+    _app_record_highlights "$out"
   else
     cp "$v" "$out"
   fi
