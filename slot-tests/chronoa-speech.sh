@@ -401,22 +401,28 @@ raise SystemExit(0 if (not WhisperSTT().is_available()) else 1)' 2>>"$WORK/stt.e
   else
     guard="no"
   fi
+  # The warning is interpolated, not literal: app.py logs
+  # "%s not available - STT disabled" with the backend's own name, so the
+  # string to look for is "not available - STT disabled". Pinning
+  # "Whisper.cpp not available" instead would fail the moment a second
+  # backend exists, which is the wrong way round: what matters is that the
+  # degradation is stated, not which engine stated it.
   warn=""
-  grep -q 'Whisper.cpp not available - STT disabled' "${CHRONOA_LIB}/shani_chronoa/app.py" 2>/dev/null && warn="yes"
+  grep -q 'not available - STT disabled' "${CHRONOA_LIB}/shani_chronoa/app.py" 2>/dev/null && warn="yes"
   if [[ "$warn" == yes ]]; then
     warnstate="present"
   else
     warnstate="ABSENT"
   fi
   if [[ "$want" == no && "$guard" == yes && "$warn" == yes ]]; then
-    pass stt-reports-unavailable-not-broken "is_available() is False (no whisper binary${stt_bin:+ at $stt_bin}${have_model:+, no model}), so app.py's 'Whisper.cpp not available - STT disabled' branch is the one taken and the string is still in the installed app.py — degraded, not broken, and saying so"
+    pass stt-reports-unavailable-not-broken "is_available() is False (no whisper binary${stt_bin:+ at $stt_bin}${have_model:+, no model}), so app.py's 'not available - STT disabled' branch (with the backend's own name interpolated) is the one taken and the string is still in the installed app.py — degraded, not broken, and saying so"
   elif [[ "$want" == yes ]]; then
     # Both halves present, so is_available() is True and app.py must NOT take the
     # degradation branch. The line that has to be readable either way is the one
     # in the source, which is what the other half of this check is for.
     pass stt-reports-unavailable-not-broken "is_available() is True and tracks reality (whisper binary ${stt_bin} and model ${stt_model} both present), so the STT-disabled branch is correctly NOT taken; the warning string is still ${warnstate} in the installed app.py for the day one half goes away"
   else
-    bad stt-reports-unavailable-not-broken "is_available() is correctly False, but the degradation is not visible: the not-is_available() guard evaluated ${guard} and the 'Whisper.cpp not available - STT disabled' warning string is ${warnstate} in ${CHRONOA_LIB}/shani_chronoa/app.py — STT goes quiet for a reason nobody can read"
+    bad stt-reports-unavailable-not-broken "is_available() is correctly False, but the degradation is not visible: the not-is_available() guard evaluated ${guard} and the 'not available - STT disabled' warning string is ${warnstate} in ${CHRONOA_LIB}/shani_chronoa/app.py — STT goes quiet for a reason nobody can read"
   fi
 fi
 
