@@ -10,6 +10,7 @@
 #       --gsettings=org.shani.chronoa:model=qwen2.5:0.5b \
 #       --gsettings=org.shani.chronoa:notification-enabled=true \
 #       --gsettings=org.shani.chronoa:wake-word-enabled=true \
+#       --gsettings=org.shani.chronoa:web-sense-enabled=true \
 #       --run=shani-chronoa \
 #       --script=/opt/shani-testbed/app-scripts/chronoa-voice.actions
 #
@@ -33,11 +34,31 @@ expect-absent=^Listening:10
 say=hey chronoa
 wait-element=^Listening:20
 screenshot=@out/voice-listening.png
-# the question is heard, answered by the model, and spoken back
+# the question is heard, answered by the model, and spoken back - checked in the
+# window's own text first (each reply's accessible name is "assistant said: ..."),
+# then by ear, since espeak's "four" can reach the judge as "far"
 say=what is two plus two
 wait-element=^(Thinking|Speaking):60
-expect-heard=four|\b4\b:240
+wait-element=said:.*(four|\b4\b):240
+expect-heard=four|far|\b4\b:120
 screenshot=@out/voice-answered.png
+# everyday questions, each needing the right tool out of ~100 (tool selection)
+wait-element=^Ready:180
+say=hey chronoa
+wait-element=^Listening:20
+say=what time is it in Tokyo
+wait-element=said:.*[0-9]{1,2}[:.][0-9]{2}:240
+wait-element=^Ready:180
+say=hey chronoa
+wait-element=^Listening:20
+say=how many miles is one hundred kilometers
+wait-element=said:.*62:240
+wait-element=^Ready:180
+say=hey chronoa
+wait-element=^Listening:20
+say=what is the weather in Mumbai today
+wait-element=said:.*(°C|degrees|clear|cloud|rain|drizzle|sun):240
+screenshot=@out/voice-everyday.png
 # a request that needs a permission: the prompt is SAID, Chronoa opens the
 # microphone for the answer by itself, and a spoken "allow this once" answers it
 wait-element=^Ready:180
