@@ -195,6 +195,33 @@ CONTROL_ROLES = {"button", "push button", "toggle button", "check box", "radio b
 CLICKABLE_ROLES = CONTROL_ROLES - {"text", "entry", "password text"}
 
 
+# Roles ARIA lets take their name from their content: a list or tree item is
+# read out as the text inside it. libadwaita's Adw.ComboRow shows its selected
+# value ("stable") as an unnamed list item holding a named label - announced
+# as that label, so it is not an unnamed control.
+NAME_FROM_CONTENT = {"list item", "tree item"}
+
+
+def content_name(acc, depth=0):
+    """The text a name-from-content element is announced by: its descendants'
+    names, a few levels down (a row's label, an icon's description)."""
+    if depth > 4:
+        return ""
+    try:
+        n = acc.get_child_count()
+    except Exception:
+        return ""
+    parts = []
+    for i in range(n):
+        try:
+            c = acc.get_child_at_index(i)
+            nm = (c.get_name() or "").strip() if c else ""
+        except Exception:
+            continue
+        parts.append(nm or content_name(c, depth + 1))
+    return " ".join(p for p in parts if p).strip()
+
+
 def _bring_into_view(acc, x, y, w, h):
     """Scroll an element into its window: AT-SPI scroll_to (GTK3, Qt), then
     focusing it (GTK4 has no scroll_to, but scrolls a focused child into
@@ -318,7 +345,7 @@ def main(argv):
             n += 1
             # a text field may legitimately be named by its placeholder or
             # content only through its label relation; GTK exposes that as name
-            if not name.strip():
+            if not name.strip() and not (role in NAME_FROM_CONTENT and content_name(acc)):
                 bad.append(describe(ref, d, acc, role, name, indent=False))
         if not n:
             print("no on-screen controls (app not started, or accessibility off)", file=sys.stderr)

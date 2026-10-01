@@ -10,11 +10,12 @@ against a GTK3 stand-in.
   adw_fixture.py entry TITLE [--text=T] [--unnamed-button]
       An EntryRow titled "Name", Cancel and OK buttons. OK (or Enter in the
       entry) prints the entry's text and exits 0; Cancel exits 1.
-      --unnamed-button adds an icon-only button with no tooltip: the a11y
-      lint's negative control (a screen reader announces it as just "button").
+      --unnamed-button adds an icon-only button with no tooltip and a search
+      box named only by its placeholder: the a11y lint's negative controls (a
+      screen reader announces them as just "button" and "entry").
   adw_fixture.py form TITLE
-      Three named SwitchRows and nothing that closes the window: a monkey
-      run can click everything and the app must survive.
+      Three named SwitchRows and an Adw.ComboRow, nothing that closes the
+      window: a monkey run can click everything and the app must survive.
 """
 import sys
 
@@ -57,6 +58,9 @@ def on_activate(app):
         buttons = Gtk.Box(spacing=6, halign=Gtk.Align.END)
         if "--unnamed-button" in OPTS:
             buttons.append(Gtk.Button.new_from_icon_name("dialog-information-symbolic"))
+            # and a search box named only by its placeholder - Cassini's
+            # Services page had one: placeholder text is not a name
+            body.append(Gtk.SearchEntry(placeholder_text="Search things"))
         cancel = Gtk.Button(label="Cancel")
         cancel.connect("clicked", lambda b: done(1))
         ok = Gtk.Button(label="OK")
@@ -88,6 +92,9 @@ def on_activate(app):
     else:
         for name in ("Alpha", "Beta", "Gamma"):
             group.add(Adw.SwitchRow(title=name))
+        # Cassini's update-channel picker: libadwaita shows the selected value
+        # as an unnamed list item around a named label - named by its content
+        group.add(Adw.ComboRow(title="Channel", model=Gtk.StringList.new(["stable", "latest", "testing"])))
         win.present()
 
 

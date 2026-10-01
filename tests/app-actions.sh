@@ -75,6 +75,7 @@ step "expect-text=OCR Probe" && res expect-text PASS || res expect-text FAIL
 step "expect-text=zzqx not on screen"; [[ $? -ne 0 ]] && res expect-text-negative PASS || res expect-text-negative FAIL
 step "a11y-lint"; lrc=$?; echo "$APP_REPLY" | sed 's/^/      /' | head -6
 [[ $lrc -ne 0 ]] && grep -qE "^\[[0-9]+\] button ''" <<<"$APP_REPLY" && res a11y-lint-catches-icon-only-button PASS || res a11y-lint-catches-icon-only-button FAIL
+[[ $lrc -ne 0 ]] && grep -qE "^\[[0-9]+\] entry ''" <<<"$APP_REPLY" && res a11y-lint-catches-placeholder-only-search PASS || res a11y-lint-catches-placeholder-only-search FAIL
 # glycin (GTK's image loader) warns when it cannot sandbox itself, which is
 # every container: the one accepted warning, named
 IGN='Glycin running without sandbox'
@@ -100,7 +101,9 @@ rm -f "$APP_OUT/app.rc"
 APP_PID=$!
 step "wait-window=Fifth:20" >/dev/null; sleep 1
 step "monkey=12:7" && grep -q 'still running' <<<"$APP_REPLY" && res monkey-survives PASS || res monkey-survives FAIL
-step "a11y-lint" && res a11y-lint-named-checkboxes PASS || res a11y-lint-named-checkboxes FAIL
+# the combo row's selected value is an unnamed list item around a named label:
+# named by its content, not an unnamed control
+step "a11y-lint" && res a11y-lint-named-checkboxes-and-combo PASS || res a11y-lint-named-checkboxes-and-combo "FAIL ($(head -3 <<<"$APP_REPLY" | tr '\n' ' '))"
 kill "$APP_PID" 2>/dev/null; pkill -f '[a]dw_fixture.py' 2>/dev/null
 
 # Sixth: an element far below the window must be scrolled into view, then clicked
