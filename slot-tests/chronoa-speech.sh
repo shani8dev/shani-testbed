@@ -536,6 +536,101 @@ else
   pass app-imports-clean "the slot's python imported ${imp} — the whole application module, GTK and senses included, not just the two speech modules"
 fi
 
+echo "== Group E2: the senses scheduler — constructed, and actually polling"
+
+# The senses layer had 44 consent switches in Settings and no way to run any of
+# them from the GUI: `sense.run()` had exactly two call sites in the whole
+# repository, and both were the headless CLI. A green suite said nothing about
+# this because the unit tests construct the scheduler and then never start it.
+# So this group asks the only two questions that matter, in the real slot, with
+# the real image's python: is one built, and does polling one produce a percept.
+
+sched=$(py -c 'from shani_chronoa.app import ChronoaApplication as A
+a = A()
+a._init_components()
+s = getattr(a, "sense_scheduler", None)
+print(type(s).__name__ if s is not None else "NONE")
+print("running" if (s is not None and s.running) else "stopped")
+print("shares-store" if (s is not None and s._store is a.percept_store) else "own-store")
+print("has-engine" if getattr(a, "event_engine", None) is not None else "no-engine")' 2>"$WORK/sched.err")
+sched_rc=$?
+if (( sched_rc != 0 )); then
+  bad senses-scheduler-constructed "building the scheduler failed in the slot's python: $(grep -vE '^  File |^Traceback' "$WORK/sched.err" | head -2 | tr '\n' ' ')"
+else
+  mapfile -t sched_lines <<<"$sched"
+  if [[ "${sched_lines[0]:-}" == "AmbientScheduler" ]]; then
+    pass senses-scheduler-constructed "the slot's python built a real AmbientScheduler from the installed package, and it is ${sched_lines[1]:-?} after _init_components (constructed-but-not-started is correct: several unit tests call _init_components directly, and start() would put a live poller in the suite)"
+  else
+    bad senses-scheduler-constructed "the app built ${sched_lines[0]:-no scheduler at all}, so the 44 consent switches in Settings cannot grant anything: $(grep -vE '^  File |^Traceback' "$WORK/sched.err" | head -2 | tr '\n' ' ')"
+  fi
+  [[ "${sched_lines[2]:-}" == "shares-store" ]] \
+    && pass senses-scheduler-shares-the-apps-store "the scheduler writes to the app's own PerceptStore, so a percept a sense deposits reaches the conversation through the context builder the assistant already reads; a second store would be a second, invisible one" \
+    || bad senses-scheduler-shares-the-apps-store "the scheduler holds its OWN store (${sched_lines[2]:-unknown}), so what it perceives reaches nothing and the feature is invisible by construction"
+  [[ "${sched_lines[3]:-}" == "has-engine" ]] \
+    && pass senses-scheduler-has-an-event-engine "an EventEngine is constructed alongside it, so event-trigger rules can fire in the GUI; before this a rule authored through manage_triggers could only ever run under the headless CLI" \
+    || bad senses-scheduler-has-an-event-engine "no EventEngine is constructed, so trigger rules authored in the GUI can never fire from the GUI"
+fi
+
+# The real proof: poll an ambient sense with no external binary and see whether a
+# percept is actually deposited. `filessystems` reads /proc/mounts, which exists
+# on any Linux machine and needs no package, so this exercises the real sense,
+# the real store and the real deposit path rather than a fixture.
+# The real proof: poll an ambient sense and see whether a percept is ACTUALLY
+# deposited. `filessystems` reads /proc/self/mountinfo, which exists on any
+# Linux machine and needs no package, so this exercises the real sense, the real
+# store and the real deposit path rather than a fixture.
+#
+# Consent is granted for this one process on purpose. `sense_allowed` gates every
+# sense behind `<name>-sense-enabled` (config.py: "defaults to false for every
+# sense except memory"), so WITHOUT a grant this poll is refused and proves
+# nothing about whether the scheduler runs. `SHANI_CHRONOA_CONSENT_GRANT` is the
+# mechanism the product itself uses for exactly this: it names ONE key, is read
+# per-call from the environment, and needs neither dconf nor a D-Bus session bus
+# (which a slot-test has no bus for) nor a write to the installed schema.
+#
+# Granting consent is also what makes this check able to FAIL. A refusal used to
+# be accepted here as a pass, on the theory that "a refusal that explains itself
+# is correct behaviour" - but that only proves the scheduler was CONSTRUCTED, not
+# that it ever polled anything. Every branch below now demands a deposited
+# percept; anything else is a failure.
+SHANI_CHRONOA_CONSENT_GRANT=filesystems-sense-enabled \
+polled=$(SHANI_CHRONOA_CONSENT_GRANT=filesystems-sense-enabled py -c '
+import os
+os.environ["SHANI_CHRONOA_CONSENT_GRANT"] = "filesystems-sense-enabled"
+from shani_chronoa.app import ChronoaApplication as A
+a = A()
+a._init_components()
+sch = a.sense_scheduler
+names = sorted(getattr(sch, "_senses", {}))
+r = sch.poll("filessystems")
+# key=value lines: positional parsing of this stdout is how the previous version
+# of this check came to read a consent refusal as a missing sense.
+print("ok=%s" % getattr(r, "ok", None))
+print("percept=%s" % (getattr(r, "percept", None) is not None))
+print("denied=%s" % getattr(r, "denied", None))
+print("suppressed=%s" % getattr(r, "suppressed", None))
+print("reason=%s" % (getattr(r, "reason", "") or ""))
+print("sense=%s" % getattr(r, "name", ""))
+print("registered=%d" % len(names))
+print("has_filesystems=%s" % ("filesystems" in names))' 2>"$WORK/poll.err")
+poll_rc=$?
+if (( poll_rc != 0 )); then
+  bad senses-a-poll-really-runs "polling a real sense raised in the slot: $(grep -vE '^  File |^Traceback' "$WORK/poll.err" | head -2 | tr '\n' ' ')"
+else
+  declare -A P=()
+  while IFS='=' read -r k v; do [[ -n "$k" ]] && P["$k"]="$v"; done <<<"$polled"
+  if [[ "${P[ok]:-}" == "True" && "${P[percept]:-}" == "True" ]]; then
+    pass senses-a-poll-really-runs "polling 'filessystems' inside the slot deposited a REAL percept through the app's own store (registered=${P[registered]:-?}) - so the scheduler is not merely constructible, it runs; consent was granted for this process only"
+  elif [[ "${P[ok]:-}" == "True" ]]; then
+    bad senses-a-poll-really-runs "poll() reported ok=True but deposited no percept (suppressed=${P[suppressed]:-?}, reason='${P[reason]:-}'). An ok poll that stored nothing is not a working scheduler - PerceptStore saw no change to record"
+  elif [[ "${P[has_filesystems]:-}" != "True" ]]; then
+    bad senses-a-poll-really-runs "the scheduler holds no 'filesystems' sense (registered=${P[registered]:-?}), so nothing was polled at all. A refusal because the sense is MISSING is not a consent refusal and must never read as a pass - this is the false-clean-answer shape this file exists to catch"
+  else
+    bad senses-a-poll-really-runs "polling 'filessystems' with consent GRANTED still did not deposit a percept: ok=${P[ok]:-?} denied=${P[denied]:-?} reason='${P[reason]:-}' (registered=${P[registered]:-?}). Consent is not the excuse here - it was opened for this process - so this is a real failure of the poll/deposit path, not a correct refusal"
+  fi
+  unset P
+fi
+
 echo "== Group F: the snap question, as a standing guard rather than a note"
 
 if (( ! PKG_META )); then

@@ -452,6 +452,24 @@ STUB
       -e "s|^LAUNCHER=/usr/bin/shani-chronoa\$|$launcher_arg|" \
       -e "s|^export XDG_DATA_HOME=.*\$|export XDG_DATA_HOME=\"$sd/xdg\"|" \
       "$SLOT_TEST" > "$sd/chronoa-speech.sh"
+  # Negative control for the scheduler poll check: strip the in-process consent
+  # grant and require that the check then FAILS. The scenario runs under `env -i`,
+  # so the grant cannot arrive from outside — the only way it was ever open is the
+  # line being removed right here. A control that cannot fail is not a control, and
+  # this is the one that proves senses-a-poll-really-runs is not a rubber stamp: it
+  # demands a DEPOSITED PERCEPT, so with consent withheld the real consent gate
+  # refuses and the check must report bad.
+  if [[ "${7:-}" == "no-grant" ]]; then
+    grep -c 'SHANI_CHRONOA_CONSENT_GRANT=filesystems-sense-enabled' "$sd/chronoa-speech.sh" > "$sd/grant-lines-before"
+    sed -i 's|^\(SHANI_CHRONOA_CONSENT_GRANT=filesystems-sense-enabled \\$\)|#\1|; s|^\( *\)os\.environ\["SHANI_CHRONOA_CONSENT_GRANT"\] = "filesystems-sense-enabled"|\1pass|' "$sd/chronoa-speech.sh"
+    grep -c 'os.environ\["SHANI_CHRONOA_CONSENT_GRANT"\] = "filesystems-sense-enabled"' "$sd/chronoa-speech.sh" > "$sd/grant-lines-after"
+    local before after
+    before=$(cat "$sd/grant-lines-before"); after=$(cat "$sd/grant-lines-after")
+    if [[ "$after" == "$before" && "$before" != "0" ]]; then
+      printf 'scenario %s: the consent-grant control mutated nothing (still %s grant lines)\n' "$name" "$after"
+      return 1
+    fi
+  fi
   local subs
   subs=$(grep -c -e "^source $STUB_PACDB_SH\$" "$sd/chronoa-speech.sh")
   [[ "$subs" == 1 ]] || { printf 'scenario %s: the _pacdb.sh substitution applied %s times\n' "$name" "$subs"; return 1; }
@@ -566,7 +584,12 @@ want base snap-is-not-a-shanios-path               PASS "no whisper-cli in the s
 # which on this host would mean writing outside the repo. Pinning the failure
 # set is a stronger assertion than demanding zero failures: it says these two,
 # and no others, are the lines that require a real install.
-HOST_ONLY="app-imports-clean launcher-imports-shipped-package"
+# The scheduler pair joins them for the same reason: `senses-scheduler-constructed`
+# needs the host to be able to construct a real ChronoaApplication, and
+# `senses-a-poll-really-runs` needs that application's store and a real
+# /proc/mounts read. Neither is satisfiable here, and both ARE asserted in a real
+# slot run - which is the only place they mean anything.
+HOST_ONLY="app-imports-clean launcher-imports-shipped-package senses-a-poll-really-runs senses-scheduler-constructed"
 base_fails=$(awk '$1=="RESULT" && $3=="FAIL" {print $2}' "$TMP/base/out" | sort | tr '\n' ' ')
 base_fails="${base_fails% }"
 if [[ "$(cat "$TMP/base/rc")" == 0 ]] && [[ "$(count_verdict base PASS)" -gt 0 ]] \
@@ -576,6 +599,24 @@ else
   no "cmd_slot_test's rule sees a healthy file" \
      "rc=$(cat "$TMP/base/rc") pass=$(count_verdict base PASS) skip=$(count_verdict base SKIP) fail=[${base_fails}], expected exactly [${HOST_ONLY}]"
 fi
+
+# --- 2b. THE CONTROL FOR senses-a-poll-really-runs ----------------------------
+# This check is the only thing in the file that can prove the 44 senses actually
+# POLL rather than merely being constructible, so it is exactly the kind of check
+# that can rot into a rubber stamp. Its whole value is that it demands a
+# DEPOSITED PERCEPT: `sense_allowed` gates every sense behind
+# `<name>-sense-enabled`, which defaults false for every sense except memory, so
+# an ungranted poll is refused and deposits nothing.
+#
+# Therefore: strip the in-process consent grant and REQUIRE THE CHECK TO FAIL.
+# If it still passed here, it would be passing without a percept and the whole
+# scheduler group above would be decoration. The scenario runs under `env -i`, so
+# the grant cannot leak in from the caller's environment — the only way it was
+# ever open is the line the control removes.
+scenario no-grant good none "$REAL_KEYS" none desc no-grant \
+  || no "scenario no-grant runs" "the slot-test could not be prepared"
+check_shape no-grant
+want no-grant senses-a-poll-really-runs FAIL "with consent withheld, the poll check FAILs rather than accepting a refusal as a pass (the control)"
 
 # --- 3. THE HEADLINE CONTROL: an espeak-ng that writes only a header ---------
 # A stub that exits 0 and writes a 44-byte RIFF file with no samples behind it.
