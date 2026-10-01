@@ -67,6 +67,32 @@ missing_var() {  # <pkg> -> package-owned /var paths that do not exist
     pacq -Qql "$1" 2>/dev/null | grep '^/var/' | while read -r p; do [ -e "$p" ] || echo "$p"; done
 }
 
+# A missing path under a mount point: was that mount up before
+# systemd-tmpfiles-setup ran? A nofail mount is not ordered before
+# local-fs.target, so tmpfiles can fill the directory underneath and the
+# (empty) mount then hides it - the generated tmpfiles.d is right and the
+# directories are still missing.
+mount_order() {  # <missing path>
+    local mp unit m t
+    # the deepest existing ancestor's mount (the missing path itself has none)
+    local p=$1; while [ ! -e "$p" ] && [ "$p" != / ]; do p=$(dirname "$p"); done
+    mp=$(findmnt -n -o TARGET -T "$p" 2>/dev/null)
+    if [ -z "$mp" ] || [ "$mp" = / ] || [ "$mp" = /var ]; then
+        printf '    %s is on %s, not a separate mount (ordering is not the cause)\n' "$p" "${mp:-?}"; return 0
+    fi
+    unit=$(systemd-escape -p --suffix=mount "$mp")
+    m=$(systemctl show -P ActiveEnterTimestampMonotonic "$unit" 2>/dev/null)
+    t=$(systemctl show -P ExecMainStartTimestampMonotonic systemd-tmpfiles-setup.service 2>/dev/null)
+    if [ -z "$m" ] || [ -z "$t" ] || [ "$m" = 0 ] || [ "$t" = 0 ]; then
+        printf '    %s on %s: no timestamps to compare (mount=%s, tmpfiles-setup=%s)\n' "$p" "$unit" "${m:-?}" "${t:-?}"; return 0
+    fi
+    if (( m > t )); then
+        printf '    %s (%s) came up %d ms AFTER systemd-tmpfiles-setup started: it hides what tmpfiles created\n' "$unit" "$(findmnt -n -o SOURCE "$mp")" $(( (m - t) / 1000 ))
+    else
+        printf '    %s came up before systemd-tmpfiles-setup (ordering is not the cause)\n' "$unit"
+    fi
+}
+
 while read -r unit pkg; do
     [ -n "$unit" ] || continue
     if ! systemctl cat "$unit" >/dev/null 2>&1; then res "start-$unit" "SKIP (not in this image)"; continue; fi
@@ -82,6 +108,7 @@ while read -r unit pkg; do
         printf '%s\n' "$why" | tail -n +2
         mv=$(missing_var "$pkg")
         [ -n "$mv" ] && printf '    missing %s-owned: %s\n' "$pkg" "$(tr '\n' ' ' <<<"$mv")"
+        [ -n "$mv" ] && mount_order "$(head -1 <<<"$mv")"
     fi
 done <<<"$SERVICES"
 
