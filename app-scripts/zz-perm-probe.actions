@@ -1,9 +1,0 @@
-wait-window=Shani Chronoa:120
-sleep=6
-say=hey chronoa
-wait-element=^Listening:20
-say=press the enter key
-wait-element=^Allow this once$:180
-sleep=25
-show-log=Question said|Not listening|Listening|Recording speech|wake|press_key|ERROR
-quit
