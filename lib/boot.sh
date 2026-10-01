@@ -444,6 +444,8 @@ cmd_probe() {
       --local-src=*) local_src="${arg#--local-src=}" ;;
       --local-src-chronoa=*) _set_chronoa_src "${arg#--local-src-chronoa=}" ;;
       --local-pkg=*) export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${arg#--local-pkg=}" ;;
+      --repo-pkg=*) export SHANIOS_TEST_REPO_PKGS="${SHANIOS_TEST_REPO_PKGS:+${SHANIOS_TEST_REPO_PKGS},}${arg#--repo-pkg=}" ;;
+      --whisper-model=*) export SHANIOS_TEST_WHISPER_MODELS="${SHANIOS_TEST_WHISPER_MODELS:+${SHANIOS_TEST_WHISPER_MODELS},}${arg#--whisper-model=}" ;;
       *) die "Usage: $(basename "$0") probe <blue|green> --exec=\"cmd\" [--timeout=N] [--settle=N] [--local-src=<dir>] [--local-src-chronoa=<dir>]" ;;
     esac
   done
@@ -492,6 +494,8 @@ cmd_desktop() {
       --settle=*)  settle="${arg#--settle=}" ;;
       --de=*)      de="${arg#--de=}" ;;
       --local-pkg=*) export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${arg#--local-pkg=}" ;;
+      --repo-pkg=*) export SHANIOS_TEST_REPO_PKGS="${SHANIOS_TEST_REPO_PKGS:+${SHANIOS_TEST_REPO_PKGS},}${arg#--repo-pkg=}" ;;
+      --whisper-model=*) export SHANIOS_TEST_WHISPER_MODELS="${SHANIOS_TEST_WHISPER_MODELS:+${SHANIOS_TEST_WHISPER_MODELS},}${arg#--whisper-model=}" ;;
       --display=*) display_mode="${arg#--display=}" ;;
       --size=*)    size="${arg#--size=}" ;;
       --hold=*)    hold="${arg#--hold=}" ;;
@@ -772,6 +776,8 @@ cmd_slot_test() {
       # rebuilding the image. Wired onto SHANIOS_TEST_LOCAL_PKGS so _enter_prep
       # applies it through the same path every other command uses.
       --local-pkg=*)        export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${arg#--local-pkg=}" ;;
+      --repo-pkg=*) export SHANIOS_TEST_REPO_PKGS="${SHANIOS_TEST_REPO_PKGS:+${SHANIOS_TEST_REPO_PKGS},}${arg#--repo-pkg=}" ;;
+      --whisper-model=*) export SHANIOS_TEST_WHISPER_MODELS="${SHANIOS_TEST_WHISPER_MODELS:+${SHANIOS_TEST_WHISPER_MODELS},}${arg#--whisper-model=}" ;;
       --timeout=*)   boot_timeout="${arg#--timeout=}" ;;
       --settle=*)    settle="${arg#--settle=}" ;;
       --volatile)    export SHANIOS_TEST_VOLATILE=state ;;

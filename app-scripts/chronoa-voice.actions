@@ -1,0 +1,41 @@
+# chronoa-voice — Shani Chronoa's whole voice loop with no human in it: the
+# harness speaks into a virtual microphone, Chronoa wakes on its phrase, hears
+# the question (whisper.cpp), asks a tiny real model (Ollama), and speaks the
+# answer (espeak-ng) into a virtual speaker that the harness transcribes.
+#
+#   app <slot> --voice --llm=qwen2.5:0.5b --repo-pkg=whisper-cpp \
+#       --whisper-model=tiny-q5_1,base-q5_1 --local-src-chronoa=/opt/shani-chronoa \
+#       --run='gsettings set org.shani.chronoa ollama-host "$TESTBED_OLLAMA_HOST";
+#              gsettings set org.shani.chronoa whisper-model base-q5_1;
+#              gsettings set org.shani.chronoa model qwen2.5:0.5b;
+#              gsettings set org.shani.chronoa notification-enabled true;
+#              gsettings set org.shani.chronoa wake-word-enabled true; shani-chronoa' \
+#       --script=/opt/shani-testbed/app-scripts/chronoa-voice.actions
+#
+# --repo-pkg=whisper-cpp until the image has it: shani-chronoa depends on it
+# in shani-pkgbuilds, but the 20261001 image predates that package build
+# (harmless once it is there: --needed pulls nothing). --whisper-model puts
+# the two models Chronoa looks for
+# where it looks. Synthetic speech is a proxy: it proves the plumbing and the
+# phrase logic, not robustness to accents, rooms or distant microphones.
+wait-window=Shani Chronoa:120
+sleep=6
+screenshot=@out/voice-start.png
+a11y-lint
+heard-mark
+# a near-miss is heard, transcribed and ignored
+say=hey, how are you
+expect-absent=^Listening:10
+# the phrase wakes it - nothing was clicked
+say=hey chronoa
+wait-element=^Listening:20
+screenshot=@out/voice-listening.png
+# the question is heard, answered by the model, and spoken back
+say=what is two plus two
+wait-element=^(Thinking|Speaking):60
+expect-heard=four|\b4\b:180
+screenshot=@out/voice-answered.png
+expect-clean-log
+# the app's own account of the turn, on the record whether it passed or not
+show-log=ERROR|WARNING|wake|stt|transcri|llm|ollama|tts|speak|play
+quit

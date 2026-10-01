@@ -623,32 +623,9 @@ print("has_filesystems=%s" % ("filesystems" in names))
 # None value makes `name in _senses` true while `_senses.get(name)` is None,
 # which is the only way poll() can report a sense as unregistered.
 print("none_valued=%s" % ",".join(sorted(k for k, v in getattr(sch, "_senses", {}).items() if v is None)) or "-")
-import pathlib as _pl
-_live = _pl.Path(__import__("shani_chronoa.senses.scheduler", fromlist=["x"]).__file__).parent
-_src = _pl.Path("/opt/shani-chronoa/usr/lib/shani-chronoa/shani_chronoa/senses")
 print("file_senses=%s" % ",".join(sorted(
-    f.stem for f in __import__("pathlib").Path(
-        __import__("shani_chronoa.senses.scheduler", fromlist=["x"]).__file__
-    ).parent.glob("*.py"))))
-import pathlib as _pl
-_live = _pl.Path(__import__("shani_chronoa.senses.scheduler", fromlist=["x"]).__file__).parent
-_src = _pl.Path("/opt/shani-chronoa/usr/lib/shani-chronoa/shani_chronoa/senses")
-_extra = sorted({f.stem for f in _live.glob("*.py")} - {f.stem for f in _src.glob("*.py")})
-print("extra_senses=%s" % (",".join(_extra) or "-"))
-for _stem in _extra:
-    (_live / (_stem + ".py")).unlink()
-' 2>"$WORK/poll.err")
+    f.stem for f in __import__("pathlib").Path(__import__("shani_chronoa.senses.scheduler", fromlist=["x"]).__file__).parent.glob("*.py"))))' 2>"$WORK/poll.err")
 poll_rc=$?
-# Re-probe in a FRESH interpreter after the deletion above: same process would
-# still hold the registry it built at import, so it could not show anything.
-SHANI_CHRONOA_CONSENT_GRANT=filesystems-sense-enabled \
-  after=$(py -c 'from shani_chronoa.senses.scheduler import AmbientScheduler
-from shani_chronoa.senses.store import PerceptStore
-s = AmbientScheduler(store=PerceptStore())
-r = s.poll("filesystems")
-print("len=%d in=%s get=%s ok=%s reason=%s" % (len(s._senses),
-      "filesystems" in s._senses, type(s._senses.get("filesystems")).__name__,
-      r.ok, repr(r.reason)))' 2>"$WORK/poll2.err")
 if (( poll_rc != 0 )); then
   bad senses-a-poll-really-runs "polling a real sense raised in the slot: $(grep -vE '^  File |^Traceback' "$WORK/poll.err" | head -2 | tr '\n' ' ')"
 else
@@ -661,7 +638,7 @@ else
   elif [[ "${P[has_filesystems]:-}" != "True" ]]; then
     bad senses-a-poll-really-runs "the scheduler holds no 'filesystems' sense (registered=${P[registered]:-?}), so nothing was polled at all. A refusal because the sense is MISSING is not a consent refusal and must never read as a pass - this is the false-clean-answer shape this file exists to catch"
   else
-    bad senses-a-poll-really-runs "polling 'filessystems' with consent GRANTED still did not deposit a percept: ok=${P[ok]:-?} denied=${P[denied]:-?} reason='${P[reason]:-}' (registered=${P[registered]:-?}, extras removed: ${P[extra_senses]:-?}, after removing them: ${after:-probe failed}). Consent is not the excuse here - it was opened for this process - so this is a real failure of the poll/deposit path, not a correct refusal"
+    bad senses-a-poll-really-runs "polling 'filessystems' with consent GRANTED still did not deposit a percept: ok=${P[ok]:-?} denied=${P[denied]:-?} reason='${P[reason]:-}' (registered=${P[registered]:-?}, sense files on disk: ${P[file_senses]:-?}, keys holding a non-Sense value: ${P[none_valued]:-?}). Consent is not the excuse here - it was opened for this process - so this is a real failure of the poll/deposit path, not a correct refusal"
   fi
   unset P
 fi

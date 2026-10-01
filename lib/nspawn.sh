@@ -96,6 +96,8 @@ _enter_prep() {
   _revert_local_src_overlay
   mount -t overlay overlay -o "lowerdir=${SLOT_DIR},upperdir=${NSPAWN_WORK}/upper,workdir=${NSPAWN_WORK}/work" "$NSPAWN_WORK/merged"
   [[ -n "${SHANIOS_TEST_LOCAL_PKGS:-}" ]] && _overlay_local_pkgs "$slot" "$SHANIOS_TEST_LOCAL_PKGS"
+  [[ -n "${SHANIOS_TEST_REPO_PKGS:-}" ]] && _overlay_repo_pkgs "$slot" "$SHANIOS_TEST_REPO_PKGS"
+  [[ -n "${SHANIOS_TEST_WHISPER_MODELS:-}" ]] && _overlay_whisper_models "$slot" "$SHANIOS_TEST_WHISPER_MODELS"
   # Env-driven, next to SHANIOS_TEST_LOCAL_PKGS and for the same reason: one
   # choke point means every command that mounts the merged slot honours it
   # (app, slot-test, probe, desktop, enter) instead of each needing its own
@@ -160,6 +162,82 @@ _overlay_local_pkgs() {
     rm -rf "$tmp"
     log "Overlaid $(basename "$pkg") onto @${slot}: ${n} file(s) (no .install scriptlet run; reverted on the next run without --local-pkg)"
   done
+}
+
+# _overlay_repo_pkgs <slot> <name[,name...]>  (--repo-pkg / SHANIOS_TEST_REPO_PKGS)
+# Test with a package the image does not ship - an optdepend such as
+# whisper-cpp - straight from the configured repositories, without building
+# an image. Real pacman installs it, signatures checked, into a scratch root
+# against a COPY of the slot's own local database, so exactly the dependencies
+# the slot lacks come along. Those packages' files are then overlaid like
+# --local-pkg's: recorded, and reverted on the next run without it. Downloads
+# land in the shared pacman cache (mounted at /var/cache/pacman), so a second
+# run fetches nothing. No .install scriptlets run (as --local-pkg).
+_overlay_repo_pkgs() {
+  local slot="$1" list="$2" db root new p rel n=0
+  local -a names
+  IFS=',' read -r -a names <<<"$list"
+  [[ -d "${NSPAWN_WORK}/merged/var/lib/pacman/local" ]] || die "--repo-pkg: @${slot} has no pacman database to resolve against"
+  db=$(mktemp -d); root=$(mktemp -d)
+  # pacman 7 downloads as the unprivileged `alpm` user: a 0700 mktemp dir
+  # refuses it ("could not open file .../core.db.part: Permission denied")
+  chmod 755 "$db"
+  cp -a "${NSPAWN_WORK}/merged/var/lib/pacman/local" "$db/local"
+  ls "$db/local" | sort > "$db/before"
+  pacman --dbpath "$db" -Sy >"$db/sync.log" 2>&1 || { tail -3 "$db/sync.log" >&2; rm -rf "$db" "$root"; die "--repo-pkg: cannot sync the package databases"; }
+  if ! pacman --root "$root" --dbpath "$db" --cachedir /var/cache/pacman/pkg -S --noconfirm --needed \
+         --noscriptlet --overwrite '*' "${names[@]}" >"$db/log" 2>&1; then
+    tail -5 "$db/log" >&2; rm -rf "$db" "$root"; die "--repo-pkg: pacman could not install ${list}"
+  fi
+  new=$(ls "$db/local" | sort | comm -13 "$db/before" - | grep -v '^ALPM_DB_VERSION$' || true)
+  for p in $new; do
+    while IFS= read -r rel; do
+      rel="${rel#/}"; [[ -n "$rel" && ! -d "${root}/${rel}" ]] || continue
+      mkdir -p "${NSPAWN_WORK}/merged/$(dirname "$rel")"
+      cp -a --remove-destination "${root}/${rel}" "${NSPAWN_WORK}/merged/${rel}"
+      echo "$rel" >> "$(_local_src_record)"
+      n=$((n + 1))
+    done < <(sed -n '/^%FILES%$/,/^$/p' "$db/local/$p/files" | sed '1d;/^$/d')
+  done
+  rm -rf "$db" "$root"
+  log "Overlaid from the repositories onto @${slot}: $(echo $new | tr ' ' ',') - ${n} file(s) (no scriptlets; reverted on the next run without --repo-pkg)"
+}
+
+# _overlay_whisper_models <slot> <name[,name...]>  (--whisper-model)
+# A whisper.cpp model where Shani Chronoa looks for one
+# (/usr/share/whisper/models), so speech input and the wake phrase can run in
+# a slot. Fetched once into the testbed cache and checked against the digest
+# pinned here (the same HuggingFace LFS sha256 Chronoa's stt_provision pins).
+_overlay_whisper_models() {
+  local slot="$1" list="$2" name f
+  local -a names
+  IFS=',' read -r -a names <<<"$list"
+  for name in "${names[@]}"; do
+    f=$(_whisper_model_file "$name") || die "--whisper-model=${name}: not available"
+    mkdir -p "${NSPAWN_WORK}/merged/usr/share/whisper/models"
+    cp --remove-destination "$f" "${NSPAWN_WORK}/merged/usr/share/whisper/models/$(basename "$f")"
+    echo "usr/share/whisper/models/$(basename "$f")" >> "$(_local_src_record)"
+    log "Overlaid whisper model $(basename "$f") onto @${slot} (/usr/share/whisper/models)"
+  done
+}
+
+# _whisper_model_file <name> -> path of the verified model in the testbed cache
+_whisper_model_file() {
+  local name="$1" file sha dir
+  case "$name" in
+    tiny-q5_1) file=ggml-tiny-q5_1.bin; sha=818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7 ;;
+    base-q5_1) file=ggml-base-q5_1.bin; sha=422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898 ;;
+    *) echo "unknown whisper model ${name} (tiny-q5_1, base-q5_1)" >&2; return 1 ;;
+  esac
+  dir="${TESTBED_CACHE_DIR:-${DATA_DIR}/../cache}/whisper-models"
+  mkdir -p "$dir"
+  if [[ ! -f "${dir}/${file}" ]] || ! echo "${sha}  ${dir}/${file}" | sha256sum -c --quiet - 2>/dev/null; then
+    log "Fetching ${file} (once; cached in ${dir})"
+    curl -fsSL -o "${dir}/${file}.part" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${file}" \
+      && echo "${sha}  ${dir}/${file}.part" | sha256sum -c --quiet - \
+      && mv "${dir}/${file}.part" "${dir}/${file}" || { rm -f "${dir}/${file}.part"; echo "download or digest check failed" >&2; return 1; }
+  fi
+  echo "${dir}/${file}"
 }
 
 # Builds nspawn bind arrays shared by `enter` and `verify-boot`.

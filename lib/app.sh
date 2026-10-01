@@ -57,6 +57,9 @@
 #   find=QUERY                   on-screen elements matching QUERY: a regex
 #                                on name/role, or ROLE:NAME-REGEX
 #                                (e.g. find=button:^OK$)
+#   wait-element=QUERY[:SECS]    wait (default 30s) until find=QUERY matches
+#   expect-absent=QUERY[:SECS]   fail if find=QUERY matches at any point in
+#                                SECS (default 5) - the negative of find
 #   click-element=QUERY[#N]      click the centre of the Nth match (default 1st)
 #   doubleclick-element= / rightclick-element=   same, other clicks
 #   a11y-lint                    fail if any on-screen control (button, entry,
@@ -74,6 +77,14 @@
 #                                proves nothing: `import -window root` always
 #                                captures *something* (lesson from
 #                                shani-pkgbuilds' plasma-session.sh)
+#   say=TEXT / play=FILE.wav     (--voice) speak TEXT (espeak-ng; voice=NAME
+#                                picks the voice, default en-us) or play a
+#                                clip into the session's virtual microphone
+#   expect-heard=REGEX[:SECS]    (--voice) transcribe what the app played on
+#                                the virtual speaker since the last match
+#                                (whisper.cpp, unprompted) and wait up to SECS
+#                                (default 20) for REGEX; expect-not-heard is
+#                                its negative; heard-mark starts afresh
 #   expect-text=REGEX            OCR the display (tesseract) and fail unless
 #                                REGEX (case-insensitive) is in the text
 #   monkey=N[:SEED]              N random clicks on enabled on-screen controls
@@ -126,6 +137,136 @@ _app_ensure_ocr() {
 }
 APP_MASKS=()
 
+# --- voice: a virtual microphone and speaker in the app's session ----------
+# The builder side talks to the slot's PipeWire through APP_RT (bind-mounted
+# at the same path, as the accessibility bus is), so speech is synthesised,
+# played and transcribed here and the slot needs nothing extra.
+_app_ensure_voice() {
+  local need=()
+  # pw-play/pw-record are in pipewire-audio, not pipewire (Arch 1.6)
+  command -v pw-play >/dev/null 2>&1 || need+=(pipewire-audio)
+  command -v espeak-ng >/dev/null 2>&1 || need+=(espeak-ng)
+  command -v whisper-cli >/dev/null 2>&1 || need+=(whisper-cpp)
+  ((${#need[@]})) || return 0
+  command -v pacman >/dev/null 2>&1 || die "--voice needs ${need[*]} in the builder container"
+  log "Installing ${need[*]} into the builder container for --voice..."
+  pacman -Sy --noconfirm --needed "${need[@]}" >/dev/null 2>&1 || die "could not install ${need[*]}"
+}
+_pw() { PIPEWIRE_RUNTIME_DIR="$APP_RT" XDG_RUNTIME_DIR="$APP_RT" "$@"; }
+# What the session's audio graph looks like, for a failure message: the nodes
+# that exist, and the tail of the slot-side daemons' own logs.
+_app_voice_diag() {
+  echo "  nodes: $(_pw pw-cli ls Node 2>&1 | grep -oE 'node.name = "[^"]+"' | sed 's/node.name = //' | tr '\n' ' ')"
+  local f
+  for f in pipewire wireplumber; do
+    [[ -s "${APP_RT}/${f}.log" ]] && echo "  ${f}.log: $(tail -3 "${APP_RT}/${f}.log" | tr '\n' '|')"
+  done
+}
+# Record the virtual speaker into APP_OUT/speaker.raw (16 kHz mono s16le;
+# pw-record writes raw PCM to a pipe). expect-heard reads from APP_HEARD_MARK.
+_app_start_ears() {
+  local i
+  for i in $(seq 150); do [[ -S "${APP_RT}/pipewire-0" ]] && break; sleep 0.1; done
+  [[ -S "${APP_RT}/pipewire-0" ]] || { warn "--voice: the slot's PipeWire never came up"; return 1; }
+  for i in $(seq 50); do _pw pw-cli ls Node 2>/dev/null | grep -q 'testbed-speaker' && break; sleep 0.2; done
+  ( _pw pw-record --target testbed-speaker -P '{ stream.capture.sink = true }' \
+      --rate 16000 --channels 1 --format s16 - > "${APP_OUT}/speaker.raw" 2>/dev/null ) &
+  APP_EARS_PID=$!
+  APP_EARS_T0=$(date +%s.%N)
+  sleep 0.5
+  # a recorder that died at once records nothing, and every expect-heard
+  # would then fail as "heard nothing" for a reason nobody could see
+  kill -0 "$APP_EARS_PID" 2>/dev/null && pgrep -f "[p]w-record --target testbed-speaker" >/dev/null \
+    || { warn "--voice: the speaker recorder did not start"; _app_voice_diag >&2; }
+  APP_HEARD_MARK=0
+  [[ -n "${APP_RECORD:-}" ]] && _app_start_mic_tap
+  log "Voice: virtual microphone testbed-mic and speaker testbed-speaker are the session defaults"
+}
+# _app_transcribe <raw-file> <from-byte> -> stdout: what whisper heard
+_app_transcribe() {
+  local raw="$1" from="$2" model wav
+  model=$(_whisper_model_file "${APP_JUDGE_MODEL:-base-q5_1}") || return 1
+  wav=$(mktemp --suffix=.wav)
+  python3 - "$raw" "$from" "$wav" <<'PY'
+import sys, wave
+raw, start, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+import array
+data = open(raw, "rb").read()[start:]
+data = data[: len(data) - len(data) % 2]
+# whisper invents words ("you you you") for silence: no signal, no transcript
+a = array.array("h"); a.frombytes(data)
+if not a or max(abs(x) for x in a[::4]) < 500:
+    sys.exit(3)
+with wave.open(out, "wb") as w:
+    w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(data)
+PY
+  [[ $? -eq 3 ]] && { rm -f "$wav"; return 0; }
+  # unprompted on purpose: a judge biased toward the expected words hears them
+  whisper-cli -m "$model" -f "$wav" -l en -nt -np -t 4 2>/dev/null | tr -s ' \n' ' ' | sed 's/^ //;s/ $//'
+  rm -f "$wav"
+}
+
+# --- record: a video of the run, with both sides of any conversation -------
+# ffmpeg grabs the virtual display; with --voice the microphone (what the
+# harness said) and the speaker (what the app said) are recorded too, and on
+# exit all three are aligned by their start times and muxed into one file.
+_app_start_recording() {
+  command -v ffmpeg >/dev/null 2>&1 || { log "Installing ffmpeg into the builder container for --record..."; \
+    pacman -Sy --noconfirm --needed ffmpeg >/dev/null 2>&1 || die "could not install ffmpeg"; }
+  APP_REC_T0=$(date +%s.%N)
+  ffmpeg -nostdin -loglevel error -y -f x11grab -video_size "$APP_SIZE" -framerate 15 -i "$APP_DISPLAY" \
+    -c:v libx264 -preset veryfast -crf 26 -pix_fmt yuv420p "${APP_OUT}/record-video.mp4" 2>"${APP_OUT}/record.log" &
+  APP_REC_PID=$!
+}
+_app_start_mic_tap() {
+  APP_MIC_T0=$(date +%s.%N)
+  ( _pw pw-record --target testbed-mic --rate 16000 --channels 1 --format s16 - > "${APP_OUT}/mic.raw" 2>/dev/null ) &
+  APP_MIC_PID=$!
+}
+_app_finish_recording() {
+  [[ -n "${APP_REC_PID:-}" ]] || return 0
+  kill -INT "$APP_REC_PID" 2>/dev/null; wait "$APP_REC_PID" 2>/dev/null || true
+  [[ -n "${APP_MIC_PID:-}" ]] && { kill "$APP_MIC_PID" 2>/dev/null; pkill -f "[p]w-record --target testbed-mic " 2>/dev/null || true; }
+  local v="${APP_OUT}/record-video.mp4" out="$APP_RECORD" so mo
+  [[ -s "$v" ]] || { warn "--record: no video was captured (see ${APP_OUT}/record.log)"; return 0; }
+  if [[ -s "${APP_OUT}/speaker.raw" || -s "${APP_OUT}/mic.raw" ]]; then
+    so=$(python3 -c "print(max(0, ${APP_EARS_T0:-$APP_REC_T0} - ${APP_REC_T0}))")
+    mo=$(python3 -c "print(max(0, ${APP_MIC_T0:-$APP_REC_T0} - ${APP_REC_T0}))")
+    ffmpeg -nostdin -loglevel error -y -i "$v" \
+      -itsoffset "$so" -f s16le -ar 16000 -ac 1 -i "${APP_OUT}/speaker.raw" \
+      -itsoffset "$mo" -f s16le -ar 16000 -ac 1 -i "${APP_OUT}/mic.raw" \
+      -filter_complex "[1:a][2:a]amix=inputs=2:duration=longest:normalize=0[a]" \
+      -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 96k -shortest "$out" 2>>"${APP_OUT}/record.log" \
+      || { warn "--record: muxing the audio failed; keeping the silent video"; cp "$v" "$out"; }
+  else
+    cp "$v" "$out"
+  fi
+  log "Recording: ${out} ($(du -h "$out" | cut -f1))"
+}
+
+# --- llm: a tiny real language model for the app to talk to ----------------
+# Ollama (Arch extra) on the builder side, on a private port so it can never
+# meet an Ollama the host runs on 11434; the slot shares the network, so the
+# app reaches it at APP_LLM_URL (exported into the session as
+# TESTBED_OLLAMA_HOST). Models are pulled once into the testbed cache.
+_app_start_llm() {
+  local model="$1" dir port i
+  command -v ollama >/dev/null 2>&1 || { log "Installing ollama into the builder container for --llm..."; \
+    pacman -Sy --noconfirm --needed ollama >/dev/null 2>&1 || die "could not install ollama"; }
+  dir="${TESTBED_CACHE_DIR:-${DATA_DIR}/../cache}/ollama-models"; mkdir -p "$dir"
+  for port in $(seq 11535 11560); do (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null || break; done
+  APP_LLM_URL="http://127.0.0.1:${port}"
+  OLLAMA_HOST="127.0.0.1:${port}" OLLAMA_MODELS="$dir" ollama serve >"${APP_OUT}/ollama.log" 2>&1 &
+  APP_LLM_PID=$!
+  for i in $(seq 100); do curl -fs "${APP_LLM_URL}/api/tags" >/dev/null 2>&1 && break; sleep 0.2; done
+  curl -fs "${APP_LLM_URL}/api/tags" >/dev/null 2>&1 || die "--llm: ollama did not start (see ${APP_OUT}/ollama.log)"
+  if ! OLLAMA_HOST="127.0.0.1:${port}" ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$model"; then
+    log "Pulling ${model} once into ${dir}..."
+    OLLAMA_HOST="127.0.0.1:${port}" ollama pull "$model" >/dev/null 2>&1 || die "--llm: could not pull ${model}"
+  fi
+  log "LLM: ${model} served by ollama at ${APP_LLM_URL} (TESTBED_OLLAMA_HOST in the app's session)"
+}
+
 # First display number with no socket or lock file. When the host forwards
 # its /tmp/.X11-unix, that directory IS the host's, so this also avoids any
 # display the host is using.
@@ -170,7 +311,10 @@ _app_cleanup() {
     while kill -0 "$APP_PID" 2>/dev/null && (( w < 10 )); do sleep 1; w=$((w + 1)); done
     kill -9 "$APP_PID" 2>/dev/null || true
   fi
+  _app_finish_recording
   if [[ -n "${APP_XVFB_PID:-}" ]]; then kill "$APP_XVFB_PID" 2>/dev/null || true; fi
+  if [[ -n "${APP_EARS_PID:-}" ]]; then kill "$APP_EARS_PID" 2>/dev/null || true; pkill -f "[p]w-record --target testbed-speaker" 2>/dev/null || true; fi
+  if [[ -n "${APP_LLM_PID:-}" ]]; then kill "$APP_LLM_PID" 2>/dev/null || true; fi
   if [[ -n "${APP_RT:-}" && -d "$APP_RT" ]]; then
     # The in-slot dbus-daemon was --fork'ed out of the nspawn process tree;
     # it's visible from here (the slot's PID namespace is a child of ours).
@@ -420,14 +564,81 @@ _app_do() {
       sleep 1
       _app_running || { APP_REPLY="monkey (seed ${seed}): app exited after the last click (${log_[-1]:-none}); rc=$(cat "${APP_OUT}/app.rc" 2>/dev/null)"; return 1; }
       APP_REPLY="monkey (seed ${seed}): ${n} clicks, app still running" ;;
+    show-log)
+      # the app's own output, for a script to put on record (or debug with)
+      APP_REPLY="app output$( [[ -n "$value" ]] && echo " matching /${value}/"):"$'\n'"$(cat "${APP_OUT}/app.stdout" "${APP_OUT}/app.stderr" 2>/dev/null \
+        | { if [[ -n "$value" ]]; then grep -aiE -- "$value"; else cat; fi; } | tail -30)" ;;
     expect-clean-log)
       local bad
       bad="$(grep -aE '(CRITICAL|WARNING|Critical|Warning)( \*\*|:)|\*\* \(.*\): (CRITICAL|WARNING)|qt\.[a-z.]+: ' "${APP_OUT}/app.stderr" 2>/dev/null \
              | { if [[ -n "$value" ]]; then grep -avE -- "$value"; else cat; fi; } | head -10)"
       [[ -z "$bad" ]] || { APP_REPLY="app.stderr has warnings/criticals:"$'\n'"${bad}"; return 1; }
       APP_REPLY="app.stderr has no GLib/GTK/Qt criticals or warnings" ;;
+    wait-element)
+      local q="$value" w=30 t0
+      if [[ "$value" =~ ^(.*):([0-9]+)$ ]]; then q="${BASH_REMATCH[1]}"; w="${BASH_REMATCH[2]}"; fi
+      t0=$SECONDS
+      while (( SECONDS - t0 < w )); do
+        if APP_REPLY="$(python3 "$A11Y_CLIENT" find "$q" 2>/dev/null)"; then
+          APP_REPLY="after $((SECONDS - t0))s: ${APP_REPLY%%$'\n'*}"; return 0
+        fi
+        sleep 1
+      done
+      APP_REPLY="/${q}/ did not appear in ${w}s"; return 1 ;;
+    expect-absent)
+      # the negative of find=: nothing on screen matches for the whole window
+      # (a near-miss phrase must not wake the app, a dismissed dialog stays gone)
+      local q="$value" w=5 t0
+      if [[ "$value" =~ ^(.*):([0-9]+)$ ]]; then q="${BASH_REMATCH[1]}"; w="${BASH_REMATCH[2]}"; fi
+      t0=$SECONDS
+      while (( SECONDS - t0 < w )); do
+        if APP_REPLY="$(python3 "$A11Y_CLIENT" find "$q" 2>/dev/null)"; then
+          APP_REPLY="/${q}/ appeared: ${APP_REPLY%%$'\n'*}"; return 1
+        fi
+        sleep 1
+      done
+      APP_REPLY="nothing matched /${q}/ for ${w}s" ;;
+    voice)
+      APP_TTS_VOICE="$value"; APP_REPLY="speaking as espeak-ng voice ${value}" ;;
+    say|play)
+      [[ -n "${APP_EARS_PID:-}" ]] || { APP_REPLY="${name} needs app --voice"; return 1; }
+      local clip="$value" secs
+      if [[ "$name" == say ]]; then
+        clip=$(mktemp --suffix=.wav)
+        espeak-ng -v "${APP_TTS_VOICE:-en-us}" -s 150 -w "$clip" "$value" 2>/dev/null \
+          || { APP_REPLY="espeak-ng could not say: ${value}"; return 1; }
+      fi
+      [[ -f "$clip" ]] || { APP_REPLY="no such clip: ${clip}"; return 1; }
+      secs=$(python3 -c 'import sys,wave; w=wave.open(sys.argv[1]); print("%.1f" % (w.getnframes()/w.getframerate()))' "$clip" 2>/dev/null || echo "?")
+      local perr
+      if ! perr=$(_pw pw-play --target testbed-mic-in "$clip" 2>&1); then
+        APP_REPLY="pw-play into the virtual microphone failed: ${perr:-no message}"$'\n'"$(_app_voice_diag)"; return 1
+      fi
+      [[ "$name" == say ]] && rm -f "$clip"
+      APP_REPLY="${name}: ${value} (${secs}s into the microphone)" ;;
+    heard-mark)
+      APP_HEARD_MARK=$(stat -c %s "${APP_OUT}/speaker.raw" 2>/dev/null || echo 0)
+      APP_REPLY="listening from byte ${APP_HEARD_MARK}" ;;
+    expect-heard|expect-not-heard)
+      [[ -n "${APP_EARS_PID:-}" ]] || { APP_REPLY="${name} needs app --voice"; return 1; }
+      local re="$value" wait=20 heard="" t0 size
+      if [[ "$value" =~ ^(.*):([0-9]+)$ ]]; then re="${BASH_REMATCH[1]}"; wait="${BASH_REMATCH[2]}"; fi
+      t0=$SECONDS
+      while (( SECONDS - t0 < wait )); do
+        sleep 2
+        size=$(stat -c %s "${APP_OUT}/speaker.raw" 2>/dev/null || echo 0)
+        (( size - APP_HEARD_MARK > 16000 )) || continue    # under half a second of audio
+        heard=$(_app_transcribe "${APP_OUT}/speaker.raw" "$APP_HEARD_MARK")
+        if grep -qiE -- "$re" <<<"$heard"; then
+          [[ "$name" == expect-heard ]] && { APP_HEARD_MARK=$size; APP_REPLY="heard: ${heard}"; return 0; }
+          APP_REPLY="heard /${re}/ though it must not be: ${heard}"; return 1
+        fi
+      done
+      [[ "$name" == expect-not-heard ]] && { APP_REPLY="not heard in ${wait}s${heard:+ (heard: ${heard})}"; return 0; }
+      APP_REPLY="did not hear /${re}/ in ${wait}s; heard: ${heard:-nothing}"; return 1 ;;
     quit)
       APP_REPLY="quit" ;;
+
     *)
       APP_REPLY="unknown action: ${name}"; return 1 ;;
   esac
@@ -495,7 +706,7 @@ cmd_app() {
   _require_slot "$slot" "$usage_app"
 
   local run="" local_src="" display_mode=virtual size="1280x800" out_dir="" script=""
-  local interactive=0 control="" idle=1800 timeout=60 arg strict=0 keyring=login
+  local interactive=0 control="" idle=1800 timeout=60 arg strict=0 keyring=login voice=0 llm=""
   local -a actions=()
   for arg in "$@"; do
     case "$arg" in
@@ -504,6 +715,9 @@ cmd_app() {
       --local-src-chronoa=*) _set_chronoa_src "${arg#--local-src-chronoa=}" ;;
       # an unpublished app: overlay its built package first (as enter/desktop)
       --local-pkg=*)    export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${arg#--local-pkg=}" ;;
+      --repo-pkg=*) export SHANIOS_TEST_REPO_PKGS="${SHANIOS_TEST_REPO_PKGS:+${SHANIOS_TEST_REPO_PKGS},}${arg#--repo-pkg=}" ;;
+      --whisper-model=*) export SHANIOS_TEST_WHISPER_MODELS="${SHANIOS_TEST_WHISPER_MODELS:+${SHANIOS_TEST_WHISPER_MODELS},}${arg#--whisper-model=}" ;;
+      --llm=*)          llm="${arg#--llm=}" ;;
       --display=*)      display_mode="${arg#--display=}" ;;
       --size=*)         size="${arg#--size=}" ;;
       --out-dir=*)      out_dir="${arg#--out-dir=}" ;;
@@ -514,6 +728,8 @@ cmd_app() {
       --idle-timeout=*) idle="${arg#--idle-timeout=}" ;;
       --strict)         strict=1 ;;
       --keyring=*)      keyring="${arg#--keyring=}" ;;
+      --voice)          voice=1 ;;
+      --record=*)       APP_RECORD="${arg#--record=}" ;;
       --*)              actions+=("${arg#--}") ;;
       *)                die "$usage_app" ;;
     esac
@@ -558,8 +774,26 @@ cmd_app() {
     login)  ksetup='command -v gnome-keyring-daemon >/dev/null && { printf testbed | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1; true; }' ;;
     locked) ksetup='command -v gnome-keyring-daemon >/dev/null && { printf testbed | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1; gnome-keyring-daemon --replace --daemonize --components=secrets >/dev/null 2>&1; true; }' ;;
   esac
-  printf -v inner 'dbus-daemon --session --address=%q --fork --nopidfile >/dev/null && { %s; } && exec /bin/bash -c %q' \
-    "$DBUS_SESSION_BUS_ADDRESS" "$ksetup" "$run"
+  # --voice: the session's own PipeWire, with a virtual microphone (whatever
+  # plays into testbed-mic-in comes out of the source testbed-mic) and a null
+  # sink as the speaker, both made the defaults - so the app records the
+  # harness's speech and plays into the harness's ears, with no audio hardware.
+  local vsetup=":"
+  if (( voice )); then
+    _app_ensure_voice
+    vsetup='pipewire >"$XDG_RUNTIME_DIR/pipewire.log" 2>&1 & wireplumber >"$XDG_RUNTIME_DIR/wireplumber.log" 2>&1 &
+      for i in $(seq 100); do [ -S "$XDG_RUNTIME_DIR/pipewire-0" ] && break; sleep 0.1; done
+      pw-loopback --capture-props="media.class=Audio/Sink node.name=testbed-mic-in node.description=Testbed-microphone-input audio.position=[MONO]" --playback-props="media.class=Audio/Source node.name=testbed-mic node.description=Testbed-microphone audio.position=[MONO]" >/dev/null 2>&1 &
+      pw-cli create-node adapter "{ factory.name=support.null-audio-sink node.name=testbed-speaker node.description=Testbed-speaker media.class=Audio/Sink object.linger=true audio.position=[FL FR] }" >/dev/null 2>&1
+      sleep 1
+      pw-metadata 0 default.configured.audio.source "{ \"name\": \"testbed-mic\" }" >/dev/null 2>&1
+      pw-metadata 0 default.configured.audio.sink "{ \"name\": \"testbed-speaker\" }" >/dev/null 2>&1; true'
+  fi
+  APP_LLM_URL=""
+  [[ -n "$llm" ]] && _app_start_llm "$llm"
+  printf -v inner 'dbus-daemon --session --address=%q --fork --nopidfile >/dev/null && { %s; } && { %s; } && exec /bin/bash -c %q' \
+    "$DBUS_SESSION_BUS_ADDRESS" "$ksetup" "$vsetup" "$run"
+
   _ensure_host_machine_id
   _ensure_dbus
   _prepare_enter_args "$slot" "$local_src" /usr/bin/env \
@@ -568,6 +802,7 @@ cmd_app() {
     "${strict_env[@]}" \
     QT_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 \
     XDG_RUNTIME_DIR="$APP_RT" DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+    TESTBED_OLLAMA_HOST="$APP_LLM_URL" \
     /bin/bash -c "$inner"
 
   log "Starting in @${slot} on ${APP_DISPLAY} (${size}): ${run}"
@@ -575,6 +810,11 @@ cmd_app() {
   ( systemd-nspawn "${NSPAWN_ENTER_ARGS[@]}" >"${APP_OUT}/app.stdout" 2>"${APP_OUT}/app.stderr"
     echo $? > "${APP_OUT}/app.rc" ) &
   APP_PID=$!
+  if [[ -n "${APP_RECORD:-}" ]]; then
+    [[ "$APP_RECORD" == /* ]] || APP_RECORD="${APP_OUT}/${APP_RECORD#@out/}"
+    _app_start_recording
+  fi
+  (( voice )) && _app_start_ears
 
   local failed=0 a rc
   if [[ -n "$control" ]]; then
