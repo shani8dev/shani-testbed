@@ -246,7 +246,9 @@ def _bring_into_view(acc, x, y, w, h):
         dw, dh = _display_size()
         fw, fh = min(fw, dw - max(fx, 0)), min(fh, dh - max(fy, 0))
         for _ in range(60):
-            down = (y + h // 2) > fy + fh
+            # below the middle (past the bottom, or under a bottom bar):
+            # scroll content up; above it: down
+            down = (y + h // 2) > fy + fh // 2
             # over the element's OWN column (its scrolled container - a
             # sidebar), not the window centre, which is another pane
             wx = min(max(x + w // 2, max(fx, 0) + 5), max(fx, 0) + fw - 5)
@@ -286,9 +288,72 @@ def _in_window(acc, x, y, w, h):
         fx, fy, fw, fh = extents(f)
         dw, dh = _display_size()
         cx, cy = x + w // 2, y + h // 2
-        return max(fx, 0) <= cx <= min(fx + fw, dw) - 1 and max(fy, 0) <= cy <= min(fy + fh, dh) - 1
+        if not (max(fx, 0) <= cx <= min(fx + fw, dw) - 1 and max(fy, 0) <= cy <= min(fy + fh, dh) - 1):
+            return False
     except Exception:
         return True
+    # inside every scrolled pane around it: AT-SPI gave Cassini's frame as
+    # 760 px tall while its sidebar pane ended at 750, so an item centred at
+    # 758 was "in the window", and a click there landed on the window's
+    # border - the page never changed and the hit test (below) saw nothing
+    try:
+        a, hops = acc.get_parent(), 0
+        while a is not None and hops < 30:
+            if (a.get_role_name() or "") in ("scroll pane", "viewport"):
+                e = extents(a)
+                if e and e[2] > 0 and e[3] > 0:
+                    px, py, pw, ph = e
+                    if not (px + 2 <= cx <= px + pw - 3 and py + 2 <= cy <= py + ph - 3):
+                        return False
+            a, hops = a.get_parent(), hops + 1
+    except Exception:
+        pass
+    # and nothing else drawn on top of it (a toolkit with no hit test answers
+    # None: that is not evidence of a cover)
+    return covering(acc, cx, cy) is None
+
+
+def _hit(acc, cx, cy):
+    """The deepest accessible at screen point cx,cy inside acc's window
+    (AT-SPI's own hit test), or None if the toolkit cannot say."""
+    try:
+        frame = _frame_of(acc)
+        fc = frame.get_component_iface()
+        if _is_gtk4(acc):
+            fw = fc.get_extents(Atspi.CoordType.WINDOW)
+            ox, oy = _x_origin(frame.get_name() or "")
+            px, py, ct = cx - ox + fw.x, cy - oy + fw.y, Atspi.CoordType.WINDOW
+        else:
+            px, py, ct = cx, cy, Atspi.CoordType.SCREEN
+        node, hops = frame, 0
+        while hops < 60:
+            comp = node.get_component_iface()
+            nxt = comp.get_accessible_at_point(px, py, ct) if comp else None
+            if nxt is None or nxt == node:
+                return node if node is not frame else None
+            node, hops = nxt, hops + 1
+    except Exception:
+        return None
+    return None
+
+
+def covering(acc, cx, cy):
+    """What a click at cx,cy would land on INSTEAD of acc - None when it lands
+    on acc, inside it, or the toolkit has no hit test to ask."""
+    hit = _hit(acc, cx, cy)
+    if hit is None:
+        return None
+    a, hops = hit, 0
+    while a is not None and hops < 60:          # hit inside acc
+        if a == acc:
+            return None
+        a, hops = a.get_parent(), hops + 1
+    a, hops = acc.get_parent(), 0
+    while a is not None and hops < 60:          # the test stopped at a container of acc
+        if a == hit:
+            return None
+        a, hops = a.get_parent(), hops + 1
+    return hit
 
 
 def on_screen(acc):
@@ -335,6 +400,15 @@ def main(argv):
         # toolkit's own scrolling, through AT-SPI), then measure again
         if not _in_window(acc, x, y, w, h):
             x, y, w, h = _bring_into_view(acc, x, y, w, h)
+            if not _in_window(acc, x, y, w, h):
+                # never click blind: a click on whatever covers it "succeeds"
+                # and the step after it fails for a reason nobody can see
+                cx, cy = x + w // 2, y + h // 2
+                c = covering(acc, cx, cy)
+                why = ("covered by %s %r" % (c.get_role_name(), c.get_name() or "")) if c is not None \
+                    else "outside the window or display"
+                print("%s %r at %d,%d cannot be clicked: %s" % (role, name, cx, cy, why), file=sys.stderr)
+                return 1
         print("%d %d %s %r" % (x + w // 2, y + h // 2, role, name))
         return 0
     if cmd == "lint":

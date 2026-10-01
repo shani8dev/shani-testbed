@@ -189,6 +189,10 @@ slot-test   <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=
               expect-same/expect-changed=REF.png[:PCT] (with mask=X,Y,WxH),
               expect-text=REGEX (OCR), monkey=N[:SEED], expect-clean-log[=IGNORE].
               --strict: G_DEBUG=fatal-criticals. Captures the app's stdout/rc.
+              --keyring=login|locked|none (default login): the session's
+              Secret Service as a real login leaves it - unlocked by PAM,
+              locked (auto-login), or absent (the first app to touch it gets
+              a "new keyring" prompt over its window).
               See lib/app.sh; an MCP server for AI agents is in test-env/mcp/.
   web         <--url=URL | --site=DIR [--path=/sub/]> [--expect=SEL] [--allow-host=H]...
               [--offline] [--spa=/path] [--crawl=N] [--devices=desktop,tablet,mobile]

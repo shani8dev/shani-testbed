@@ -495,7 +495,7 @@ cmd_app() {
   _require_slot "$slot" "$usage_app"
 
   local run="" local_src="" display_mode=virtual size="1280x800" out_dir="" script=""
-  local interactive=0 control="" idle=1800 timeout=60 arg strict=0
+  local interactive=0 control="" idle=1800 timeout=60 arg strict=0 keyring=login
   local -a actions=()
   for arg in "$@"; do
     case "$arg" in
@@ -513,6 +513,7 @@ cmd_app() {
       --control=*)      control="${arg#--control=}" ;;
       --idle-timeout=*) idle="${arg#--idle-timeout=}" ;;
       --strict)         strict=1 ;;
+      --keyring=*)      keyring="${arg#--keyring=}" ;;
       --*)              actions+=("${arg#--}") ;;
       *)                die "$usage_app" ;;
     esac
@@ -520,6 +521,7 @@ cmd_app() {
   [[ -n "$run" ]] || die "$usage_app"
   [[ "$display_mode" =~ ^(virtual|host)$ ]] || die "--display must be virtual or host"
   [[ "$size" =~ ^[0-9]+x[0-9]+$ ]] || die "--size must be WxH"
+  [[ "$keyring" =~ ^(login|locked|none)$ ]] || die "--keyring must be login, locked or none"
 
   APP_SLOT="$slot" APP_SIZE="$size"
   APP_OUT="${out_dir:-${DATA_DIR}/app-${slot}-$(date +%s)}"
@@ -545,8 +547,19 @@ cmd_app() {
   local inner
   local -a strict_env=()
   (( strict )) && strict_env=(G_DEBUG=fatal-criticals)
-  printf -v inner 'dbus-daemon --session --address=%q --fork --nopidfile >/dev/null && exec /bin/bash -c %q' \
-    "$DBUS_SESSION_BUS_ADDRESS" "$run"
+  # The session's Secret Service, as a real login leaves it. A desktop login
+  # unlocks the login keyring through pam_gnome_keyring (login); auto-login
+  # has no password to unlock it with (locked); none starts nothing, and the
+  # first app to touch the Secret Service gets "choose a password for the
+  # new keyring" - over its own window, which blocked every page of a Cassini
+  # tour. Images without gnome-keyring (Plasma: KWallet) skip this.
+  local ksetup=":"
+  case "$keyring" in
+    login)  ksetup='command -v gnome-keyring-daemon >/dev/null && { printf testbed | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1; true; }' ;;
+    locked) ksetup='command -v gnome-keyring-daemon >/dev/null && { printf testbed | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1; gnome-keyring-daemon --replace --daemonize --components=secrets >/dev/null 2>&1; true; }' ;;
+  esac
+  printf -v inner 'dbus-daemon --session --address=%q --fork --nopidfile >/dev/null && { %s; } && exec /bin/bash -c %q' \
+    "$DBUS_SESSION_BUS_ADDRESS" "$ksetup" "$run"
   _ensure_host_machine_id
   _ensure_dbus
   _prepare_enter_args "$slot" "$local_src" /usr/bin/env \
