@@ -408,7 +408,15 @@ container). `iso-install -p <profile> --iso=<iso-latest|iso-stable|date|file>`:
 
 Not covered: clicking the os-installer GUI pages (they only collect the
 `OSI_*` values), and Secure Boot (MOK enrollment needs MokManager).
-`--boot-only` re-boots the last installed disk. Uses KVM when present; under
+`--boot-only` firmware-boots whatever `install.img` holds: with the last
+iso-install's NVRAM and TPM when it is still that disk, or with fresh ones
+when `bootstrap`/`install` has re-created it since (a new inode) - so a
+bootstrap disk gets a real UEFI + TPM boot and `--console-exec` too.
+`--reset-firmware` forces fresh NVRAM and TPM. With `--console-exec`, this is
+how a check sees what only a real boot shows: `systemd.volatile=state`'s
+empty `/var`, the real kernel, the TPM. Under TCG keep the host otherwise
+idle: a loaded host stalls the guest kernel in timer calibration
+(`tsc: Unable to calibrate against PIT`). Uses KVM when present; under
 TCG (this host) the live boot takes ~80 s, the install ~23 min, the
 installed boot ~95 s. `tests/iso-install-runner.sh` checks the in-guest
 runner against os-installer's contract in a container.
@@ -466,6 +474,19 @@ render node is bound in when the host has one.
 # on YOUR screen, usable for 10 minutes (run `xhost +local:` on the host first)
 ./run_in_container.sh build.sh test desktop blue --display=host --hold=600
 ```
+
+### `desktop --tour`: every shell surface, not one screenshot
+
+`desktop <slot> --tour` opens each real surface of the image's desktop in
+turn and requires it to *change the screen* - more than 0.5 % of its pixels
+against the desktop shot - because a screenshot that merely exists proves
+nothing. GNOME runs `gnome-shell --unsafe-mode` and drives it with
+`org.gnome.Shell.Eval` (overview, app grid, calendar, quick settings, a
+notification, the lock screen); Plasma drives plasmashell/KRunner over D-Bus
+and launches Dolphin, Konsole, System Settings and the real lock-screen
+greeter (`kscreenlocker_greet --testing`). Ported from shani-pkgbuilds'
+`shani-desktop-plasma/tests/plasma-session.sh`, which does this for the theme
+in a hand-assembled container; here it is the shipped image.
 
 ### `vmspawn`: UEFI + TPM boots without KVM (host-only)
 
@@ -893,14 +914,27 @@ the app's accessibility tree, then report the app's stdout and exit code.
   a browser DOM: `find=button:^OK$` and `click-element=button:^OK$` work by
   name instead of pixels. Role names are at-spi2-core's current ones
   (`button`, `text`, `frame`, `check box`, ...); run `tree` to see them.
+  **GTK4 reports no screen position** (its AT-SPI `SCREEN` extents are always
+  `0,0`; only `WINDOW` extents are real), so for a GTK4 app - Shani Cassini,
+  Chronoa - `a11y_client.py` maps window coordinates through the X window's
+  origin. Before 2026-10-01 every `click-element` on a GTK4 app landed at the
+  window's top-left corner; the GTK3 dialog the self-test used to drive hid it.
 - **Focus.** The virtual display runs no window manager, so `type`/`key`
   first focus the app's newest window if none of its windows has focus
   (`focus=REGEX` does it explicitly).
 
 ```bash
-./run_in_container.sh build.sh test app blue --run="yad --entry --title=Demo" \
+# the harness's own GTK4/libadwaita fixture (the widgets Cassini is built from),
+# from the read-only testbed bind every slot has:
+./run_in_container.sh build.sh test app blue \
+  --run="python3 /mnt/testbed/tests/fixtures/adw_fixture.py entry Demo" \
   --wait-window=Demo:30 --screenshot --type="hello" --click-element='button:^OK$' --wait-exit=10
 # -> app exit 0, stdout "hello"
+
+# every Shani Cassini page, like a user: open, require a visible change,
+# accessibility lint, then a clean log and 40 seeded random clicks
+./run_in_container.sh build.sh test app blue --run=shani-cassini --strict \
+  --script=/opt/shani-testbed/app-scripts/cassini-tour.actions
 ```
 
 Actions (full list in `lib/app.sh`): `wait-window=RE[:S]`, `expect-window=RE`,
@@ -908,10 +942,148 @@ Actions (full list in `lib/app.sh`): `wait-window=RE[:S]`, `expect-window=RE`,
 `=X,Y` or `=@WINDOW-RE:X,Y`, `drag=X1,Y1:X2,Y2`, `scroll=up|down|left|right[:N]`,
 `type=TEXT`, `key=COMBO` (X keysyms: `Return`, `ctrl+a`), `focus=RE`,
 `screenshot[=FILE]`, `tree[=DEPTH]`, `find=QUERY`, `click-element=QUERY[#N]`,
-`sleep=S`, `wait-exit[=S]`, `status`, `quit`. The same words (without `--`)
+`sleep=S`, `wait-exit[=S]`, `status`, `quit`, and the assertions:
+
+| action | fails when | why it exists |
+|---|---|---|
+| `a11y-lint` | an on-screen control (button, entry, check box, menu item, ...) has no accessible name | a screen reader announces it as just "button" |
+| `expect-changed=REF[:PCT]` | no more than PCT % (default 0.5) of pixels differ from REF | a non-empty screenshot proves nothing: `import -window root` always captures *something* (lesson from shani-pkgbuilds' `plasma-session.sh`) |
+| `expect-same=REF[:PCT]` | more than PCT % differ (fuzz 3 %, so anti-aliasing is not a difference) | visual regression against a saved shot |
+| `mask=X,Y,WxH` | - | blanks a region (a clock, a spinner) in every later comparison; `mask=` clears |
+| `expect-text=REGEX` | tesseract does not read REGEX on screen | "the dialog says X" without knowing where |
+| `monkey=N[:SEED]` | the app exits during N random clicks on enabled controls from the accessibility tree | robustness; the seed is printed, so a failure replays |
+| `expect-clean-log[=IGNORE]` | app.stderr has GLib/GTK/Qt CRITICAL or WARNING lines not matching IGNORE | name each accepted warning, never all of them |
+
+`--strict` runs the app with `G_DEBUG=fatal-criticals`, so the first critical
+aborts it. Any file argument may be written `@out/NAME` (a file in the run's
+output directory), so a `--script` can save a shot and compare against it later
+(`app-scripts/cassini-tour.actions` does). The same words (without `--`)
 work in a `--script=FILE`, on stdin with `--interactive`, and over
 `--control=DIR` (one `<id> <action>` line per command on `DIR/cmd.fifo`,
 answered in `DIR/reply.<id>.json`).
+
+## Testing web pages: `web`
+
+`web` checks a page or a whole static site in a **real headless Chromium**,
+driven over the DevTools protocol by `lib/web_client.py` - standard-library
+Python only (`--remote-debugging-pipe` speaks CDP as NUL-delimited JSON on fds
+3 and 4), no Node, Playwright or bundled browser. `--site=DIR` serves a
+checkout the way **GitHub Pages** serves the four ShaniOS sites
+(`lib/web_serve.py`: `404.html` with status 404 for an unknown path - the
+SPA-redirect hop shani-blog's `/bookmarks` relies on). Each check prints a
+`RESULT` line:
+
+| check | fails when |
+|---|---|
+| `errors` | an uncaught exception, `console.error`, an HTTP >= 400 response, a failed load, a Chrome issue report (mixed content, CSP, cookies, ...) or a CSP violation event |
+| `egress` | the page contacted a host that is neither its own nor `--allow-host` |
+| `title` / `lang` | empty `<title>` / no `lang` on `<html>` |
+| `a11y-names` | an interactive or image node in the browser's accessibility tree has no name |
+| `expect SEL` | the selector matches nothing |
+| `errors` / `overflow` / `tap-targets` *per device* | every run checks the three built-in devices - **desktop** 1280x800, **tablet** 820x1180 (touch, 2x), **mobile** 390x844 (touch, 3x); `--devices=` narrows or adds `WxH` - each with a fresh load under its own emulation (errors only that device hits), no horizontal scroll (the innermost unclipped culprits printed as selectors), and on touch devices every control at least 24x24 px (WCAG 2.2 2.5.8; links inside text exempt) |
+| `perf` | LCP / CLS exceed `--budget-lcp` / `--budget-cls`; above CLS 0.1 the elements that shifted are printed |
+| `offline` | (`--offline`) the service worker does not take control and serve the page with the network cut |
+| `spa-fallback` | (`--spa=/path`) an unknown route does not render the app |
+| `crawl` | (`--crawl=N`) a same-origin page linked from the start page has any of the errors above; judged on the document the browser ends on, so a working SPA redirect is not a broken page. **Crawling zero pages is a FAIL, not a pass** — it is reached when the start page has neither a same-origin `<a href>` page nor a `sitemap.xml` naming one, and reporting "0/0 clean" would be a green check with nothing behind it. Where the only links are `onclick` buttons, the sitemap is used instead and the result says so; if neither exists, the detail names the cause rather than just going red |
+
+**Features, used like a visitor uses them** (`lib/web_features.py`, on every
+device, on the start page and one inner page - found from its links or the
+site's own `sitemap.xml`). Each is found by role and convention, operated with
+real input events, judged by its visible effect, and a new exception or
+console error while operating it is a FAIL; a feature the page does not have
+is SKIP:
+
+| feature | passes when |
+|---|---|
+| menu (touch devices) | the hamburger/nav toggle opens the navigation and Escape or a second tap closes it |
+| search, search-shortcut | a word from the page typed into the box (opened by its toggle if hidden) produces results; the `/` or Ctrl+K the placeholder advertises focuses it |
+| theme, theme-persists, color-scheme | the toggle changes the page's colours and back; the choice survives a reload; with no saved choice the page follows the OS light/dark setting |
+| disclosure, dialog | an accordion/disclosure expands and collapses (aria-expanded + its panel); a dialog traps focus, closes on Escape and returns focus to its trigger |
+| breadcrumbs, toc, back-to-top, reading-progress | the current crumb is marked `aria-current`; contents links land below the sticky header; back-to-top returns to the top; the progress bar follows the scroll |
+| copy-code | the code block's copy button puts that code on the clipboard (read back for real) |
+| skip-link, focus-visible, focus-not-obscured, keyboard-trap | the first Tab stop skips to an existing target; every Tab stop shows a focus indicator (WCAG 2.4.7) and is not covered by sticky UI (2.4.11); focus never gets stuck (2.1.2) |
+| print | print media keeps the heading visible and a PDF renders |
+| contrast | text meets 4.5:1 (3:1 large) in light AND dark, each as a first visit (WCAG 1.4.3) |
+| reflow-320, text-spacing, reduced-motion | no horizontal scroll at 320 CSS px (1.4.10); the WCAG text-spacing overrides clip nothing (1.4.12); no long animation with reduced motion requested |
+| landmarks, headings, ids, forms, media, head-meta, meta, anchors, images, new-tab-links, site-files | one main, distinct nav labels; one h1, no skipped levels; unique ids and resolvable aria-* references; labelled fields (not placeholder-only); titled iframes, captioned videos; favicon, Open Graph, canonical, parseable JSON-LD; viewport + description; every #anchor has a target; no broken image; target=_blank has rel=noopener; robots.txt, a valid sitemap.xml and a real 404 for an unknown path |
+
+`--no-features` turns them off. Their first run found, on shani-docs: the home
+page rendering as bare unstyled HTML in production since 2026-08-29 (the
+prerender removed the element the app renders into), the phone layout's card
+grid cut off, light-mode code colours at 1.96-3.47:1, the OS dark-mode
+setting ignored after the first visit, breadcrumbs without `aria-current`,
+two `<h1>` on every doc page, and an undersized, low-contrast top-bar link.
+
+A full-page screenshot per device x mode (light, dark) and a JSON report go to
+`disk/web-<epoch>/`. run_in_container.sh mounts the sibling site checkouts at
+`/opt/<repo>`:
+
+```bash
+./run_in_container.sh build.sh test web --site=/opt/shani-docs --offline --crawl=20 \
+  --allow-host=cdn.jsdelivr.net --allow-host=cdnjs.cloudflare.com --allow-host=fonts.googleapis.com
+```
+
+The same client runs in CI for all four sites (`shani-ci-commons`
+`web-check.yml`, called by each site's `.github/workflows/web-check.yml`).
+Its first run found, and these were fixed: shani-blog's CLS of 0.913 (the hero
+reflowing 460px behind the loader), an `img-src` CSP gap blocking AdSense's
+own pixel, 22 Cloudflare-obfuscated `[email protected]` strings baked into
+shani-wiki's code examples, and the wiki's desktop-width horizontal scroll.
+The self-test is `tests/run-web-client.sh` (a clean fixture site must pass
+every check; a broken one must fail each check it plants a fault for).
+
+## What an upgrade changes: `slot-diff`
+
+`slot-diff [--from=SLOT] [--to=SLOT] [--json=FILE]` compares the two
+read-only roots on disk (nothing boots): packages added / removed / changed
+(each slot's own pacman database), shared libraries that disappear, systemd
+units added / removed and their enablement, default `/etc` files whose
+content changed, and kernel versions. By default it is current -> other slot,
+i.e. after `upgrade` exactly what the next reboot changes. Adapted from
+shani-builder's `pkg/checkpkg.sh`, which asks the same questions of one
+package before it is published. A report, not a gate.
+
+## Slot tests that only a real image can answer
+
+Besides the earlier ones, `slot-tests/` now has:
+
+- `unit-verify` - `systemd-analyze verify` over every unit ShaniOS ships
+  (shani-* packages and image overlays), unstubbed, plus every load-time
+  complaint PID 1 logged this boot;
+- `config-validators` - visudo, udevadm verify, testparm, `sshd -t`, polkitd's
+  own rule compilation, tmpfiles/sysusers dry runs, `firewall-offline-cmd
+  --check-config` and `dconf compile` against the INSTALLED `/etc`, each with a
+  deliberately broken negative control;
+- `service-start` - every opt-in service a user can turn on (Samba, NFS,
+  libvirt, sshd, cups, avahi, caddy, fail2ban) must actually start; on failure
+  the package-owned `/var` paths that are missing are printed. It found that
+  smb/nmb/winbind, rpc-statd, libvirtd **and AppArmor** failed on every fresh
+  install: `/var` is a tmpfs (`systemd.volatile=state`) and the `/data/varlib`
+  binds start empty, so directories packages ship under `/var` never existed.
+  Fixed in shani-install-media by `scripts/gen-var-tmpfiles.sh` (tmpfiles.d
+  entries generated from pacman's mtree at image build) and verified on a
+  real UEFI boot;
+- `repo-pytest` - Shani Cassini's, Chronoa's and Backup's own test suites on
+  the image's Python/PyGObject/GTK/libadwaita (pytest fetched into /tmp with a
+  copy of the pacman db, widgets on GTK's Broadway backend - nothing is
+  installed into the slot);
+- `disk-layout` additionally checks every fstab mount is live and both slots
+  have a UKI or loader entry on the ESP.
+
+`slot-test --volatile` boots the slot with `/var` an empty tmpfs
+(`systemd-nspawn --tmpfs=/var` - not `--volatile=state`, which would also make
+`/etc` read-only, unlike ShaniOS's writable `/etc` overlay), as on real hardware. Plain nspawn boots see the image's
+whole `/var`, which is how the `/var` failures above stayed invisible to every
+earlier slot-test. Slot-tests that ask pacman read the slot's database from its
+read-only subvolume (`slot-tests/_pacdb.sh`), since a real boot has none.
+
+## One harness run at a time
+
+Every command that touches the disk takes `disk/.testbed.lock` (flock; works
+across separate `run_in_container.sh` containers). A second run fails at once
+naming the holder instead of corrupting shared state - two overlapping
+`iso-install` runs once left swtpm's state unreadable. Read-only commands
+(`status`, `serve` - which runs beside `upgrade` by design -, `web`, `slot-diff`, `watch`, help) do not take it.
 
 ## AI agents: the MCP server
 

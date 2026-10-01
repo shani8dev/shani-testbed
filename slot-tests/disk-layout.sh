@@ -37,6 +37,33 @@ n=$(awk '!/^[[:space:]]*#/ && $4 ~ /bind/ && $1 ~ /^\/data\//' /etc/fstab | wc -
   || res fstab-bind-sources-in-data "FAIL (${#missing[@]}/${n} missing: ${missing[*]:0:5})"
 umount "$m"
 
+# --- every fstab mount is live --------------------------------------------
+# (from shani-install-media's packer 02-verify.sh and verify-fstab-drift.sh,
+# which check the fstab TEXT; this checks systemd actually mounted it.) A
+# missing mount is a silent failure: the service still starts, on the
+# empty tmpfs /var, and its state is lost at reboot. / /data /swap /boot/efi
+# are the harness's own nspawn binds, and swap cannot be activated inside a
+# container (it would land on the host kernel) - those are not judged here.
+notlive=()
+nm=0
+while read -r src tgt type opts; do
+  case "$tgt" in /|/data|/swap|/boot/efi|none) continue ;; esac
+  [[ "$type" == swap ]] && continue
+  nm=$((nm + 1))
+  findmnt -M "$tgt" >/dev/null 2>&1 || notlive+=("$tgt")
+done < <(awk '!/^[[:space:]]*(#|$)/ {print $1, $2, $3, $4}' /etc/fstab)
+(( ${#notlive[@]} == 0 )) && res fstab-mounts-live "PASS (${nm} mounts)" \
+  || res fstab-mounts-live "FAIL (${#notlive[@]}/${nm} not mounted: ${notlive[*]:0:8})"
+
+# --- both slots are bootable from the ESP -----------------------------------
+for sl in blue green; do
+  if compgen -G "/boot/efi/EFI/Linux/*${sl}*.efi" >/dev/null || compgen -G "/boot/efi/loader/entries/*${sl}*.conf" >/dev/null; then
+    res "esp-entry-${sl}" "PASS ($(ls /boot/efi/EFI/Linux/*"${sl}"*.efi /boot/efi/loader/entries/*"${sl}"*.conf 2>/dev/null | xargs -n1 basename | tr '\n' ' '))"
+  else
+    res "esp-entry-${sl}" "FAIL (no UKI or loader entry for @${sl} on the ESP)"
+  fi
+done
+
 # NEGATIVE control: plant a stray directory, the same check must see it
 mount -o subvolid=5 "$dev" "$m" && mkdir "$m/disk-layout-negctl" \
   && { [[ "$(stray)" == *disk-layout-negctl* ]] && res negative-control-detected PASS || res negative-control-detected FAIL; }

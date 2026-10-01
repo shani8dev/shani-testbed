@@ -222,9 +222,42 @@ cmd_verifyboot() {
 # The GPU render node, when the host has one, is bound in so KWin composites
 # with real OpenGL (the fresh user is added to its group). Every wait is
 # bounded; the slot is always stopped via _boot_bg_stop.
+# _desktop_tour_judge <dir> <desktop-shot>: every tour-*.png must differ from
+# the desktop baseline by more than 0.5 % of its pixels. A screenshot that
+# exists proves nothing - the X-side capture and the Screenshot API both
+# return *something* - so "the launcher opened" means "the screen changed"
+# (method from shani-pkgbuilds' shani-desktop-plasma/tests/plasma-session.sh,
+# which this ports onto the real image instead of a hand-assembled container).
+# Prints RESULT lines; returns 1 if any step failed.
+_desktop_tour_judge() {
+  local dir="$1" base="$2" f s d iw ih failed=0
+  [[ -s "$base" ]] || { echo "RESULT tour-desktop-baseline                 FAIL (no baseline shot)"; return 1; }
+  printf 'RESULT %-40s %s\n' "tour-desktop" "PASS (baseline)"
+  for f in "$dir"/tour-*.png; do
+    [[ -e "$f" ]] || continue
+    s=$(basename "$f" .png); s=${s#tour-}
+    if [[ ! -s "$f" ]]; then printf 'RESULT %-40s %s\n' "tour-$s" "FAIL (no screenshot)"; failed=1; continue; fi
+    d=$(compare -metric AE -fuzz 3% "$base" "$f" null: 2>&1); d=${d%%[^0-9]*}
+    read -r iw ih < <(identify -format '%w %h' "$f")
+    if [[ "$d" =~ ^[0-9]+$ ]] && (( d > iw * ih / 200 )); then
+      printf 'RESULT %-40s %s\n' "tour-$s" "PASS (${d} px differ from the desktop)"
+    else
+      printf 'RESULT %-40s %s\n' "tour-$s" "FAIL (only ${d:-?} px differ - nothing visible happened?)"; failed=1
+    fi
+  done
+  for s in "${DESKTOP_TOUR_STEPS[@]}"; do
+    if [[ -e "$dir/tour-$s.skip" ]]; then
+      printf 'RESULT %-40s %s\n' "tour-$s" "SKIP (not available in this session: no screen shield in a headless root session)"
+      continue
+    fi
+    [[ -e "$dir/tour-$s.png" ]] || { printf 'RESULT %-40s %s\n' "tour-$s" "FAIL (step produced no screenshot)"; failed=1; }
+  done
+  return $failed
+}
+
 _desktop_plasma() {
   local slot="$1" exec_cmd="$2" out_file="$3" boot_timeout="$4" settle="$5" local_src="$6"
-  local display_mode="$7" size="$8" hold="$9"
+  local display_mode="$7" size="$8" hold="$9" tour="${10:-0}"
   [[ "$display_mode" == virtual || "$display_mode" == host ]] || die "--display must be virtual or host"
   [[ "$size" =~ ^[0-9]+x[0-9]+$ ]] || die "--size must be WxH"
   [[ "$hold" =~ ^[0-9]+$ ]] || die "--hold must be a number of seconds"
@@ -249,10 +282,10 @@ _desktop_plasma() {
   _wait_boot "$logfile" "$boot_timeout" "Login Prompts" _desktop_login_reached
 
   local w="${size%x*}" h="${size#*x}"
-  nsenter --target "$LEADER_PID" --all -- bash -s -- "$disp" "$w" "$h" "$settle" "$hold" "$exec_cmd" "/data/.${tag}" \
+  nsenter --target "$LEADER_PID" --all -- bash -s -- "$disp" "$w" "$h" "$settle" "$hold" "$exec_cmd" "/data/.${tag}" "$tour" \
     >"${APP_OUT}/session.log" 2>&1 <<'PLASMA_EOF' &
 set -u
-disp="$1" w="$2" h="$3" settle="$4" hold="$5" exec_cmd="$6" dir="$7"
+disp="$1" w="$2" h="$3" settle="$4" hold="$5" exec_cmd="$6" dir="$7" tour="$8"
 systemctl stop display-manager.service >/dev/null 2>&1 || true
 u=shanidesk
 userdel -r "$u" >/dev/null 2>&1
@@ -267,7 +300,7 @@ mkdir -p "$dir"; chown "$u:" "$dir"; flag="$dir/s"
 runuser -u "$u" -- kwriteconfig6 --file kded5rc --group Module-bluedevil --key autoload false
 runuser -u "$u" -- env -i HOME="/home/$u" USER="$u" LOGNAME="$u" SHELL=/bin/zsh PATH=/usr/local/bin:/usr/bin \
   XDG_RUNTIME_DIR="$rt" LANG=C.UTF-8 DISPLAY="$disp" \
-  DP_W="$w" DP_H="$h" DP_SETTLE="$settle" DP_HOLD="$hold" DP_EXEC="$exec_cmd" DP_FLAG="$flag" \
+  DP_W="$w" DP_H="$h" DP_SETTLE="$settle" DP_HOLD="$hold" DP_EXEC="$exec_cmd" DP_FLAG="$flag" DP_TOUR="$tour" \
   dbus-run-session -- bash -c '
   export XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE KDE_FULL_SESSION=true KDE_SESSION_VERSION=6 XDG_SESSION_TYPE=wayland
   # what a real login gets from the user manager: the image'"'"'s own
@@ -297,7 +330,31 @@ runuser -u "$u" -- env -i HOME="/home/$u" USER="$u" LOGNAME="$u" SHELL=/bin/zsh 
   dbus-send --session --print-reply --dest=org.kde.KWin /KWin org.kde.KWin.supportInformation 2>/dev/null \
     | grep -m2 -iE "Compositing Type|OpenGL renderer" > "$DP_FLAG.info"
   touch "$DP_FLAG.ready"
+  if [ "$DP_TOUR" = 1 ]; then
+    # --tour: each step opens one real surface, then asks the outer side for
+    # an X-side shot (step.<n>.<name> -> it touches step.<n>.done) and undoes it
+    st() { n=$((n + 1)); sleep "${2:-3}"; touch "$DP_FLAG.step.$n.$1"
+           for i in $(seq 1 30); do [ -e "$DP_FLAG.step.$n.done" ] && break; sleep 1; done; }
+    for i in $(seq 1 60); do [ -e "$DP_FLAG.shot" ] && break; sleep 1; done   # the baseline first
+    n=0
+    qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.activateLauncherMenu >/dev/null 2>&1; st launcher
+    qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.activateLauncherMenu >/dev/null 2>&1; sleep 1
+    qdbus6 org.kde.krunner /App org.kde.krunner.App.display >/dev/null 2>&1; st krunner
+    qdbus6 org.kde.krunner /App org.kde.krunner.App.toggleDisplay >/dev/null 2>&1; sleep 1
+    dbus-send --session --dest=org.freedesktop.Notifications --type=method_call /org/freedesktop/Notifications \
+      org.freedesktop.Notifications.Notify string:Tour uint32:0 string:dialog-information string:"Shani testbed" \
+      string:"desktop --tour notification" array:string: dict:string:variant: int32:20000 >/dev/null 2>&1; st notification
+    dolphin "$HOME" >/dev/null 2>&1 & DPID=$!; st dolphin 8; kill $DPID 2>/dev/null; sleep 1
+    konsole >/dev/null 2>&1 & KPID=$!; st konsole 6; kill $KPID 2>/dev/null; sleep 1
+    systemsettings >/dev/null 2>&1 & SPID=$!; st systemsettings 10; kill $SPID 2>/dev/null; sleep 1
+    # the real lock screen greeter, windowed (--testing: any key unlocks)
+    if [ -x /usr/lib/kscreenlocker_greet ]; then
+      /usr/lib/kscreenlocker_greet --testing >/dev/null 2>&1 & LPID=$!; st lockscreen 6; kill $LPID 2>/dev/null
+    fi
+    touch "$DP_FLAG.tourdone"
+  else
   for i in $(seq 1 60); do [ -e "$DP_FLAG.shot" ] && break; sleep 1; done
+  fi
   sleep "$DP_HOLD"
   pkill -x plasmashell; kill $KW 2>/dev/null; wait $KW 2>/dev/null; true'
 PLASMA_EOF
@@ -326,6 +383,26 @@ PLASMA_EOF
     rc=1
   fi
   touch "${data_host}/.${tag}/s.shot"
+  local tour_rc=0
+  if (( tour )) && (( ready )); then
+    local tdir="$(dirname "$out_file")/tour-${slot}-$(date +%s)" req base step
+    mkdir -p "$tdir"; cp -f "$out_file" "$tdir/desktop.png"
+    DESKTOP_TOUR_STEPS=(launcher krunner notification dolphin konsole systemsettings)
+    [[ -e "${MNT}/@${slot}/usr/lib/kscreenlocker_greet" ]] && DESKTOP_TOUR_STEPS+=(lockscreen)
+    for (( i=0; i<240; i++ )); do
+      for req in "${data_host}/.${tag}"/s.step.*; do
+        [[ -e "$req" && "$req" != *.done ]] || continue
+        base=$(basename "$req"); step=${base#s.step.*.}
+        import -display "$disp" -window root "$tdir/tour-${step}.png" 2>/dev/null || true
+        mv "$req" "${req%.*}.done"
+      done
+      [[ -e "${data_host}/.${tag}/s.tourdone" ]] && break
+      kill -0 "$sess" 2>/dev/null || break
+      sleep 1
+    done
+    log "── desktop tour (Plasma, @${slot}) - ${tdir}"
+    _desktop_tour_judge "$tdir" "$tdir/desktop.png" || tour_rc=1
+  fi
   for (( i=0; i<hold+60; i++ )); do kill -0 "$sess" 2>/dev/null || break; sleep 1; done
   kill "$sess" 2>/dev/null || true
   cp -f "${data_host}/.${tag}/s.kwin.log" "${APP_OUT}/kwin.log" 2>/dev/null || true
@@ -336,6 +413,7 @@ PLASMA_EOF
   [[ -n "${APP_XVFB_PID:-}" ]] && kill "$APP_XVFB_PID" 2>/dev/null
   [[ $rc -eq 0 && -s "$out_file" ]] || die "no Plasma screenshot produced (logs: ${APP_OUT}/)"
   log "Screenshot saved: ${out_file}"
+  (( tour_rc == 0 )) || die "desktop tour FAILED"
 }
 
 # ------------------------------------------------------------------
@@ -401,13 +479,14 @@ cmd_desktop() {
 
   command -v nsenter >/dev/null 2>&1 || die "nsenter is required (util-linux) — should already be present."
 
-  local exec_cmd="" out_file="" boot_timeout=180 settle=25 local_src="" arg
+  local exec_cmd="" out_file="" boot_timeout=180 settle=25 local_src="" arg tour=0
   local de=auto display_mode=virtual size=1600x900 hold=0
   for arg in "$@"; do
     case "$arg" in
       --local-src=*) local_src="${arg#--local-src=}" ;;
       --local-src-chronoa=*) _set_chronoa_src "${arg#--local-src-chronoa=}" ;;
       --exec=*)    exec_cmd="${arg#--exec=}" ;;
+      --tour)      tour=1 ;;
       --out=*)     out_file="${arg#--out=}" ;;
       --timeout=*) boot_timeout="${arg#--timeout=}" ;;
       --settle=*)  settle="${arg#--settle=}" ;;
@@ -435,7 +514,7 @@ cmd_desktop() {
     log "desktop: @${slot} is a '${de}' slot"
   fi
   if [[ "$de" == plasma ]]; then
-    _desktop_plasma "$slot" "$exec_cmd" "$out_file" "$boot_timeout" "$settle" "$local_src" "$display_mode" "$size" "$hold"
+    _desktop_plasma "$slot" "$exec_cmd" "$out_file" "$boot_timeout" "$settle" "$local_src" "$display_mode" "$size" "$hold" "$tour"
     return
   fi
   [[ "$display_mode" == virtual && "$hold" == 0 ]] \
@@ -455,9 +534,9 @@ cmd_desktop() {
 
   log "Running the desktop probe inside the live container via nsenter..."
   local probe_rc=0
-  nsenter --target "$LEADER_PID" --all -- bash -s -- "$exec_cmd" "$container_out" "$settle" <<'PROBE_EOF' || probe_rc=$?
+  nsenter --target "$LEADER_PID" --all -- bash -s -- "$exec_cmd" "$container_out" "$settle" "$tour" <<'PROBE_EOF' || probe_rc=$?
 set -uo pipefail
-exec_cmd="$1"; out_file="$2"; settle="$3"
+exec_cmd="$1"; out_file="$2"; settle="$3"; tour="$4"
 
 # gdm.service's own real greeter session already runs its own gnome-shell
 # in this real --boot — confirmed live: running our own separate headless
@@ -506,7 +585,10 @@ export WAYLAND_DISPLAY=wayland-0
 # then exits ("X Wayland crashed; exiting"). --no-x11 is its own switch.
 nox11=""
 gnome-shell --help 2>&1 | grep -q -- '--no-x11' && nox11=--no-x11
-MUTTER_NO_XWAYLAND=1 gnome-shell --headless $nox11 --virtual-monitor=1280x800 >/tmp/desktop-probe-shell.log 2>&1 &
+# --tour drives the shell over org.gnome.Shell.Eval, which only --unsafe-mode
+# answers; a plain run keeps the shell's default safe mode
+unsafe=""; [ "${DESKTOP_PROBE_TOUR:-0}" = 1 ] && unsafe=--unsafe-mode
+MUTTER_NO_XWAYLAND=1 gnome-shell --headless $nox11 $unsafe --virtual-monitor=1280x800 >/tmp/desktop-probe-shell.log 2>&1 &
 GSPID=$!
 ready=0
 for i in $(seq 1 "$DESKTOP_PROBE_SETTLE"); do
@@ -571,6 +653,48 @@ for i in $(seq 1 "$DESKTOP_PROBE_SETTLE"); do
   echo "screenshot attempt $i/$DESKTOP_PROBE_SETTLE failed: $call_err" >&2
   sleep 1
 done
+if [ "$rc" -eq 0 ] && [ "${DESKTOP_PROBE_TOUR:-0}" = 1 ]; then
+  # --tour: open each real shell surface, shoot it, close it again
+  # each Eval's (success, result) goes to the log: a step that "changed
+  # nothing" then says why
+  ev() { echo "tour eval: $1 -> $(gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
+           --method org.gnome.Shell.Eval "$1" 2>&1 | tr -d '\n' | cut -c1-200)" >&2; }
+  # GNOME starts IN the overview: the baseline must be the plain desktop, or
+  # "overview" looks like nothing happened (seen on GNOME 50, 2026-10-01)
+  ev 'Main.overview.hide()'
+  # the root session's own "Logged in as a privileged user" banner would sit
+  # in every shot and hold the notification tray: clear it first
+  ev 'Main.messageTray.getSources().forEach(x => x.destroy()); true'
+  sleep 3
+  shot >/dev/null 2>&1 || true
+  tshot() { sleep "${2:-3}"; DESKTOP_PROBE_OUT="${base%.png}-tour-$1.png" shot >/dev/null 2>&1 \
+              || echo "tour step $1: screenshot failed" >&2; }
+  base="$DESKTOP_PROBE_OUT"
+  ev 'Main.overview.show()';                                  tshot overview
+  # the dash's own Show Apps toggle; Main.overview.showApps() alone left the
+  # window picker up on GNOME 50
+  ev 'Main.overview.showApps(); if (Main.overview.dash && Main.overview.dash.showAppsButton) Main.overview.dash.showAppsButton.checked = true; true'; tshot appgrid
+  ev 'Main.overview.hide()'; sleep 2
+  ev 'Main.panel.statusArea.dateMenu.menu.open()';            tshot calendar
+  ev 'Main.panel.statusArea.dateMenu.menu.close()'; sleep 1
+  ev 'Main.panel.statusArea.quickSettings.menu.open()';       tshot quicksettings
+  ev 'Main.panel.statusArea.quickSettings.menu.close()'; sleep 1
+  echo "tour notify: $(gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.Notify Tour 0 dialog-information "Shani testbed" \
+    "desktop --tour notification" "@as []" "@a{sv} {}" 20000 2>&1 | tr -d '\n')" >&2
+  # a banner already up (GNOME's own) holds the tray: clear it first
+  ev 'Main.messageTray && Main.messageTray._notificationQueue ? Main.messageTray._notificationQueue.length : -1'
+  tshot notification
+  # the lock screen needs a screen shield, which this headless root session
+  # has none of: record that instead of shooting an unchanged desktop
+  if gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval \
+       '!!Main.screenShield' 2>/dev/null | grep -q "'true'"; then
+    ev 'Main.screenShield.lock(false)'; tshot lockscreen 4
+  else
+    touch "${base%.png}-tour-lockscreen.skip"
+  fi
+  DESKTOP_PROBE_OUT="$base"
+fi
 kill -0 "$GSPID" 2>/dev/null || { echo "gnome-shell exited during the probe:" >&2; tail -20 /tmp/desktop-probe-shell.log >&2; }
 kill "$GSPID" 2>/dev/null
 wait 2>/dev/null
@@ -584,6 +708,7 @@ chmod 700 "$XDG_RUNTIME_DIR"
 export DESKTOP_PROBE_EXEC="$exec_cmd"
 export DESKTOP_PROBE_OUT="$out_file"
 export DESKTOP_PROBE_SETTLE="$settle"
+export DESKTOP_PROBE_TOUR="$tour"
 dbus-run-session -- /tmp/desktop-probe-inner.sh
 PROBE_EOF
 
@@ -592,10 +717,25 @@ PROBE_EOF
   fi
 
   local host_container_out="${MNT}/@data/$(basename "$container_out")"
+  local tour_rc=0
+  if (( tour )) && [[ -f "$host_container_out" ]]; then
+    _app_ensure_tools   # ImageMagick compare/identify for the judgement
+    # next to the desktop screenshot (test-env/shots/), not under disk/
+    local tdir="$(dirname "$out_file")/tour-${slot}-$(date +%s)" t
+    mkdir -p "$tdir"; cp -f "$host_container_out" "$tdir/desktop.png"
+    DESKTOP_TOUR_STEPS=(overview appgrid calendar quicksettings notification lockscreen)
+    for t in "${DESKTOP_TOUR_STEPS[@]}"; do
+      [[ -f "${host_container_out%.png}-tour-${t}.png" ]] && mv -f "${host_container_out%.png}-tour-${t}.png" "$tdir/tour-${t}.png"
+      [[ -f "${host_container_out%.png}-tour-${t}.skip" ]] && mv -f "${host_container_out%.png}-tour-${t}.skip" "$tdir/tour-${t}.skip"
+    done
+    log "── desktop tour (GNOME, @${slot}) - ${tdir}"
+    _desktop_tour_judge "$tdir" "$tdir/desktop.png" || tour_rc=1
+  fi
   if [[ -f "$host_container_out" ]]; then
     cp -f "$host_container_out" "$out_file"
     rm -f "$host_container_out"
     log "Screenshot saved: ${out_file}"
+    (( tour_rc == 0 )) || die "desktop tour FAILED"
   else
     die "probe finished but no screenshot was produced at ${host_container_out} (rc=${probe_rc})"
   fi
@@ -616,7 +756,7 @@ PROBE_EOF
 _slot_test_mode() { sed -n 's/^# slot-test-mode: *\([a-z]*\).*/\1/p' "$1" | head -1; }
 
 cmd_slot_test() {
-  local usage_st="Usage: $(basename "$0") slot-test <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=<dir>] [--timeout=N] [--settle=N]"
+  local usage_st="Usage: $(basename "$0") slot-test <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=<dir>] [--local-pkg=<name|file>] [--volatile] [--timeout=N] [--settle=N]"
   local slot="${1:-}"; shift || true
   _require_slot "$slot" "$usage_st"
   local local_src="" boot_timeout=240 settle=20 arg
@@ -634,6 +774,7 @@ cmd_slot_test() {
       --local-pkg=*)        export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${arg#--local-pkg=}" ;;
       --timeout=*)   boot_timeout="${arg#--timeout=}" ;;
       --settle=*)    settle="${arg#--settle=}" ;;
+      --volatile)    export SHANIOS_TEST_VOLATILE=state ;;
       --*)           die "$usage_st" ;;
       *)             wanted+=("$arg") ;;
     esac

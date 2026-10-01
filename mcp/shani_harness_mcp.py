@@ -202,7 +202,7 @@ XY = {"x": {"type": "integer"}, "y": {"type": "integer"},
       "window": {"type": "string", "description": "optional window-title regex; x,y are then relative to that window"}}
 TOOLS = [
     ("app_start", "Start a GUI app inside a ShaniOS slot on a private virtual display (safe: never touches the real screen). Waits until ready. First run installs Xvfb/xdotool into the builder container.",
-     {"slot": {"type": "string", "enum": ["blue", "green"]}, "command": {"type": "string", "description": "shell command run inside the slot, e.g. 'yad --entry'"},
+     {"slot": {"type": "string", "enum": ["blue", "green"]}, "command": {"type": "string", "description": "shell command run inside the slot, e.g. 'shani-cassini'"},
       "local_src": {"type": "string", "description": "optional --local-src dir, e.g. /opt/shani-deploy/scripts"},
       "size": {"type": "string", "default": "1280x800"}, "display": {"type": "string", "enum": ["virtual", "host"], "default": "virtual"}},
      ["slot", "command"]),

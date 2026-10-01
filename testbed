@@ -56,7 +56,7 @@ source "${MEDIA_ROOT}/config/config.sh"
 SCRIPT_DIR="${MEDIA_ROOT}/test-env"
 
 LIB_DIR="${TESTBED_ROOT}/lib"
-for _module in common disk pki install nspawn boot deploy app chronoa qemu gui vmspawn isoinstall suite gate usage; do
+for _module in common disk pki install nspawn boot deploy app chronoa qemu gui vmspawn isoinstall suite gate web slotdiff usage; do
   # shellcheck source=/dev/null
   source "${LIB_DIR}/${_module}.sh"
 done
@@ -66,6 +66,25 @@ unset _module
 
 COMMAND="$1"
 shift
+
+# One harness run at a time on this disk. Separate run_in_container.sh calls
+# are separate containers sharing DATA_DIR, and flock works across them. Two
+# overlapping iso-install runs once left swtpm's state unreadable (every later
+# boot: "TPM result for CMD_INIT: 0x101"), another failed on qemu's opaque
+# image "write" lock. Read-only commands do not take it.
+case "$COMMAND" in
+  # serve runs beside upgrade (a second terminal) by design: only file serving
+  status|serve|web|slot-diff|watch|-h|--help|help) ;;
+  *)
+    mkdir -p "$DATA_DIR"
+    exec {_TB_LOCK}>"${DATA_DIR}/.testbed.lock"
+    if ! flock -n "$_TB_LOCK"; then
+      echo "shani-testbed: another harness run holds ${DATA_DIR}: $(cat "${DATA_DIR}/.testbed.lock.who" 2>/dev/null || echo unknown) - wait for it to finish" >&2
+      exit 75
+    fi
+    printf 'pid %s, `%s %s`, since %s\n' "$$" "$COMMAND" "$*" "$(date '+%F %T')" > "${DATA_DIR}/.testbed.lock.who"
+    ;;
+esac
 
 case "$COMMAND" in
   disk)         cmd_disk "$@" ;;
@@ -95,6 +114,8 @@ case "$COMMAND" in
   watch)        cmd_watch "$@" ;;
   iso)          cmd_iso "$@" ;;
   vmspawn)      cmd_vmspawn "$@" ;;
+  web)          cmd_web "$@" ;;
+  slot-diff)    cmd_slot_diff "$@" ;;
   clean)        cmd_clean "$@" ;;
   -h|--help|help) usage ;;
   *)            usage ;;

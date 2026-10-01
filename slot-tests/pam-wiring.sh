@@ -31,7 +31,10 @@ missing_modules() {
         # re-parse PAM's grammar. Split on [:space:] and not just " ": PAM
         # aligns with TABS, so splitting on spaces leaves a whole line as one
         # token whose tail still matches an unanchored .so pattern.
-        for mod in $(sed -e 's/#.*$//' "$svc" | tr '[:space:]' '\n' \
+        # a "-" before the type (-session, -auth) is PAM's "skip silently if
+        # the module is not installed": gdm 50's gdm-launch-environment names
+        # pam_elogind.so that way, legitimately, on a systemd-logind system
+        for mod in $(sed -e 's/#.*$//' -e '/^[[:space:]]*-/d' "$svc" | tr '[:space:]' '\n' \
                        | grep -E '^pam_[A-Za-z0-9_.-]*\.so$' | sort -u); do
             [ -n "$mod" ] || continue
             case "$mod" in /*) ;; *) mod="$mod" ;; esac

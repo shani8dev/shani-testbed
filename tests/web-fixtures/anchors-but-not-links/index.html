@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Buttons, not links</title></head>
+<body><main id="main"><h1>Buttons, not links</h1>
+<p>Every destination below is reachable, and every one of them is a
+<em>button</em> with an onclick handler rather than an anchor. A crawler that
+only follows <code>a[href]</code> finds nothing to follow, so it must report
+that it crawled nothing rather than a clean pass.</p>
+<button onclick="location.href='/page2.html'">Page two</button>
+<button onclick="location.href='/docs/'">Docs</button>
+</main></body></html>

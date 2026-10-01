@@ -47,6 +47,8 @@
 #                                if none of its windows has focus: the virtual
 #                                display runs no window manager to do that)
 #   screenshot[=FILE.png]        whole display (default: <out-dir>/shot-N.png)
+#                                (any FILE may be written @out/NAME: a file in
+#                                <out-dir>, for scripts that compare later)
 #   sleep=SECS
 #   wait-exit[=SECS]             wait for the app to exit; reports its rc
 #   tree[=DEPTH]                 accessibility tree (AT-SPI): ref, role, name,
@@ -57,8 +59,37 @@
 #                                (e.g. find=button:^OK$)
 #   click-element=QUERY[#N]      click the centre of the Nth match (default 1st)
 #   doubleclick-element= / rightclick-element=   same, other clicks
+#   a11y-lint                    fail if any on-screen control (button, entry,
+#                                check box, menu item, ...) has no accessible
+#                                name - what a screen reader announces as just
+#                                "button"
+#   mask=X,Y,WxH                 blank this region in every later expect-same/
+#                                expect-changed comparison (a clock, a spinner);
+#                                cumulative, `mask=` alone clears them
+#   expect-same=REF.png[:PCT]    fail if more than PCT % (default 0.5) of the
+#                                display's pixels differ from REF (fuzz 3 %, so
+#                                anti-aliasing noise is not a difference)
+#   expect-changed=REF.png[:PCT] fail unless more than PCT % differ - "the
+#                                click did something". A non-empty screenshot
+#                                proves nothing: `import -window root` always
+#                                captures *something* (lesson from
+#                                shani-pkgbuilds' plasma-session.sh)
+#   expect-text=REGEX            OCR the display (tesseract) and fail unless
+#                                REGEX (case-insensitive) is in the text
+#   monkey=N[:SEED]              N random clicks on enabled on-screen controls
+#                                from the accessibility tree; fails if the app
+#                                exits during the run. The seed is printed, so
+#                                a failure replays with the same SEED
+#   expect-clean-log[=IGNORE]    fail if app.stderr so far has GLib/GTK/Qt
+#                                CRITICAL or WARNING lines not matching the
+#                                IGNORE regex - name each accepted warning,
+#                                never all of them (see also --strict)
 #   status                       app running?/rc, display, size
 #   quit                         stop the app and end the session
+#
+# --strict runs the app with G_DEBUG=fatal-criticals: the first GLib/GTK
+# critical aborts it (and is caught by wait-exit/monkey/expect-*), instead of
+# being printed and ignored.
 #
 # Output: <out-dir> (default disk/app-<slot>-<epoch>/) gets app.stdout,
 # app.stderr, app.rc (once it exits) and screenshots. The command's exit code
@@ -84,6 +115,16 @@ _app_ensure_tools() {
   pacman -Sy --noconfirm --needed "${APP_TOOLS_PKGS[@]}" >/dev/null \
     || die "could not install ${APP_TOOLS_PKGS[*]}"
 }
+
+# tesseract for expect-text, installed on first use only (most runs never OCR)
+_app_ensure_ocr() {
+  command -v tesseract >/dev/null 2>&1 && return 0
+  command -v pacman >/dev/null 2>&1 || return 1
+  log "Installing tesseract tesseract-data-eng for expect-text..."
+  pacman -Sy --noconfirm --needed tesseract tesseract-data-eng >/dev/null 2>&1
+  command -v tesseract >/dev/null 2>&1
+}
+APP_MASKS=()
 
 # First display number with no socket or lock file. When the host forwards
 # its /tmp/.X11-unix, that directory IS the host's, so this also avoids any
@@ -207,13 +248,23 @@ _app_do() {
   name="${action%%=*}"; value=""
   [[ "$action" == *=* ]] && value="${action#*=}"
   APP_REPLY="" APP_FILE=""
+  # @out/NAME = a file in this run's output dir, so a --script can name its own
+  # screenshots and compare against them later (expect-same/expect-changed)
+  [[ "$value" == @out/* ]] && value="${APP_OUT}/${value#@out/}"
   local btn t spec
   case "$name" in
     wait-window)
       t="${value##*:}"; spec="$value"
       if [[ "$value" == *:* && "$t" =~ ^[0-9]+$ ]]; then spec="${value%:*}"; else t=30; fi
       if _app_wait "$t" _app_has_window "$spec"; then APP_REPLY="window /${spec}/ is visible"
-      else APP_REPLY="no window matching /${spec}/ within ${t}s"; return 1; fi ;;
+        _app_fit_windows "$spec"
+      else
+        # say WHY: whether the app is still running, and its own last words
+        APP_REPLY="no window matching /${spec}/ within ${t}s"
+        if [[ -f "${APP_OUT}/app.rc" ]]; then APP_REPLY+=" - the app exited rc=$(cat "${APP_OUT}/app.rc")"
+        else APP_REPLY+=" - the app is still running"; fi
+        [[ -s "${APP_OUT}/app.stderr" ]] && APP_REPLY+="; its stderr ends: $(grep -av '^\s*$' "${APP_OUT}/app.stderr" | tail -4 | tr '\n' '|' | cut -c1-400)"
+        return 1; fi ;;
     expect-window)
       if _app_has_window "$value"; then APP_REPLY="window /${value}/ present"
       else APP_REPLY="expected a window matching /${value}/, found none"; return 1; fi ;;
@@ -308,6 +359,73 @@ _app_do() {
         xdotool mousemove "$cx" "$cy" click "$b"
       fi || { APP_REPLY="xdotool click failed"; return 1; }
       APP_REPLY="${name%-element} ${label} at ${cx},${cy}" ;;
+    a11y-lint)
+      APP_REPLY="$(python3 "$A11Y_CLIENT" lint 2>&1)" || return 1 ;;
+    mask)
+      if [[ -z "$value" ]]; then APP_MASKS=(); APP_REPLY="masks cleared"
+      elif [[ "$value" =~ ^([0-9]+),([0-9]+),([0-9]+)x([0-9]+)$ ]]; then
+        APP_MASKS+=("${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]} ${BASH_REMATCH[4]}")
+        APP_REPLY="masking ${value} (${#APP_MASKS[@]} mask(s))"
+      else APP_REPLY="mask needs X,Y,WxH"; return 1; fi ;;
+    expect-same|expect-changed)
+      local ref="${value%:*}" pct=0.5 cur diff total limit d
+      [[ "$value" == *:* && "${value##*:}" =~ ^[0-9.]+$ ]] && pct="${value##*:}" || ref="$value"
+      [[ -f "$ref" ]] || { APP_REPLY="${name}: no reference image ${ref}"; return 1; }
+      cur="${APP_OUT}/.cmp-cur.png"
+      import -display "$APP_DISPLAY" -window root "$cur" 2>/dev/null || { APP_REPLY="${name}: screenshot failed"; return 1; }
+      local -a draw=()
+      for m in "${APP_MASKS[@]}"; do
+        read -r mx my mw mh <<<"$m"
+        draw+=(-draw "rectangle ${mx},${my} $((mx + mw - 1)),$((my + mh - 1))")
+      done
+      local refm="${APP_OUT}/.cmp-ref.png"
+      convert "$ref" -fill black "${draw[@]}" "$refm" 2>/dev/null && convert "$cur" -fill black "${draw[@]}" "$cur" 2>/dev/null \
+        || { APP_REPLY="${name}: could not apply masks"; return 1; }
+      d=$(compare -metric AE -fuzz 3% "$refm" "$cur" null: 2>&1); diff="${d%%[^0-9]*}"
+      [[ "$diff" =~ ^[0-9]+$ ]] || { APP_REPLY="${name}: compare failed: ${d} (same size as the display?)"; return 1; }
+      read -r iw ih < <(identify -format '%w %h' "$cur")
+      total=$((iw * ih))
+      limit=$(python3 -c "print(int(${total} * ${pct} / 100))")
+      if [[ "$name" == expect-same ]]; then
+        (( diff <= limit )) || { APP_REPLY="expect-same: ${diff} of ${total} px differ from ${ref} (limit ${limit} = ${pct}%)"; return 1; }
+        APP_REPLY="same as ${ref}: ${diff} px differ (limit ${limit})"
+      else
+        (( diff > limit )) || { APP_REPLY="expect-changed: only ${diff} of ${total} px differ from ${ref} (need > ${limit} = ${pct}%) - nothing visible happened?"; return 1; }
+        APP_REPLY="changed from ${ref}: ${diff} px differ (> ${limit})"
+      fi ;;
+    expect-text)
+      _app_ensure_ocr || { APP_REPLY="expect-text: tesseract unavailable"; return 1; }
+      local ocr="${APP_OUT}/.ocr.png" txt
+      import -display "$APP_DISPLAY" -window root "$ocr" 2>/dev/null || { APP_REPLY="expect-text: screenshot failed"; return 1; }
+      # 2x upscale: tesseract reads 9-11 px UI text far better at 20+ px
+      convert "$ocr" -resize 200% -colorspace Gray "$ocr" 2>/dev/null
+      txt="$(tesseract "$ocr" - 2>/dev/null | tr -s '[:space:]' ' ')"
+      if grep -qiE -- "$value" <<<"$txt"; then APP_REPLY="text /${value}/ is on screen"
+      else APP_REPLY="expect-text: /${value}/ not found in OCR text: ${txt:0:300}"; return 1; fi ;;
+    monkey)
+      local n="${value%%:*}" seed="${RANDOM}${RANDOM}" i pick lines
+      [[ "$value" == *:* ]] && seed="${value#*:}"
+      [[ "$n" =~ ^[0-9]+$ && "$seed" =~ ^[0-9]+$ ]] || { APP_REPLY="monkey needs N[:SEED]"; return 1; }
+      RANDOM=$seed
+      local -a log_=()
+      for (( i=1; i<=n; i++ )); do
+        _app_running || { APP_REPLY="monkey (seed ${seed}): app exited after $((i - 1)) click(s); last: ${log_[-1]:-none}; rc=$(cat "${APP_OUT}/app.rc" 2>/dev/null)"; return 1; }
+        mapfile -t lines < <(python3 "$A11Y_CLIENT" actionable 2>/dev/null)
+        (( ${#lines[@]} )) || { sleep 0.5; continue; }
+        pick="${lines[RANDOM % ${#lines[@]}]}"
+        xdotool mousemove "${pick%% *}" "$(cut -d' ' -f2 <<<"$pick")" click 1 2>/dev/null
+        log_+=("${pick#* * }")
+        sleep 0.4
+      done
+      sleep 1
+      _app_running || { APP_REPLY="monkey (seed ${seed}): app exited after the last click (${log_[-1]:-none}); rc=$(cat "${APP_OUT}/app.rc" 2>/dev/null)"; return 1; }
+      APP_REPLY="monkey (seed ${seed}): ${n} clicks, app still running" ;;
+    expect-clean-log)
+      local bad
+      bad="$(grep -aE '(CRITICAL|WARNING|Critical|Warning)( \*\*|:)|\*\* \(.*\): (CRITICAL|WARNING)|qt\.[a-z.]+: ' "${APP_OUT}/app.stderr" 2>/dev/null \
+             | { if [[ -n "$value" ]]; then grep -avE -- "$value"; else cat; fi; } | head -10)"
+      [[ -z "$bad" ]] || { APP_REPLY="app.stderr has warnings/criticals:"$'\n'"${bad}"; return 1; }
+      APP_REPLY="app.stderr has no GLib/GTK/Qt criticals or warnings" ;;
     quit)
       APP_REPLY="quit" ;;
     *)
@@ -316,6 +434,24 @@ _app_do() {
   return 0
 }
 _app_exited() { [[ -f "${APP_OUT}/app.rc" ]]; }
+
+# The virtual display runs no window manager, so nothing keeps a window on
+# screen: Shani Cassini opened 1280x1100 on a 1280x800 display and half its
+# sidebar was laid out below the bottom edge - unclickable, though no
+# scrolling could reach it (a real desktop's WM would have fitted it).
+# Fit every matching window that is larger than the display, as a WM does.
+_app_fit_windows() {
+  local spec="$1" dw dh id
+  read -r dw dh < <(xdotool getdisplaygeometry 2>/dev/null) || return 0
+  for id in $(_app_find "$spec"); do
+    eval "$(xdotool getwindowgeometry --shell "$id" 2>/dev/null)" || continue
+    if (( WIDTH > dw || HEIGHT > dh || X < 0 || Y < 0 )); then
+      xdotool windowmove "$id" 0 0 windowsize "$id" "$(( WIDTH > dw ? dw : WIDTH ))" "$(( HEIGHT > dh ? dh : HEIGHT ))" 2>/dev/null
+      APP_REPLY+=" (fitted ${WIDTH}x${HEIGHT} to the ${dw}x${dh} display)"
+      sleep 0.5
+    fi
+  done
+}
 
 _json_str() {  # JSON-encode a string
   python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
@@ -359,7 +495,7 @@ cmd_app() {
   _require_slot "$slot" "$usage_app"
 
   local run="" local_src="" display_mode=virtual size="1280x800" out_dir="" script=""
-  local interactive=0 control="" idle=1800 timeout=60 arg
+  local interactive=0 control="" idle=1800 timeout=60 arg strict=0
   local -a actions=()
   for arg in "$@"; do
     case "$arg" in
@@ -376,6 +512,7 @@ cmd_app() {
       --interactive)    interactive=1 ;;
       --control=*)      control="${arg#--control=}" ;;
       --idle-timeout=*) idle="${arg#--idle-timeout=}" ;;
+      --strict)         strict=1 ;;
       --*)              actions+=("${arg#--}") ;;
       *)                die "$usage_app" ;;
     esac
@@ -406,6 +543,8 @@ cmd_app() {
   EXTRA_BINDS="${EXTRA_BINDS:+${EXTRA_BINDS},}${APP_RT}:${APP_RT}"
   export DBUS_SESSION_BUS_ADDRESS="unix:path=${APP_RT}/bus"
   local inner
+  local -a strict_env=()
+  (( strict )) && strict_env=(G_DEBUG=fatal-criticals)
   printf -v inner 'dbus-daemon --session --address=%q --fork --nopidfile >/dev/null && exec /bin/bash -c %q' \
     "$DBUS_SESSION_BUS_ADDRESS" "$run"
   _ensure_host_machine_id
@@ -413,6 +552,7 @@ cmd_app() {
   _prepare_enter_args "$slot" "$local_src" /usr/bin/env \
     DISPLAY="$APP_DISPLAY" GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb \
     GSK_RENDERER=cairo LIBGL_ALWAYS_SOFTWARE=1 \
+    "${strict_env[@]}" \
     QT_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 \
     XDG_RUNTIME_DIR="$APP_RT" DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
     /bin/bash -c "$inner"

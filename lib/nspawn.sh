@@ -196,6 +196,13 @@ _nspawn_binds() {
   # Read-only view of this repo inside the slot — the supported way to run
   # repo scripts against the installed system (e.g. /mnt/repo/test-scripts/foo.sh).
   REPO_BIND=(--bind-ro="${REPO_ROOT}:/mnt/repo" --bind-ro="${TESTBED_ROOT}:/mnt/testbed")
+  # The GUI apps' own checkouts, when run_in_container.sh mounted them
+  # (/opt/<repo>, read-only): slot-tests/repo-pytest runs their test suites on
+  # the image's Python/GTK at /mnt/src/<repo>.
+  local _src
+  for _src in shani-cassini shani-chronoa shani-backup; do
+    [[ -d "/opt/${_src}" ]] && REPO_BIND+=(--bind-ro="/opt/${_src}:/mnt/src/${_src}")
+  done
 
   HOSTS_BIND=(--bind="$(_ensure_test_hosts_file):/etc/hosts")
 
@@ -397,11 +404,23 @@ _nspawn_full_boot_args() {
   _inject_fake_cmdline_unit "$slot"
   _inject_data_mount_unit
   _inject_by_label_unit
+  # SHANIOS_TEST_VOLATILE=state (slot-test/probe/verify-boot --volatile): /var
+  # an empty tmpfs, as systemd.volatile=state makes it on every real ShaniOS
+  # boot. Without it the slot sees the image's whole /var, which hid that
+  # package-shipped /var directories never exist on real hardware (smb,
+  # rpc-statd, libvirtd and AppArmor all failed on fresh installs).
+  # --tmpfs=/var, not --volatile=state: nspawn's state mode also makes the
+  # root read-only, /etc included, and on ShaniOS /etc is a writable overlay -
+  # planted test units could not be written and sshd could not create its
+  # host keys (seen 2026-10-01). Only /var is volatile on a real boot.
+  local -a volatile=()
+  [[ "${SHANIOS_TEST_VOLATILE:-}" == state ]] && volatile=(--tmpfs=/var:mode=0755)
   NSPAWN_FULL_BOOT_ARGS=(
     --quiet
     --register=no
     --keep-unit
     --boot
+    "${volatile[@]}"
     --machine="$machine"
     --directory="$NSPAWN_WORK/merged"
     --capability=all

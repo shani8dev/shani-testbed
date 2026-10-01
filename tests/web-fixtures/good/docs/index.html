@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Feature fixture for shani-testbed's web checks.">
+<meta property="og:title" content="Feature fixture"><meta property="og:image" content="/logo.svg">
+<link rel="canonical" href="/docs/"><link rel="icon" href="/logo.svg">
+<title>Feature fixture</title>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","headline":"Fixture"}</script>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--link:#0040a8;color-scheme:light} :root[data-theme=dark]{--bg:#121212;--fg:#eee;--link:#8ab4ff;color-scheme:dark}
+a{color:var(--link)} button,input{color:var(--fg);background:var(--bg);border:1px solid var(--fg)}
+body{margin:0;font-family:sans-serif;background:var(--bg);color:var(--fg)}
+a,button,input{min-width:44px;min-height:44px;padding:8px;box-sizing:border-box}
+a:focus-visible,button:focus-visible,input:focus-visible{outline:3px solid #0055cc;outline-offset:2px}
+header{position:sticky;top:0;background:var(--bg);display:flex;gap:8px;align-items:center;height:56px;border-bottom:1px solid #888}
+.skip{position:absolute;left:-999px;z-index:1000}.skip:focus{left:8px;top:8px;background:#fff;color:#000}
+#nav{display:flex;gap:8px} #menu-toggle{display:none}
+@media (max-width:900px){#menu-toggle{display:inline-block} #nav{display:none} #nav.open{display:flex;flex-direction:column;position:absolute;top:56px;left:0;right:0;background:var(--bg)}}
+h2{scroll-margin-top:64px} #results li{list-style:none} #panel[hidden]{display:none}
+pre{background:#f4f4f4;color:#1a1a1a;padding:8px;overflow-x:auto}
+#progress{position:fixed;top:0;left:0;height:3px;background:#0055cc;width:0}
+.content{padding:16px;max-width:760px}
+</style>
+<script>try{var t=localStorage.getItem('theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div id="progress" role="progressbar" aria-label="Reading progress" aria-valuenow="0"></div>
+<header>
+  <button id="menu-toggle" aria-expanded="false" aria-controls="nav" aria-label="Open menu">Menu</button>
+  <nav id="nav" aria-label="Main"><a href="/">Home</a><a href="/page2.html">Second</a><a href="/docs/">Docs</a></nav>
+  <input type="search" id="q" name="q" aria-label="Search docs" placeholder="Search (/)">
+  <button id="theme-btn" aria-label="Toggle dark theme">Theme</button>
+</header>
+<main id="main" class="content">
+  <nav aria-label="Breadcrumb" class="breadcrumb"><a href="/">Home</a> / <span aria-current="page">Docs</span></nav>
+  <h1>Fixture documentation</h1>
+  <nav aria-label="Table of contents" class="toc"><a href="#install">Install</a> <a href="#usage">Usage</a></nav>
+  <ul id="results" aria-live="polite"></ul>
+  <h2 id="install">Install</h2><p>Install the fixture package with pacman.</p>
+  <div class="code"><button class="copy-btn" aria-label="Copy code">Copy</button><pre><code>pacman -S fixture</code></pre></div>
+  <button id="more" aria-expanded="false" aria-controls="panel">More details</button>
+  <div id="panel" hidden><p>Details revealed by the disclosure.</p></div>
+  <button id="open-dlg" aria-haspopup="dialog">Open dialog</button>
+  <dialog id="dlg" aria-label="Example dialog"><p>Dialog body</p><button id="dlg-ok">OK</button><button id="dlg-close">Close</button></dialog>
+  <h2 id="usage">Usage</h2>
+  <p style="height:1600px">Run fixture to see the documentation features. Fixture searching works.</p>
+  <a href="https://example.org/" target="_blank" rel="noopener">External</a>
+  <button id="to-top" aria-label="Back to top">Top</button>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+$('#menu-toggle').onclick = e => { const n = $('#nav'); const o = n.classList.toggle('open'); e.currentTarget.setAttribute('aria-expanded', o); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#nav').classList.contains('open')) { $('#nav').classList.remove('open'); $('#menu-toggle').setAttribute('aria-expanded', 'false'); }
+  if (e.key === '/' && document.activeElement === document.body) { e.preventDefault(); $('#q').focus(); } });
+const words = ['Fixture install guide', 'Fixture usage', 'Fixture searching'];
+$('#q').oninput = e => { const v = e.target.value.toLowerCase(); $('#results').innerHTML = v ? words.filter(w => w.toLowerCase().includes(v)).map(w => '<li>' + w + '</li>').join('') : ''; };
+$('#theme-btn').onclick = () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = t; localStorage.setItem('theme', t); };
+$('.copy-btn').onclick = () => navigator.clipboard.writeText($('pre code').innerText);
+$('#more').onclick = e => { const p = $('#panel'); p.hidden = !p.hidden; e.currentTarget.setAttribute('aria-expanded', String(!p.hidden)); };
+const dlg = $('#dlg'); $('#open-dlg').onclick = () => dlg.showModal(); $('#dlg-close').onclick = () => dlg.close(); $('#dlg-ok').onclick = () => dlg.close();
+dlg.addEventListener('close', () => $('#open-dlg').focus());
+$('#to-top').onclick = () => window.scrollTo(0, 0);
+addEventListener('scroll', () => { const s = document.scrollingElement, f = s.scrollTop / Math.max(1, s.scrollHeight - s.clientHeight);
+  $('#progress').style.width = (f * 100) + '%'; $('#progress').setAttribute('aria-valuenow', Math.round(f * 100)); });
+</script>
+</body></html>

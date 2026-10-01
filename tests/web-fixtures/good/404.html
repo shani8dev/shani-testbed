@@ -1,0 +1,7 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Redirecting</title>
+<script>
+  // the spa-github-pages hop shani-blog uses: an unknown path comes back as
+  // this page (status 404), which sends the browser to the app with the path
+  var l = window.location;
+  l.replace(l.protocol + '//' + l.host + '/?/' + l.pathname.slice(1));
+</script></head><body></body></html>

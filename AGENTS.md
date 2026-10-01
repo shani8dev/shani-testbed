@@ -71,7 +71,8 @@ with a positive case **and** a negative control.
 ```bash
 for f in testbed lib/*.sh slot-tests/*.sh tests/*.sh; do bash -n "$f"; done
 python3 -m py_compile lib/*.py mcp/*.py
-tests/run-app-actions.sh        # real Xvfb + GTK (yad) test of lib/app.sh + lib/a11y_client.py, in docker
+tests/run-app-actions.sh        # real Xvfb + GTK4/libadwaita test of lib/app.sh + lib/a11y_client.py, in docker
+tests/run-web-client.sh         # real headless Chromium test of lib/web_client.py + web_serve.py, in docker
 ```
 
 ## Extend the harness — don't write one-off test scripts
@@ -83,8 +84,12 @@ piped into `probe --exec`):
 - **an in-slot check** → a file in `slot-tests/` with a
   `# slot-test-mode: boot` header, printing `RESULT <name> PASS|FAIL` lines,
   run by `slot-test <slot> <name|all>` (one boot for many checks);
-- **a new way to drive or observe** a boot, an app or a VM → a command
-  option or an `app` action in `lib/`, documented in `usage` + README;
+- **a new way to drive or observe** a boot, an app, a VM or a web page → a
+  command option, an `app` action, or a `web_client.py` check in `lib/`,
+  documented in `usage` + README, with a negative control in its self-test
+  (`tests/run-app-actions.sh`, `tests/run-web-client.sh`);
+- **a repeatable walk through a real app** → an `app-scripts/<app>.actions`
+  file (`cassini-tour.actions`), run with `app --script=`;
 - **a check of the harness itself** → `tests/`.
 
 A test that only exists in one session's scratchpad is lost the moment the
@@ -240,6 +245,102 @@ containers first.
 
 ## Audit-verified known issues (confirmed present)
 
+- **`--crawl=N` reported PASS having crawled nothing, and the real docs site hit
+  it (2026-10-01).** Found while verifying a `shani-docs` change: the run said
+  `RESULT crawl PASS (0/0 same-origin pages clean)` and I read it as a pass.
+  It is not one. `crawl()` collects `a[href]` from the start page, and
+  **`shani-docs` and `shani-blog` navigate with `<button onclick="navigate(...)">`
+  — the home page's cards and quick-links have no `href` at all**, so the crawl
+  collected nothing, examined nothing, and reported the confidence of a green
+  check. Same class as every other absence-shaped green in this workspace's
+  history, and the reason CI's `--crawl=20` was doing nothing for the two sites
+  most likely to need it.
+  Two fixes, both needed. `crawl()` already had a `sitemap.xml` fallback for
+  exactly this shape (untracked, added earlier the same day), so the docs site
+  now reports `PASS (20/20 … from sitemap.xml: the start page has no
+  same-origin <a href> page)`. That fallback cannot rescue a site with **no**
+  sitemap, so **zero pages crawled is now a FAIL**, with the detail naming the
+  cause rather than just going red — the message says a link that navigates via
+  `onclick` rather than `href` is invisible to the crawler, so the failure is
+  actionable instead of mysterious.
+  The fixture is `tests/web-fixtures/anchors-but-not-links/`: real markup, no
+  sitemap, destinations as buttons. **Both new assertions were run against the
+  un-guarded client and both failed** (`88/90`; the run reported
+  `PASS (0/0 same-origin pages clean)`) — so they are holding the guard and not
+  merely the sitemap's presence. Suite **91/91** with it.
+  The lesson generalises past this check: **`0/0` in a detail string is a
+  result that examined nothing, so treat a zero as a failure unless the check
+  has a stated reason to be vacuous.**
+
+- **Plain nspawn boots do not reproduce `systemd.volatile=state` (2026-10-01).**
+  Every real ShaniOS boot has an empty tmpfs `/var`; nspawn shows the image's
+  whole `/var`. So every slot-test until then ran with package-shipped `/var`
+  directories present that real machines never have - smb/nmb/winbind,
+  rpc-statd, libvirtd and **AppArmor** (the snap-confine profile includes
+  `/var/lib/snapd/apparmor/snap-confine`) failed on every fresh install and no
+  slot-test could see it. `slot-test --volatile` boots with `/var` a tmpfs (`--tmpfs=/var`; nspawn's
+  `--volatile=state` would also make `/etc` read-only, which ShaniOS's is not);
+  slot-tests that need pacman read the db from the slot's subvolume
+  (`slot-tests/_pacdb.sh`). The fix (shani-install-media
+  `scripts/gen-var-tmpfiles.sh`) was verified on a real UEFI boot with
+  `iso-install --boot-only --console-exec`. Default is still non-volatile:
+  run `service-start`, `unit-verify` and anything `/var`-touching both ways.
+- **GTK4 AT-SPI coordinates (fixed 2026-10-01).** GTK 4.22 reports `SCREEN`
+  extents as `0,0` for every widget (it cannot know its window's position);
+  only `WINDOW` extents are real, relative to the frame (itself at -5,-5, the
+  CSD shadow margin). `click-element` and `monkey` clicked the window's
+  top-left on every GTK4 app (Cassini, Chronoa). `a11y_client.extents()` maps
+  WINDOW coordinates through the X window origin for GTK 4. The self-test
+  drove a GTK3 yad dialog, whose SCREEN extents are right, so it never showed
+  - it now drives `tests/fixtures/adw_fixture.py` (libadwaita, Cassini's
+  widgets). Keep the fixture GTK4.
+- **`iso-install --boot-only` firmware state (fixed 2026-10-01).** (1) It
+  booted a disk `bootstrap` had re-created with the previous iso-install's
+  NVRAM and TPM; now a changed disk (inode) gets fresh ones, and
+  `--reset-firmware` forces it. (2) swtpm drops capabilities, so it could not
+  read a 0640 `tpm2-00.permall` owned by another uid: every boot after the
+  first failed `CMD_INIT: 0x101`. The state dir is chowned to the running uid
+  before swtpm starts, and a TPM-side qemu failure now prints swtpm.log. (3) A
+  leftover `swtpm.log` from another uid made swtpm exit at once.
+- **`app` against GTK4 apps on the virtual display (fixed 2026-10-01).** No
+  window manager runs there, so (1) a window larger than the display stays
+  larger - Cassini opened 1280x1100 on 1280x800 and half its sidebar sat below
+  the screen; `wait-window` now fits such windows to the display, as a WM
+  would - and (2) GTK4 has no AT-SPI `scroll_to`, so `click-element` on an
+  off-screen element now falls back to focusing it (GTK4 scrolls a focused
+  child into view), then to the mouse wheel. `monkey` skips Close/Quit-named
+  controls: ending the app is their job, not a crash.
+  `tests/run-app-actions.sh` covers both (Item 40 in a scrolled list).
+- **`web` measured overflow against `innerWidth` (fixed 2026-10-01).** On a
+  mobile viewport innerWidth GROWS with the overflow (898 on a 390px phone),
+  so a page twice the screen's width passed. It is `clientWidth` now, and the
+  self-test's broken fixture has a page that only that catches.
+- **`desktop --tour` on GNOME runs gnome-shell as root (open).** As root,
+  GNOME 50 shows a "privileged user" banner (the tour clears it) and has no
+  screen shield, so the lock-screen step is SKIP. A fresh-user session (as
+  the Plasma path does) produced 0-byte screenshots from the Screenshot API
+  - render-node access or the API's caller checks as a user, not yet
+  resolved. Until it is, the GNOME desktop is checked as root.
+- **`repo-pytest` (2026-10-01): give the Broadway daemon and every suite one
+  `XDG_RUNTIME_DIR`.** The socket is looked up under it (else `~/.cache`);
+  with a per-suite HOME and no shared runtime dir GTK had no display and the
+  first widget segfaulted. A crashing suite is now reported with the test
+  that was running.
+- **Feature checks (`lib/web_features.py`) - pitfalls already paid for:**
+  re-find an element by its `data-sf-pick` tag, never by a selector string
+  (several share one); measure a theme at the top of the page (a reload
+  restores the scroll position); judge each colour scheme on a FIRST visit
+  (clear storage, set the media feature, reload - a saved choice wins, and
+  sites read the preference once at load); disable transitions when comparing
+  a focused look with an unfocused one; parse `color(srgb ...)` channels as
+  0-1; clip text boxes to their clipping ancestors before calling it overlap.
+- **Two harness runs on one disk corrupt shared state** - now refused:
+  `disk/.testbed.lock` (flock) is taken by every disk-touching command.
+- **TCG guests stall under host load.** With Chrome/Docker work on the same
+  CPUs a firmware boot sat 30 min in `calibrate_delay_direct()` after `tsc:
+  Unable to calibrate against PIT` and timed out. Keep the host idle during
+  `iso-install`/`vmspawn` under TCG; a timeout there is not evidence about the
+  image until rerun on an idle host.
 - **`bootstrap -d latest` is the LOCAL build, not the published image.**
   Without `--from-r2` it installs `cache/output/<profile>/latest.txt` - on
   2026-10-01 a month-old 20260821 build (shani-deploy 62) while R2's

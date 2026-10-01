@@ -2,7 +2,7 @@
 """End-to-end test of mcp/shani_harness_mcp.py against a real slot.
 
 Speaks MCP (JSON-RPC over stdio) to the server exactly like an agent client
-would, and runs the full look/act loop on a real GTK app inside @<slot>:
+would, and runs the full look/act loop on a real GTK4/libadwaita app inside @<slot>:
 start -> wait -> screenshot (must be a PNG image) -> tree (must show the OK
 button) -> type -> click OK by accessibility name -> stop -> the app's own
 stdout must equal what was typed. Needs a bootstrapped slot.
@@ -50,7 +50,10 @@ init = rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "
 check("initialize", init.get("result", {}).get("serverInfo", {}).get("name") == "shani-harness")
 proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"); proc.stdin.flush()
 
-r = tool("app_start", slot=slot, command="yad --entry --title='MCP Demo' --text='Your name:' --button=Cancel:1 --button=OK:0")
+# the GTK4/libadwaita fixture (the widgets Shani Cassini is built from), from
+# the testbed's read-only bind in every slot - the image ships its python-gobject
+# and libadwaita, which is what is being driven
+r = tool("app_start", slot=slot, command="python3 /mnt/testbed/tests/fixtures/adw_fixture.py entry 'MCP Demo' --text='Your name:'")
 check("app_start", not r.get("isError"), first_text(r))
 if r.get("isError"):
     sys.exit(1)

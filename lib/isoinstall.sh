@@ -3,7 +3,7 @@
 #
 #   iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso>
 #               [--encrypted] [--live-timeout=S] [--install-timeout=S]
-#               [--boot-timeout=S] [--boot-only] [--disk-size=BYTES]
+#               [--boot-timeout=S] [--boot-only [--reset-firmware]] [--disk-size=BYTES]
 #
 # --boot-only: skip 1-2 and boot the disk the last iso-install installed,
 # with its NVRAM and TPM state (debugging the firmware boot without a
@@ -74,11 +74,23 @@ PY
 # background; sets ISOVM_PID / ISOVM_TPM_PID.
 _isovm_start() {
   local label="$1" console="$2" from="$3"
-  rm -f "${ISOVM}"/{qga,qmp,swtpm,serial}.sock
+  # swtpm.log too: one left by an earlier run (another uid, e.g. vmspawn's
+  # swtpm) made swtpm exit at once with "Could not open logfile for writing",
+  # and qemu then failed on the missing socket with no hint why
+  rm -f "${ISOVM}"/{qga,qmp,swtpm,serial}.sock "${ISOVM}/swtpm.log"
+  # The TPM state must belong to whoever runs swtpm now. swtpm drops its
+  # capabilities, so root cannot read a 0640 tpm2-00.permall a previous run
+  # left owned by another uid - and every firmware boot after the first died
+  # with "TPM result for CMD_INIT: 0x101" (swtpm.log: "opening ...permall for
+  # read, Permission denied"), found 2026-10-01.
+  mkdir -p "${ISOVM}/tpm"
+  chown -R "$(id -u):$(id -g)" "${ISOVM}/tpm" 2>/dev/null || true
   swtpm socket --tpm2 --tpmstate "dir=${ISOVM}/tpm" \
     --ctrl "type=unixio,path=${ISOVM}/swtpm.sock" --log "file=${ISOVM}/swtpm.log" &
   ISOVM_TPM_PID=$!
   local i; for (( i=0; i<50; i++ )); do [[ -S "${ISOVM}/swtpm.sock" ]] && break; sleep 0.2; done
+  [[ -S "${ISOVM}/swtpm.sock" ]] \
+    || die "iso-install: swtpm did not start: $(tail -3 "${ISOVM}/swtpm.log" 2>/dev/null | tr '\n' ' ')"
   local -a accel=(-accel tcg) media=() dbg=()
   [[ -w /dev/kvm ]] && accel=(-accel kvm -cpu host)
   if [[ "$from" == iso ]]; then
@@ -282,7 +294,12 @@ _isovm_boot_installed() {  # <timeout> [expected slot]
     fi
     grep -aqE "$fail_re" "$boot_log" && { result="FAIL: $(grep -aoE "$fail_re" "$boot_log" | head -1)"; break; }
     grep -aqE "$until_re" "$boot_log" && { result="OK: $(grep -aoE "$until_re" "$boot_log" | head -1)"; break; }
-    kill -0 "$ISOVM_PID" 2>/dev/null || { result="FAIL: qemu exited: $(tail -3 "${ISOVM}/qemu-installed.log" | tr '\n' ' ')"; break; }
+    kill -0 "$ISOVM_PID" 2>/dev/null || {
+      result="FAIL: qemu exited: $(tail -3 "${ISOVM}/qemu-installed.log" | tr '\n' ' ')"
+      # a TPM-side failure is only explained by swtpm's own log
+      grep -q 'tpm-emulator' "${ISOVM}/qemu-installed.log" 2>/dev/null \
+        && result+=" | swtpm.log: $(tail -5 "${ISOVM}/swtpm.log" 2>/dev/null | tr '\n' ' ') | tpm state: $(ls -ln "${ISOVM}/tpm" 2>/dev/null | tail -n +2 | awk '{print $1, $3":"$4, $5, $9}' | tr '\n' ';')"
+      break; }
     (( $(date +%s) - t0 < boot_to )) || { result="FAIL: no login/target after ${boot_to}s"; break; }
     sleep 5
   done
@@ -319,8 +336,8 @@ _isovm_boot_installed() {  # <timeout> [expected slot]
 }
 
 cmd_iso_install() {
-  local usage="Usage: $(basename "$0") iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso> [--encrypted] [--live-timeout=S] [--install-timeout=S] [--boot-timeout=S] [--boot-only] [--disk-size=BYTES] [--expect-slot=blue|green] [--console-exec=CMD] [--console-put=LOCAL:REMOTE] [--console-timeout=S] [--expect-tpm-unlock]"
-  local profile="" sel="" encrypted=0 live_to=1800 inst_to=10800 boot_to=1800 boot_only=0 disk_size="" expect_slot=""
+  local usage="Usage: $(basename "$0") iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso> [--encrypted] [--live-timeout=S] [--install-timeout=S] [--boot-timeout=S] [--boot-only [--reset-firmware]] [--disk-size=BYTES] [--expect-slot=blue|green] [--console-exec=CMD] [--console-put=LOCAL:REMOTE] [--console-timeout=S] [--expect-tpm-unlock]"
+  local profile="" sel="" encrypted=0 live_to=1800 inst_to=10800 boot_to=1800 boot_only=0 reset_fw=0 disk_size="" expect_slot=""
   while (( $# )); do
     case "$1" in
       -p) profile="${2:-}"; shift ;;
@@ -330,6 +347,7 @@ cmd_iso_install() {
       --install-timeout=*) inst_to="${1#*=}" ;;
       --boot-timeout=*) boot_to="${1#*=}" ;;
       --boot-only) boot_only=1 ;;
+      --reset-firmware) reset_fw=1 ;;
       --disk-size=*) disk_size="${1#*=}" ;;
       --expect-slot=*) expect_slot="${1#*=}" ;;
       --console-exec=*) ISOVM_CONSOLE_EXEC="${1#*=}" ;;
@@ -346,9 +364,27 @@ cmd_iso_install() {
   _isovm_ovmf
   ISOVM="${DATA_DIR}/${ISOVM_DIR_NAME}"
   if (( boot_only )); then
-    [[ -f "$INSTALL_IMG" && -f "$ISOVM/OVMF_VARS.fd" && -f "$ISOVM/installed-date" ]] \
-      || die "iso-install --boot-only: no previous iso-install to boot (disk, NVRAM or TPM state missing)"
+    [[ -f "$INSTALL_IMG" ]] || die "iso-install --boot-only: no install.img to boot (run iso-install or bootstrap first)"
+    mkdir -p "$ISOVM"
     _detach_all_loops "$INSTALL_IMG"
+    # bootstrap/install re-create install.img (rm + truncate: a new inode).
+    # Booting that disk with the last iso-install's NVRAM and TPM state means
+    # boot entries and sealed keys for a disk that no longer exists, so a
+    # different disk gets FRESH NVRAM + TPM - firmware then boots its
+    # removable-media path, as a new machine would.
+    # --reset-firmware forces the same: a TPM whose state was corrupted (swtpm
+    # "CMD_INIT: 0x101 operation failed" on every boot) can otherwise only be
+    # recovered by deleting harness state by hand. It loses TPM-sealed keys,
+    # so an encrypted install falls back to its passphrase.
+    if (( reset_fw )) || [[ "$(cat "$ISOVM/installed-inode" 2>/dev/null)" != "$(stat -c %i "$INSTALL_IMG")" ]]; then
+      if (( reset_fw )); then log "iso-install --boot-only --reset-firmware: fresh NVRAM and TPM"
+      else log "iso-install --boot-only: install.img is not the disk the last iso-install wrote (re-created by bootstrap/install) - booting it with fresh NVRAM and TPM"; fi
+      rm -rf "$ISOVM/tpm"; mkdir -p "$ISOVM/tpm"
+      cp "$ISOVM_VARS_TEMPLATE" "$ISOVM/OVMF_VARS.fd"
+      printf '%s' "${SHANIOS_TEST_LUKS_PIN:-shanios-test-passphrase}" > "$ISOVM/luks-pin"
+      echo "bootstrap" > "$ISOVM/installed-date"
+      stat -c %i "$INSTALL_IMG" > "$ISOVM/installed-inode"
+    fi
     ISO_DATE=$(cat "$ISOVM/installed-date"); ISO_FILE=""
     trap '_isovm_stop' EXIT
     _isovm_boot_installed "$boot_to" "$expect_slot"
@@ -423,6 +459,7 @@ setsid bash /tmp/osi/run.sh >/tmp/osi/runner.log 2>&1 < /dev/null & echo started
   fi
   log "iso-install: os-installer scripts done in $(( $(date +%s) - t0 ))s (${st})"
   echo "$ISO_DATE" > "$ISOVM/installed-date"
+  stat -c %i "$INSTALL_IMG" > "$ISOVM/installed-inode"
   _isovm_stop
 
   # ---- 3. the installed disk, through firmware

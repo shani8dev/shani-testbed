@@ -50,10 +50,11 @@ Commands:
                the real /usr/bin/shani-chronoa-sense from a working tree
                instead of the package-installed copy. The overlay is reverted
                at the start of the next run (same as --local-src). The
-               chronoa checkout is NOT mounted by run_in_container.sh, so run
-               the builder container with an extra -v <chronoa>:/opt/shani-chronoa:ro
-               and pass --local-src-chronoa=/opt/shani-chronoa, or set
-               SHANIOS_TEST_CHRONOA_SRC=<dir> (resolved inside the slot).
+               chronoa checkout IS mounted by run_in_container.sh at
+               /opt/shani-chronoa:ro (run_in_container.sh:316 loops over the
+               sibling app repos), so pass --local-src-chronoa=/opt/shani-chronoa
+               directly; set SHANIOS_TEST_CHRONOA_SRC=<dir> (resolved inside the
+               slot) only if you want a different tree.
   verify-boot [blue|green] [seconds]   Headless boot smoke test: full systemd
               --boot, console captured to disk/boot-<slot>-console.log, then
               reports reached target / failed units. No display or TTY needed.
@@ -75,6 +76,13 @@ Commands:
               host first); --hold=N keeps it up N seconds after the shot.
               --local-pkg overlays locally built, unpublished packages first
               (see enter). Screenshots go to test-env/shots/ by default.
+              --tour opens each real shell surface in turn and requires it to
+              change the screen (> 0.5 % of pixels vs the desktop shot) -
+              GNOME (gnome-shell --unsafe-mode, Shell.Eval): overview, app
+              grid, calendar, quick settings, a notification, the lock screen;
+              Plasma: launcher, KRunner, a notification, Dolphin, Konsole,
+              System Settings, the real lock screen greeter (--testing).
+              RESULT lines; shots in disk/desktop-<slot>/tour-<epoch>/.
   probe       <blue|green> --exec="cmd" [--timeout=N] [--settle=N]
                [--local-src=<dir>] [--local-src-chronoa=<dir>] [--timeout=N]
                [--settle=N] [--local-pkg=<name|file>]   Generic live-boot
@@ -97,12 +105,21 @@ slot-test   <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=
                 --local-pkg=<name|file> overlays a built package (e.g. the
                 tesseract stack, which no published shani-chronoa image ships)
                 before the slot boots.
-                --from-r2 installs a PUBLISHED release from Cloudflare R2
-              ($R2_PUBLIC_BASE, default https://downloads.shani.dev - the
-              layout build-iso.sh --from-r2 uses; resumable, no credentials)
-              instead of a local build, after SHA-256 + GPG checks - so any
-              profile can be tested without building it here. Also accepted
-              by install and suite.
+                --volatile boots with /var an empty tmpfs (nspawn
+                --tmpfs=/var), as systemd.volatile=state makes it on every
+                real ShaniOS boot - plain nspawn boots see the image's /var.
+                --from-r2 is NOT accepted here, though it is listed in this
+                block by mistake until now. Only `bootstrap` and `install` parse
+                it (via _take_from_r2, lib/install.sh:312 and :516); this
+                command's argument loop dies on any unrecognised flag, so
+                passing it fails immediately with a usage line rather than
+                doing the thing you asked. To test a PUBLISHED release from
+                Cloudflare R2 ($R2_PUBLIC_BASE, default https://downloads.shani.dev
+                - the layout build-iso.sh --from-r2 uses; resumable, no
+                credentials, after SHA-256 + GPG checks), produce the slot with
+                it first:
+                  bootstrap -p <profile> -d latest --from-r2
+                and then run this command against that slot, which needs no flag.
   install     -p <profile> [-d latest|stable|<date>] [--encrypted]   Runs the
               REAL os-installer-config install.sh (partitioning, LUKS,
               subvolumes, image extraction) against a fresh whole-disk image
@@ -141,7 +158,11 @@ slot-test   <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=
               verify-boot/slot-test/upgrade.
               [--encrypted]            LUKS2 install; the passphrase is typed at
                                        each boot (one key at a time: plymouth)
-              [--boot-only]            boot the last install again (its NVRAM/TPM)
+              [--boot-only]            boot install.img again: with the last iso-install's
+                                       NVRAM/TPM, or fresh ones if bootstrap/install has
+                                       re-created the disk since
+              [--reset-firmware]       with --boot-only: fresh NVRAM and TPM regardless
+                                       (recovers a corrupted swtpm state)
               [--expect-slot=blue|green] fail unless firmware booted that slot
               [--expect-tpm-unlock]    fail if the passphrase is asked (TPM2 unlock)
               [--console-exec=CMD]     run CMD as root on the booted system, in
@@ -164,8 +185,38 @@ slot-test   <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=
               move (X,Y or @WINDOW-REGEX:X,Y), drag, scroll, type, key,
               focus, screenshot, tree / find / click-element (accessibility
               tree — role, name, value, states, box), expect-window,
-              expect-gone, wait-exit, status. Captures the app's stdout/rc.
+              expect-gone, wait-exit, status, and assertions: a11y-lint,
+              expect-same/expect-changed=REF.png[:PCT] (with mask=X,Y,WxH),
+              expect-text=REGEX (OCR), monkey=N[:SEED], expect-clean-log[=IGNORE].
+              --strict: G_DEBUG=fatal-criticals. Captures the app's stdout/rc.
               See lib/app.sh; an MCP server for AI agents is in test-env/mcp/.
+  web         <--url=URL | --site=DIR [--path=/sub/]> [--expect=SEL] [--allow-host=H]...
+              [--offline] [--spa=/path] [--crawl=N] [--devices=desktop,tablet,mobile]
+              [--schemes=light,dark] [--budget-lcp=MS] [--budget-cls=N] [--ignore=RE]
+              [--resolve=RULES]   Real headless Chromium over the DevTools
+              protocol (lib/web_client.py, stdlib Python): exceptions, console
+              errors, failed loads, Chrome issues, CSP violations, egress
+              allowlist, title/lang, accessible names, LCP/CLS, and on EVERY
+              device (desktop 1280x800, tablet 820x1180 touch, mobile 390x844
+              touch - built in, default all three): its own load + errors,
+              horizontal overflow, tap targets >= 24x24 px, full-page shots in
+              light and dark - and the page's FEATURES used for real on each
+              device (lib/web_features.py): hamburger menu, search + its
+              shortcut, theme toggle + persistence + OS colour scheme,
+              disclosures, dialogs, breadcrumbs, contents links, copy-code,
+              back-to-top, reading progress, skip link, focus visibility /
+              obscuring / traps, print, contrast in light and dark, reflow at
+              320 px, text spacing, reduced motion, landmarks, headings, ids,
+              labels, head metadata, robots/sitemap/404 (--no-features: off).
+Also offline via the service worker, SPA fallback,
+               same-origin crawl (zero pages crawled is a FAIL, not a
+               pass). --site serves DIR as GitHub Pages does
+              (404.html, status 404). Sibling site checkouts: /opt/<repo>.
+              Shots + JSON report: disk/web-<epoch>/. No disk lock.
+  slot-diff   [--from=blue|green] [--to=blue|green] [--json=FILE]   What moving
+              between the slots changes, from the two roots on disk: packages
+              (+/-/~), sonames that disappear, units and their enablement,
+              changed /etc defaults, kernel. Default: current -> other slot.
   qemu        Genuine UEFI boot via OVMF — HOST-ONLY, see below
               [--vnc[=port]]   Serve the real framebuffer over VNC-over-
               websocket (default port 5700) instead of a local GTK window —
