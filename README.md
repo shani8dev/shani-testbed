@@ -232,12 +232,21 @@ not:
 `--local-src-chronoa` is accepted by `app`, `slot-test`, `enter`, `probe` and
 `desktop`, and may also be set as the env var `SHANIOS_TEST_CHRONOA_SRC`.
 
-**`run_in_container.sh` does not mount the chronoa checkout.** It mounts
-`shani-testbed`, `shani-pkgbuilds`, `shani-deploy` and `os-installer-config`
-at fixed `/opt/*` paths — not `shani-chronoa`. So in the builder container the
-path you pass must exist *inside* the container: bind the checkout in yourself
-with an extra `-v <chronoa>:/opt/shani-chronoa:ro`, or set
-`SHANIOS_TEST_CHRONOA_SRC=<dir>` to a path that is already visible there. The
+**`run_in_container.sh` does mount the chronoa checkout**, at
+`/opt/shani-chronoa:ro` — `run_in_container.sh:316` loops over the sibling app
+repos (`shani-cassini shani-chronoa shani-backup shani-docs shani-blog
+shani-website shani-wiki`) and bind-mounts each one that exists. This paragraph
+used to say the opposite, and the hand-rolled `docker run` that followed it
+existed only because of that false claim; the plain invocation is enough:
+
+```bash
+cd ../shani-install-media
+SHANIOS_NO_PULL=1 ./run_in_container.sh build.sh test slot-test blue chronoa-speech \
+  --local-src-chronoa=/opt/shani-chronoa --timeout=300 --settle=10
+```
+
+Verified 2026-10-01: **11 pass, 0 fail** on `@blue`. Set
+`SHANIOS_TEST_CHRONOA_SRC=<dir>` only to point at a different tree. The
 resolution order is explicit path → `$SHANIOS_TEST_CHRONOA_SRC` →
 `/opt/shani-chronoa` → `../shani-chronoa` next to this repo, and an explicit
 path is authoritative — a typo'd `--local-src-chronoa` used to silently fall

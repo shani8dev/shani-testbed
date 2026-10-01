@@ -427,12 +427,21 @@ containers first.
     which chronoa's own `AGENTS.md` records; the slot-test deliberately does
     not assert that as expected behaviour.
 
-  **`run_in_container.sh` does not mount the chronoa checkout.** It mounts
-  `shani-testbed`, `shani-pkgbuilds`, `shani-deploy` and `os-installer-config`
-  at fixed `/opt/*` paths — not `shani-chronoa`. So in the builder container
-  the path you pass must exist *inside* the container: bind the checkout in
-  yourself with an extra `-v <chronoa>:/opt/shani-chronoa:ro`, or set
-  `SHANIOS_TEST_CHRONOA_SRC=<dir>` to a path already visible there.
+  **`run_in_container.sh` DOES mount the chronoa checkout** — at `/opt/shani-chronoa:ro`.
+  This line used to say the opposite, and the hand-rolled `docker run` block below
+  existed only because of that false claim. `run_in_container.sh:316` loops over
+  `shani-cassini shani-chronoa shani-backup shani-docs shani-blog shani-website
+  shani-wiki` and bind-mounts each sibling that exists, so the plain invocation is
+  all you need:
+
+  ```bash
+  cd ../shani-install-media
+  SHANIOS_NO_PULL=1 ./run_in_container.sh build.sh test slot-test blue chronoa-speech \
+    --local-src-chronoa=/opt/shani-chronoa --timeout=300 --settle=10
+  ```
+
+  Verified 2026-10-01: **11 pass, 0 fail** on `@blue`. If you do drive the container
+  yourself, `SHANIOS_TEST_CHRONOA_SRC=<dir>` still works and is equivalent.
 
   ### Running it for real (verified 2026-09-27: 15 pass, 0 fail)
 
