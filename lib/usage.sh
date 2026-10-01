@@ -189,6 +189,13 @@ slot-test   <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=
               expect-same/expect-changed=REF.png[:PCT] (with mask=X,Y,WxH),
               expect-text=REGEX (OCR), monkey=N[:SEED], expect-clean-log[=IGNORE].
               --strict: G_DEBUG=fatal-criticals. Captures the app's stdout/rc.
+              --gsettings=SCHEMA:KEY=VALUE (repeatable): set before the app
+              starts, as a user would; $TESTBED_OLLAMA_HOST in VALUE is the
+              --llm server. --voice: virtual mic + speaker (say=, play=,
+              expect-heard=). --llm=MODEL: a tiny Ollama model on a private
+              port. --record=FILE.mp4: video with both voices mixed in.
+              --repo-pkg=NAME / --whisper-model=NAME: add an optdepend or a
+              whisper.cpp model to the slot for this run.
               --keyring=login|locked|none (default login): the session's
               Secret Service as a real login leaves it - unlocked by PAM,
               locked (auto-login), or absent (the first app to touch it gets

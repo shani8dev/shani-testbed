@@ -195,7 +195,9 @@ data = open(raw, "rb").read()[start:]
 data = data[: len(data) - len(data) % 2]
 # whisper invents words ("you you you") for silence: no signal, no transcript
 a = array.array("h"); a.frombytes(data)
-if not a or max(abs(x) for x in a[::4]) < 500:
+import math
+rms = math.sqrt(sum(x * x for x in a[::4]) / max(1, len(a[::4]))) if a else 0
+if rms < 150:
     sys.exit(3)
 with wave.open(out, "wb") as w:
     w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(data)
@@ -707,6 +709,7 @@ cmd_app() {
 
   local run="" local_src="" display_mode=virtual size="1280x800" out_dir="" script=""
   local interactive=0 control="" idle=1800 timeout=60 arg strict=0 keyring=login voice=0 llm=""
+  local -a gsets=()
   local -a actions=()
   for arg in "$@"; do
     case "$arg" in
@@ -729,6 +732,7 @@ cmd_app() {
       --strict)         strict=1 ;;
       --keyring=*)      keyring="${arg#--keyring=}" ;;
       --voice)          voice=1 ;;
+      --gsettings=*)    gsets+=("${arg#--gsettings=}") ;;
       --record=*)       APP_RECORD="${arg#--record=}" ;;
       --*)              actions+=("${arg#--}") ;;
       *)                die "$usage_app" ;;
@@ -791,8 +795,18 @@ cmd_app() {
   fi
   APP_LLM_URL=""
   [[ -n "$llm" ]] && _app_start_llm "$llm"
-  printf -v inner 'dbus-daemon --session --address=%q --fork --nopidfile >/dev/null && { %s; } && { %s; } && exec /bin/bash -c %q' \
-    "$DBUS_SESSION_BUS_ADDRESS" "$ksetup" "$vsetup" "$run"
+  # --gsettings=SCHEMA:KEY=VALUE: the app's settings as a user would set them,
+  # before it starts (most apps read them once, at startup). A test opts in
+  # to what a user must opt in to - the shipped defaults stay untouched.
+  local gsetup=":" g schema key val
+  for g in "${gsets[@]}"; do
+    [[ "$g" =~ ^([^:]+):([^=]+)=(.*)$ ]] || die "--gsettings must be SCHEMA:KEY=VALUE (got: ${g})"
+    schema="${BASH_REMATCH[1]}" key="${BASH_REMATCH[2]}" val="${BASH_REMATCH[3]}"
+    val="${val//\$TESTBED_OLLAMA_HOST/${APP_LLM_URL}}"
+    printf -v gsetup '%s; gsettings set %q %q %q || echo "gsettings: cannot set %s %s" >&2' "$gsetup" "$schema" "$key" "$val" "$schema" "$key"
+  done
+  printf -v inner 'dbus-daemon --session --address=%q --fork --nopidfile >/dev/null && { %s; } && { %s; } && { %s; } && exec /bin/bash -c %q' \
+    "$DBUS_SESSION_BUS_ADDRESS" "$ksetup" "$vsetup" "$gsetup" "$run"
 
   _ensure_host_machine_id
   _ensure_dbus
