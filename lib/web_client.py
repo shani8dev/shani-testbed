@@ -689,6 +689,8 @@ def main():
                     emulate(cdp, prof)
                     cdp.send("Emulation.setEmulatedMedia", {"features": []})
                     page.navigate(inner_url, settle=6)
+                    vw = page.evaluate("innerWidth + 'x' + innerHeight")
+                    print(f"  | {dname} inner page judged at {vw}")
                     Features(page, cdp, result, problems, args.ignore).run(dname, prof, inner=True)
                 # some checks change the emulation (reflow at 320 px, media
                 # features): restore this device before its screenshots

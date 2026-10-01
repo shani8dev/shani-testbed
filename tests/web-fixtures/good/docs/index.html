@@ -40,11 +40,13 @@ pre{background:#f4f4f4;color:#1a1a1a;padding:8px;overflow-x:auto}
   <h2 id="install">Install</h2><p>Install the fixture package with pacman.</p>
   <div class="code"><button class="copy-btn" aria-label="Copy code">Copy</button><pre><code>pacman -S fixture</code></pre></div>
   <button id="more" aria-expanded="false" aria-controls="panel">More details</button>
-  <div id="panel" hidden><p>Details revealed by the disclosure.</p></div>
+  <div style="position:relative"><details><summary>Closed answer</summary><p style="position:absolute;top:0;left:0;margin:0;background:none">Hidden answer text laid out over the summary</p></details></div>
   <button id="open-dlg" aria-haspopup="dialog">Open dialog</button>
   <dialog id="dlg" aria-label="Example dialog"><p>Dialog body</p><button id="dlg-ok">OK</button><button id="dlg-close">Close</button></dialog>
   <h2 id="usage">Usage</h2>
   <p style="height:1600px">Run fixture to see the documentation features. Fixture searching works.</p>
+  <div style="height:9000px" aria-hidden="true"></div>
+  <div id="panel" hidden><p>Details revealed by the disclosure.</p></div>
   <a href="https://example.org/" target="_blank" rel="noopener">External</a>
   <button id="to-top" aria-label="Back to top">Top</button>
 </main>
@@ -57,7 +59,9 @@ const words = ['Fixture install guide', 'Fixture usage', 'Fixture searching'];
 $('#q').oninput = e => { const v = e.target.value.toLowerCase(); $('#results').innerHTML = v ? words.filter(w => w.toLowerCase().includes(v)).map(w => '<li>' + w + '</li>').join('') : ''; };
 $('#theme-btn').onclick = () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = t; localStorage.setItem('theme', t); };
 $('.copy-btn').onclick = () => navigator.clipboard.writeText($('pre code').innerText);
-$('#more').onclick = e => { const p = $('#panel'); p.hidden = !p.hidden; e.currentTarget.setAttribute('aria-expanded', String(!p.hidden)); };
+// like shani-website's install guide: opening smooth-scrolls to the panel,
+// far below the toggle - a re-click taken mid-scroll lands somewhere else
+$('#more').onclick = e => { const p = $('#panel'); p.hidden = !p.hidden; e.currentTarget.setAttribute('aria-expanded', String(!p.hidden)); if (!p.hidden) p.scrollIntoView({behavior: 'smooth'}); };
 const dlg = $('#dlg'); $('#open-dlg').onclick = () => dlg.showModal(); $('#dlg-close').onclick = () => dlg.close(); $('#dlg-ok').onclick = () => dlg.close();
 dlg.addEventListener('close', () => $('#open-dlg').focus());
 $('#to-top').onclick = () => window.scrollTo(0, 0);

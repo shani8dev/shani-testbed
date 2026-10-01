@@ -91,6 +91,13 @@ for c in "search desktop" "search-shortcut desktop" "theme desktop" "breadcrumbs
          "color-scheme desktop" "back-to-top desktop" "site-files desktop" "menu mobile" "reflow-320 mobile"; do
     grep -qE "^RESULT $c +PASS" <<<"$gf" && res "good feature: $c" PASS || res "good feature: $c" "FAIL ($(grep -E "^RESULT $c " <<<"$gf" | cut -c42-160))"
 done
+# the inner page is judged on the device it is reported as: reflow-320 on the
+# start page used to leave it at 320 px, and "mobile (inner page)" was 320
+grep -q 'mobile inner page judged at 390x' <<<"$gf" && res inner-page-keeps-device PASS \
+  || res inner-page-keeps-device "FAIL ($(grep 'inner page judged' <<<"$gf" | tr '\n' ' '))"
+# a closed <details>' content has boxes but is never painted: not an overlap
+grep -qE '^RESULT text-overlap desktop +PASS' <<<"$gf" && res closed-details-not-overlap PASS \
+  || res closed-details-not-overlap "FAIL ($(grep -A2 '^RESULT text-overlap desktop' <<<"$gf" | tr '\n' ' '))"
 bf=$(python3 "$C" --url=http://127.0.0.1:8702/docs/ --devices=desktop,mobile --schemes=light --shots= 2>&1)
 echo "$bf" | grep -E '^RESULT' | sed 's/^/  bfeat| /'
 for c in "search desktop" "theme desktop" "breadcrumbs desktop" "focus-visible desktop" "anchors desktop" \
