@@ -52,8 +52,10 @@
 # convenient one. Everything else — espeak-ng, piper-tts, whisper-cli, soxi,
 # gsettings — is the binary the shipped code actually shells out to, so the
 # real PiperTTS and the real WhisperSTT run against them with their real argv
-# (`espeak-ng --stdin -v en-us -w <out>`, and
-# `whisper-cli -m <model> -f <wav> -l en -otxt -np`). The Python package under
+# (`espeak-ng --stdin -v en-us+f3 -s 175 -w <out>`, and
+# `whisper-cli -m <model> -f <wav> -l en -otxt -np`). The argv is matched by
+# shape further down, not pinned literally — see the note there. The Python
+# package under
 # test is NOT a stub: PYTHONPATH points at the real checkout, so these runs
 # execute the actual shani_chronoa.tts / shani_chronoa.stt / files.py.
 #
@@ -197,10 +199,11 @@ done
 STUB_LOG="$TMP/stub-invocations.log"
 : > "$STUB_LOG"
 
-# espeak-ng's real argv is `--stdin -v en-us -w <out>`; the text arrives on
-# stdin. `header-only` is the deliberate breakage: it exits 0 and writes a WAV
-# file, so synthesize()'s own return value is decided purely by its >44 byte
-# check — exactly the shape of a silently-useless speech stack.
+# espeak-ng's real argv is `--stdin -v en-us+f3 -s 175 -w <out>`; the text
+# arrives on stdin. `header-only` is the deliberate breakage: it exits 0 and
+# writes a WAV file, so synthesize()'s own return value is decided purely by
+# its >44 byte check — exactly the shape of a silently-useless speech stack.
+# The stub does not care which voice variant or rate it is handed.
 write_espeak_stub() {  # <path> <good|header-only>
   cat > "$1" <<'STUB'
 #!/bin/bash
@@ -308,8 +311,13 @@ Validated By    : None
 INFO
   exit 0 ;;
   "-Qql shani-chronoa"|"-Ql shani-chronoa")
+    # Only the shani_chronoa/__init__.py line matters: it is what the slot-test
+    # derives CHRONOA_LIB from. app/ is listed as the package it now is — an
+    # `app.py` here would be a fiction that let a hardcoded app.py path look
+    # right here and be wrong in a real slot.
     echo "${STUB_CHRONOA_LIB:-/nonexistent}/shani_chronoa/__init__.py"
-    echo "${STUB_CHRONOA_LIB:-/nonexistent}/shani_chronoa/app.py"
+    echo "${STUB_CHRONOA_LIB:-/nonexistent}/shani_chronoa/app/__init__.py"
+    echo "${STUB_CHRONOA_LIB:-/nonexistent}/shani_chronoa/app/application.py"
     echo "${STUB_CHRONOA_LIB:-/nonexistent}/shani_chronoa/tts.py"
     echo "${STUB_CHRONOA_LIB:-/nonexistent}/shani_chronoa/stt.py"
     echo "/usr/bin/shani-chronoa"
@@ -791,8 +799,17 @@ stub_ran_re() {  # <scenario> <ere> <what>
     no "[$1] $3" "no log line matches /$2/; log: $(tr '\n' '|' < "$TMP/$1/stub-invocations.log")"
   fi
 }
-stub_ran base        "espeak-ng --stdin -v en-us -w" "the espeak-ng stub was really invoked, with the argv PiperTTS.synthesize() actually uses"
-stub_ran espeak-header "espeak-ng --stdin -v en-us -w" "the BROKEN espeak-ng stub was really invoked (else the control proves nothing)"
+# The espeak-ng argv is matched by SHAPE, not by an exact literal. Pinning the
+# whole command line is a rot generator on the harness's side: upstream tts.py
+# legitimately added the female voice variant and the rate flag
+# (`-v en-us+f3 -s 175 -w <out>`), and the pinned literal then reported "the
+# stub was never invoked" about a stub that had just run — four failures, none
+# of them about the product. What the assertions here actually depend on is
+# three things: espeak-ng was run at all, the text went in on stdin, and an
+# output path came out via -w. A regex over those three survives a voice or
+# rate change and still fails when the stub is genuinely never reached.
+stub_ran_re base        '^espeak-ng --stdin -v [^ ]+.* -w ' "the espeak-ng stub was really invoked, with the argv shape PiperTTS.synthesize() uses (stdin in, -w out)"
+stub_ran_re espeak-header '^espeak-ng --stdin -v [^ ]+.* -w ' "the BROKEN espeak-ng stub was really invoked (else the control proves nothing)"
 stub_ran espeak-header "soxi -D"                       "the soxi stub was really consulted for the duration"
 stub_ran whisper     "whisper-cli -m"                 "the whisper-cli stub was really invoked, with the argv stt.transcribe() actually uses"
 stub_ran piper       "piper-tts --model"              "the piper-tts stub was really invoked, with the argv the piper branch actually uses"
@@ -834,6 +851,48 @@ head2=$(sed -n '2p' "$SLOT_TEST")
 [[ -x "$SLOT_TEST" ]] \
   && ok "the slot-test is executable" \
   || no "the slot-test is executable" "mode $(stat -c %a "$SLOT_TEST")"
+
+# --- 12. no HARDCODED path into the Chronoa package --------------------------
+# The rot this exists to stop, which cost four red checks on 2026-10-02:
+# `shani_chronoa/app.py` became the package `shani_chronoa/app/`, and the
+# slot-test kept grepping the old filename. It then reported the STT warning
+# string ABSENT on a checkout that still contained it — a harness bug wearing
+# a product bug's clothes, which is the most expensive kind to debug because
+# every layer above it looks like a Chronoa regression.
+#
+# The rule: the slot-test may locate the package through pacman
+# (`pacq -Qql`) or through importlib, but must not name a file inside it as a
+# literal. A path assertion like this is the check that notices when upstream
+# refactors; without it the only symptom is a confusing red.
+if grep -nE 'CHRONOA_LIB\}/shani_chronoa/[a-zA-Z0-9_]+\.py' "$SLOT_TEST" >"$TMP/hard.txt" 2>&1; then
+  no "the slot-test names no file inside the Chronoa package as a literal path" \
+     "$(cat "$TMP/hard.txt") — resolve it with importlib.find_spec or pacq -Qql instead (app.py became the app/ package)"
+else
+  ok "the slot-test names no file inside the Chronoa package as a literal path"
+fi
+
+# And the control for the control: find_spec must actually resolve the real
+# module on THIS checkout, or the check above would be satisfied by a
+# slot-test that resolves nothing at all — a guard that cannot fail.
+app_origin=$(PYTHONPATH="$CHRONOA_LIB" python3 -c 'import importlib.util as u
+try:
+    s = u.find_spec("shani_chronoa.app")
+except Exception:
+    s = None
+print("" if s is None else (next(iter(s.submodule_search_locations)) if s.submodule_search_locations else (s.origin or "")))' 2>/dev/null)
+if [[ -n "$app_origin" && -e "$app_origin" ]]; then
+  ok "find_spec resolves shani_chronoa.app to something real on this checkout (${app_origin##*/shani_chronoa/})"
+else
+  no "find_spec resolves shani_chronoa.app to something real on this checkout" "got '${app_origin:-nothing}'"
+fi
+# And the resolved location must actually be where the string lives — the two
+# halves together are what the STT assertion depends on.
+if [[ -n "$app_origin" ]] && grep -rq 'not available - STT disabled' "$app_origin" 2>/dev/null; then
+  ok "the STT-disabled warning string is present where find_spec says the application module lives"
+else
+  no "the STT-disabled warning string is present where find_spec says the application module lives" \
+     "looked in '${app_origin:-nothing}'; if this is a Chronoa change, the slot-test's copy of the wording needs revisiting"
+fi
 
 printf '\n%s: %d passed, %d failed\n' "$(basename "$0")" "$pass_n" "$fail_n"
 (( fail_n == 0 )) || exit 1

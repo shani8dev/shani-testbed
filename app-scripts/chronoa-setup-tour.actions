@@ -1,0 +1,26 @@
+# (asserts through the accessibility tree, not OCR: the image has no tesseract)
+# shani-chronoa's first-run setup window, every page, as a user sees it:
+#   app blue --run="shani-chronoa --setup" --script=/opt/shani-testbed/app-scripts/chronoa-setup-tour.actions
+wait-window=Set up Chronoa:60
+sleep=2
+screenshot=@out/setup-1-welcome.png
+find=three things
+a11y-lint
+click-element=button:^Start$
+sleep=1
+screenshot=@out/setup-2-brain.png
+find=Choose a model
+expect-changed=@out/setup-1-welcome.png
+click-element=button:^Skip for now$#1
+sleep=1
+screenshot=@out/setup-3-ears.png
+find=Choose how well it listens
+click-element=button:^Skip for now$#1
+sleep=1
+screenshot=@out/setup-4-voice.png
+find=Jenny
+a11y-lint
+click-element=button:^Close$#1
+sleep=1
+screenshot=@out/setup-5-done.png
+find=button:^Start using Chronoa$

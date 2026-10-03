@@ -388,12 +388,13 @@ elif [[ "$avail" != "$want" ]]; then
     bad stt-reports-unavailable-not-broken "is_available() returned '${avail}' but the machine has whisper binary=${have_bin} model=${have_model}, so the availability check is not tracking reality"
   fi
 else
-  # The warning path is asserted reachable, not just described. app.py guards
-  # STT with `if not self.stt.is_available(): logger.warning("Whisper.cpp not
-  # available - STT disabled")`, so with is_available() false the branch IS
-  # taken — and the string has to still be in the INSTALLED app.py, or the
-  # degradation has been removed and nobody reads the log. An empty stderr is
-  # not accepted as evidence of anything.
+  # The warning path is asserted reachable, not just described. The application
+  # module guards STT with `if not self.stt.is_available(): logger.warning("%
+  # s not available - STT disabled", self._stt_backend_label())`, so with
+  # is_available() false the branch IS taken — and the string has to still be in
+  # the INSTALLED application module, or the degradation has been removed and
+  # nobody reads the log. An empty stderr is not accepted as evidence of
+  # anything.
   if py -c 'import sys
 from shani_chronoa.stt import WhisperSTT
 raise SystemExit(0 if (not WhisperSTT().is_available()) else 1)' 2>>"$WORK/stt.err"; then
@@ -401,28 +402,64 @@ raise SystemExit(0 if (not WhisperSTT().is_available()) else 1)' 2>>"$WORK/stt.e
   else
     guard="no"
   fi
-  # The warning is interpolated, not literal: app.py logs
+  # The warning is interpolated, not literal: the application logs
   # "%s not available - STT disabled" with the backend's own name, so the
   # string to look for is "not available - STT disabled". Pinning
   # "Whisper.cpp not available" instead would fail the moment a second
   # backend exists, which is the wrong way round: what matters is that the
   # degradation is stated, not which engine stated it.
+  #
+  # WHERE it is looked for is derived, never hardcoded. `shani_chronoa/app.py`
+  # became the package `shani_chronoa/app/` (application.py inside it), and the
+  # hardcoded path then reported the string ABSENT on a checkout that still
+  # contains it — a harness failure dressed as a product failure. That is the
+  # same rot as the hardcoded sense count in chronoa-senses.sh: a literal an
+  # upstream refactor silently invalidates.
+  #
+  # importlib.util.find_spec is asked rather than the module imported, because
+  # importing shani_chronoa.app needs PyGObject (absent on a host, which is why
+  # app-imports-clean is in HOST_ONLY below) and because locating a file must
+  # not be able to fail for an unrelated reason. A package's `origin` is its
+  # __init__.py and `submodule_search_locations` is the directory holding the
+  # rest, so the directory is what gets searched when this is a package —
+  # searching __init__.py alone is the bug this replaced.
+  app_src=$(py -c 'import importlib.util as u
+try:
+    s = u.find_spec("shani_chronoa.app")
+except Exception:
+    s = None
+if s is None:
+    print("")
+elif s.submodule_search_locations:
+    print(next(iter(s.submodule_search_locations)))
+else:
+    print(s.origin or "")' 2>>"$WORK/stt.err")
   warn=""
-  grep -q 'not available - STT disabled' "${CHRONOA_LIB}/shani_chronoa/app.py" 2>/dev/null && warn="yes"
+  where="nowhere (shani_chronoa.app has no resolvable origin)"
+  if [[ -n "$app_src" ]]; then
+    if [[ -d "$app_src" ]]; then
+      grep -rq 'not available - STT disabled' "$app_src" 2>/dev/null && warn="yes"
+      where="the package at $app_src"
+    elif [[ -f "$app_src" ]]; then
+      grep -q 'not available - STT disabled' "$app_src" 2>/dev/null && warn="yes"
+      where="$app_src"
+    fi
+  fi
   if [[ "$warn" == yes ]]; then
     warnstate="present"
   else
     warnstate="ABSENT"
   fi
   if [[ "$want" == no && "$guard" == yes && "$warn" == yes ]]; then
-    pass stt-reports-unavailable-not-broken "is_available() is False (no whisper binary${stt_bin:+ at $stt_bin}${have_model:+, no model}), so app.py's 'not available - STT disabled' branch (with the backend's own name interpolated) is the one taken and the string is still in the installed app.py — degraded, not broken, and saying so"
+    pass stt-reports-unavailable-not-broken "is_available() is False (no whisper binary${stt_bin:+ at $stt_bin}${have_model:+, no model}), so the application module's 'not available - STT disabled' branch (with the backend's own name interpolated) is the one taken and the string is still in the installed source at ${where} — degraded, not broken, and saying so"
   elif [[ "$want" == yes ]]; then
-    # Both halves present, so is_available() is True and app.py must NOT take the
-    # degradation branch. The line that has to be readable either way is the one
-    # in the source, which is what the other half of this check is for.
-    pass stt-reports-unavailable-not-broken "is_available() is True and tracks reality (whisper binary ${stt_bin} and model ${stt_model} both present), so the STT-disabled branch is correctly NOT taken; the warning string is still ${warnstate} in the installed app.py for the day one half goes away"
+    # Both halves present, so is_available() is True and the application must
+    # NOT take the degradation branch. The line that has to be readable either
+    # way is the one in the source, which is what the other half of this check
+    # is for.
+    pass stt-reports-unavailable-not-broken "is_available() is True and tracks reality (whisper binary ${stt_bin} and model ${stt_model} both present), so the STT-disabled branch is correctly NOT taken; the warning string is still ${warnstate} in the installed application module (${where}) for the day one half goes away"
   else
-    bad stt-reports-unavailable-not-broken "is_available() is correctly False, but the degradation is not visible: the not-is_available() guard evaluated ${guard} and the 'not available - STT disabled' warning string is ${warnstate} in ${CHRONOA_LIB}/shani_chronoa/app.py — STT goes quiet for a reason nobody can read"
+    bad stt-reports-unavailable-not-broken "is_available() is correctly False, but the degradation is not visible: the not-is_available() guard evaluated ${guard} and the 'not available - STT disabled' warning string is ${warnstate} under ${where} — STT goes quiet for a reason nobody can read"
   fi
 fi
 

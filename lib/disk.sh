@@ -147,10 +147,27 @@ _ensure_single_loop() {
   losetup -P --find --show "$img" || die "Failed to attach loop device for $img"
 }
 
+# Whether the by-label links point at THIS data dir's install.img. With two
+# test disks (SHANIOS_TEST_DATA=.../disk-plasma beside the default one), both
+# root filesystems are labelled shani_root, and a link left over from the other
+# disk mounted the wrong install: `enter blue` in the Plasma data dir booted the
+# GNOME image (2026-10-01). An existing link is not enough - it must be ours.
+_labels_are_ours() {
+  [[ -e /dev/disk/by-label/shani_root && -e /dev/disk/by-label/shani_boot && -f "$INSTALL_IMG" ]] || return 1
+  local loop root
+  loop="$(_loops_for_image "$INSTALL_IMG" | head -1)"
+  [[ -n "$loop" ]] || return 1
+  [[ "$(readlink -f /dev/disk/by-label/shani_boot)" == "$(readlink -f "${loop}p1")" ]] || return 1
+  root="$(readlink -f /dev/disk/by-label/shani_root)"
+  [[ "$root" == "$(readlink -f "${loop}p2")" ]] && return 0
+  # an open LUKS mapper counts only if it sits on our partition
+  [[ -e /dev/mapper/shani_root ]] && cryptsetup status shani_root 2>/dev/null | grep -q "device:.*${loop##*/}p2" && return 0
+  return 1
+}
+
 _mount_root() {
   # install.img is the only disk (GPT: p1 ESP shani_boot, p2 btrfs shani_root)
-  [[ -e /dev/disk/by-label/shani_root && -e /dev/disk/by-label/shani_boot ]] \
-    || _ensure_install_attached >/dev/null
+  _labels_are_ours || _ensure_install_attached >/dev/null
   mkdir -p "$MNT"
   # compress=zstd matches production's BTRFS_TOP_OPTS (install.sh/build-base-image.sh).
   # Without it, a rootfs that fits comfortably in production's compressed

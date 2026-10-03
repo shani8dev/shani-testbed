@@ -204,7 +204,7 @@ _overlay_chronoa_src() {
   #    (usr/lib/shani-chronoa, NOT dirname(dirname(__file__))) is a bug that
   #    only ever shows up when the launcher is invoked AS INSTALLED.
   local b
-  for b in shani-chronoa shani-chronoa-mcp shani-chronoa-sense; do
+  for b in shani-chronoa shani-chronoa-mcp shani-chronoa-sense shani-chronoa-search shani-chronoa-daemon; do
     [[ -f "${src_dir}/usr/bin/${b}" ]] && _chronoa_overlay_file "${src_dir}/usr/bin/${b}" "${merged}/usr/bin/${b}" 755
   done
 
@@ -221,6 +221,31 @@ _overlay_chronoa_src() {
   [[ -f "${src_dir}/usr/share/pixmaps/shani-chronoa.svg" ]] \
     && _chronoa_overlay_file "${src_dir}/usr/share/pixmaps/shani-chronoa.svg" \
         "${merged}/usr/share/pixmaps/shani-chronoa.svg" 644
+
+  # 3b. the capability-matrix tool. tools/ is not packaged, so it goes beside the
+  #     package rather than inside it (where _chronoa_strip_stale would treat it
+  #     as stale); it reads the installed package when run from there.
+  #     slot-tests/chronoa-matrix.sh runs it.
+  [[ -f "${src_dir}/tools/cli_matrix.py" ]] \
+    && _chronoa_overlay_file "${src_dir}/tools/cli_matrix.py" \
+        "${merged}/usr/lib/shani-chronoa-tools/cli_matrix.py" 644
+
+  # 3c. desktop search integration (GNOME Shell search provider + KRunner plugin)
+  local f
+  for f in dbus-1/services/dev.shani.chronoa.SearchProvider.service gnome-shell/search-providers/shani-chronoa.ini \
+           krunner/dbusplugins/shani-chronoa.desktop; do
+    [[ -f "${src_dir}/usr/share/${f}" ]] && _chronoa_overlay_file "${src_dir}/usr/share/${f}" "${merged}/usr/share/${f}" 644
+  done
+
+  [[ -f "${src_dir}/usr/lib/systemd/user/shani-chronoa-daemon.service" ]] \
+    && _chronoa_overlay_file "${src_dir}/usr/lib/systemd/user/shani-chronoa-daemon.service" \
+        "${merged}/usr/lib/systemd/user/shani-chronoa-daemon.service" 644
+  [[ -f "${src_dir}/usr/lib/systemd/user/shani-chronoa-llm.service" ]] \
+    && _chronoa_overlay_file "${src_dir}/usr/lib/systemd/user/shani-chronoa-llm.service" \
+        "${merged}/usr/lib/systemd/user/shani-chronoa-llm.service" 644
+  [[ -f "${src_dir}/usr/lib/systemd/user/shani-chronoa-model@.service" ]] \
+    && _chronoa_overlay_file "${src_dir}/usr/lib/systemd/user/shani-chronoa-model@.service" \
+        "${merged}/usr/lib/systemd/user/shani-chronoa-model@.service" 644
 
   # 4. the schema, then RECOMPILE it. Without this step every consent key in
   #    the new XML is inert: the CLI asks Gio.SettingsSchemaSource, which reads

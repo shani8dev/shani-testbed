@@ -254,6 +254,30 @@ through to the real sibling checkout.
 
 `slot-tests/chronoa-senses.sh` is the acceptance test for the senses layer.
 
+**A second test disk** (e.g. the Plasma image beside GNOME) lives in its own data
+dir: `SHANIOS_TEST_DATA=/home/builduser/build/test-env/disk-plasma` before `ca`,
+`bootstrap -p plasma -d latest`, `enter`, `slot-test`. Both root filesystems are
+labelled `shani_root`; `_mount_root` now checks the by-label links point at
+*this* data dir's `install.img` (`_labels_are_ours`) and repoints them otherwise -
+before 2026-10-01 a link left by the other disk made `enter blue` in the Plasma
+dir boot the GNOME image.
+
+`slot-tests/chronoa-matrix.sh` runs shani-chronoa's `tools/cli_matrix.py` in the
+booted slot (the `--local-src-chronoa` overlay copies the unpackaged tool to
+`/usr/lib/shani-chronoa-tools/`; without it the test SKIPs). It fails if a
+Chronoa tool or sense runs a command the image does not ship without checking
+for it first, and prints how well the matrix's heuristics agree with Chronoa's
+own modules:
+
+```bash
+./run_in_container.sh build.sh test slot-test blue chronoa-matrix --local-src-chronoa=/opt/shani-chronoa
+```
+
+Verified 2026-10-01 on `@blue`: PASS (17 tools/senses need a missing command,
+all check first; calibration safety 84%, sense recall 61%). Negative control: a
+temporary skill running an absent binary unguarded made it FAIL naming exactly
+that skill.
+
 **Why `--local-pkg` is still needed today.** `shani-pkgbuilds`'s
 `shani-chronoa/PKGBUILD` did not declare `tesseract`, so no published image
 carries the binary — only `shani-install-media`'s profile pins
