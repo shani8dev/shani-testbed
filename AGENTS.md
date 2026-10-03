@@ -544,6 +544,66 @@ containers first.
   Verified 2026-10-01: **11 pass, 0 fail** on `@blue`. If you do drive the container
   yourself, `SHANIOS_TEST_CHRONOA_SRC=<dir>` still works and is equivalent.
 
+  ### Two harness-rot failures found by the self-test on 2026-10-02 — FIXED
+
+  `tests/chronoa-speech-results.sh` (the file whose whole job is proving
+  `slot-tests/chronoa-speech.sh` can fail) went red at **76 pass, 4 fail**.
+  Neither failure was a Chronoa defect; both were the harness asserting
+  against literals that upstream had legitimately moved on from, which is the
+  same rot as the hardcoded sense count in `chronoa-senses.sh`.
+
+  - **`shani_chronoa/app.py` became the package `shani_chronoa/app/`**
+    (`application.py` inside it). The slot-test still grepped
+    `${CHRONOA_LIB}/shani_chronoa/app.py` for the STT warning string, so it
+    reported the string **ABSENT on a checkout that still contained it** — a
+    harness bug wearing a product bug's clothes, and the most expensive kind
+    to debug because every layer above it reads as a Chronoa regression. It
+    now resolves the module with `importlib.util.find_spec` and searches the
+    package directory (`submodule_search_locations`, since a package's
+    `origin` is only its `__init__.py` — searching that alone is the same bug
+    one level down). `find_spec` rather than an import, because importing
+    `shani_chronoa.app` needs PyGObject, which is why `app-imports-clean` is
+    in `HOST_ONLY` in the first place. **The pacman `-Qql` stub was updated
+    to the real layout too** — it was advertising a fictional `app.py`, which
+    is what let the hardcoded path look right in the self-test and be wrong in
+    a real slot.
+  - **The espeak-ng stub assertion pinned the whole argv literal**
+    (`espeak-ng --stdin -v en-us -w`). Upstream `tts.py` added the female
+    voice variant and the rate flag, so the real call is
+    `espeak-ng --stdin -v en-us+f3 -s 175 -w <out>` and the pinned literal
+    reported "the stub was never invoked" about a stub that had just run.
+    Asserted by **shape** now (`--stdin`, a `-v` voice, `-w` out), which is
+    what the WAV assertions actually depend on and survives a voice or rate
+    change.
+
+  **Both fixes were run against their controls, not just observed passing.**
+  Reintroducing the hardcoded path turns the new guard red *and names the
+  line* (`426: app_src="${CHRONOA_LIB}/shani_chronoa/app.py"`) while the STT
+  check itself goes red again; restoring the pinned espeak literal reproduces
+  its failure with the true argv printed in the reason. Against a doctored
+  copy of the package with the warning string genuinely removed, the resolved
+  location correctly yields no match — so the assertion is not a rubber stamp.
+
+  Three permanent checks were added to the self-test for the class itself, not
+  just this instance: **no `CHRONOA_LIB}/shani_chronoa/<file>.py` literal may
+  appear in the slot-test** (resolve it with `find_spec` or `pacq -Qql`);
+  `find_spec` must resolve `shani_chronoa.app` to something real on the
+  current checkout; and the warning string must actually be present where it
+  says the module lives. The second and third are the control for the first —
+  without them, a slot-test that resolved nothing at all would satisfy it.
+  Suite **83/83** with them; the whole floor (`run-app-actions` 30/30,
+  `run-web-client` 95/95, `run-chronoa-ui` 12/12, `gate-flow`,
+  `iso-install-runner`, `serve-port-guard`, `suite-summary`, `chronoa-overlay`
+  9/9, `update-check`) green.
+
+  **The generalisable lesson, and it is the second time this repo has paid
+  it:** a check that names a *file* inside a package its neighbours refactor
+  will fail as a false product bug, and a check that pins a *whole command
+  line* will fail when a flag is added. Resolve by import system or package
+  manager, and assert on the shape of an interface rather than its exact text.
+  Neither failure was loud in the way this repo's rules care about — both
+  reported confident, specific, wrong verdicts.
+
   ### Running it for real (verified 2026-09-27: 15 pass, 0 fail)
 
   `run_in_container.sh` has no flag for the extra mount and no flag for
