@@ -173,6 +173,10 @@ _fetch_published_iso() {
   if [[ "$sel" == /* || "$sel" == ./* ]]; then
     [[ -f "$sel" ]] || die "--from-iso: no such file ${sel}"
     ISO_FILE="$(realpath "$sel")"
+    # A local ISO has no published folder to fetch base-image.txt from; a
+    # locally built one has it next to the ISO, so take it from there.
+    ISO_BASE_IMAGE_RECORD="$(dirname "$(realpath "$sel")")/base-image.txt"
+    [[ -f "$ISO_BASE_IMAGE_RECORD" ]] || ISO_BASE_IMAGE_RECORD=""
     ISO_DATE=$(grep -oE '[0-9]{4}\.[0-9]{2}\.[0-9]{2}' <<<"$(basename "$sel")" | tr -d . | head -n1) || true
     return 0
   fi
@@ -190,6 +194,14 @@ _fetch_published_iso() {
   for f in "$name.sha256" "$name.asc" "$name"; do
     _r2_get "${base}/${date}/${f}" "${dest}/${f}" 1
   done
+  # Which image this ISO embeds (written by build-iso.sh, published beside the
+  # ISO). Optional here and required by the release gate: a local --from-iso
+  # file has no folder to fetch it from, and an ISO built before this existed
+  # does not publish one. Fetched without the required flag for both reasons.
+  ISO_BASE_IMAGE_RECORD="${dest}/base-image.txt"
+  if ! _r2_get "${base}/${date}/base-image.txt" "${ISO_BASE_IMAGE_RECORD}" 0; then
+    ISO_BASE_IMAGE_RECORD=""
+  fi
   _verify_download "${dest}/${name}"
   ISO_FILE="${dest}/${name}"
   ISO_DATE="$date"

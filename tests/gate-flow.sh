@@ -37,9 +37,10 @@ run() {
       install_as() { echo blue > "$MNT/@data/current-slot"; echo "$1" > "$MNT/@blue/etc/shani-version"; rm -f "$MNT/@green/etc/shani-version"; }
       # The ISO folder date and the base image it carries are different dates
       # whenever the ISO was built after its image was gated (iso-release
-      # builds around the image stable.txt names). ISO_CARRIES is what the
-      # candidate ISO ships; iso-install records it in isovm/iso-version, and
-      # the disk it installs must come up on that, not on the folder date.
+      # builds around the image stable.txt names). ISO_CARRIES stands in for
+      # what base-image.txt records; iso-install reads that into
+      # isovm/iso-version, and the disk the ISO installs must come up on it,
+      # not on the folder date.
       cmd_iso_install() { echo CALL iso_install "$*"
         if [[ "$*" == *--boot-only* ]]; then   # firmware boot: boots what current-slot names
           local want; want=$(grep -oP "(?<=--expect-slot=)[a-z]+" <<<"$*"); [[ "$(cat "$MNT/@data/current-slot")" == "$want" ]] || return 6; return 0; fi

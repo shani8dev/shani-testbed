@@ -433,20 +433,32 @@ cmd_iso_install() {
   done
   log "iso-install: live session up after $(( $(date +%s) - t0 ))s: $(_isovm_qga 'uname -r; cat /etc/os-release | grep ^PRETTY' | tr '\n' ' ')"
 
-  # What the ISO actually ships, read out of its live root and kept for the
-  # gate. build.sh iso-release builds an ISO around the base image stable.txt
-  # names, so the ISO's folder date (what iso-latest.txt and the ISO's own
-  # filename carry) is the ISO's BUILD date, not the date of the
-  # /etc/shani-version inside it - two different dates whenever the ISO was
-  # built after its image was gated, which is the documented cadence. The gate
-  # has to hold the installed disk to what this ISO carries, not to the folder
-  # it was published under.
-  local iso_img_date
-  iso_img_date=$(tr -cd '0-9' < <(_isovm_qga 'cat /etc/shani-version' 60 || true))
-  [[ "$iso_img_date" =~ ^[0-9]{8}$ ]] \
-    || die "iso-install: the ISO's live root has no usable /etc/shani-version (got '${iso_img_date:-unreadable}') - it would install a disk whose identity nothing can check"
+  # Which base image this ISO embeds, from the record the ISO's own dated
+  # folder publishes (base-image.txt, written by build-iso.sh and uploaded
+  # beside the ISO). Two other sources do not work, both measured on the
+  # 2026-10-03 gate:
+  #
+  #  - The ISO's live root has no /etc/shani-version. That file lives in the
+  #    image, not in the installer environment: `cat /etc/shani-version` over
+  #    the guest agent answers "No such file or directory" while the same
+  #    session answers uname and os-release perfectly.
+  #  - The image itself cannot be asked cheaply. shanios/x86_64/rootfs.zst is
+  #    a zstd btrfs *send* stream (install.sh pipes it into `btrfs receive`),
+  #    so there is no tar to read one file out of; the alternative is
+  #    receiving a 3 GB image to learn eight digits.
+  #
+  # The record is a claim, not the evidence: iso:identity checks the disk the
+  # ISO actually installed against it, so an ISO whose payload disagrees with
+  # its own record fails the gate rather than passing on the claim.
+  iso_img_date=""
+  if [[ -n "${ISO_BASE_IMAGE_RECORD:-}" && -f "${ISO_BASE_IMAGE_RECORD}" ]]; then
+    iso_img_date=$(tr -cd '0-9' < "${ISO_BASE_IMAGE_RECORD}" | head -c 8)
+  fi
+  if [[ ! "$iso_img_date" =~ ^[0-9]{8}$ ]]; then
+    die "iso-install: ${ISO_BASE_IMAGE_RECORD:-no base-image.txt record} names no base image (got '${iso_img_date:-unreadable}') - without it there is nothing to check the installed disk's identity against but the ISO's own folder date, which is its BUILD date and can be newer than the image it carries"
+  fi
   printf '%s\n' "$iso_img_date" > "$ISOVM/iso-version"
-  log "iso-install: ISO ${ISO_DATE} carries base image ${iso_img_date}"
+  log "iso-install: ISO ${ISO_DATE} carries base image ${iso_img_date} (recorded in $(basename "${ISO_BASE_IMAGE_RECORD}"))"
 
   # ---- 2. os-installer's own invocation of its scripts
   local runner
