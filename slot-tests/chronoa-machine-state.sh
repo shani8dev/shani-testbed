@@ -60,8 +60,26 @@ declare -A NEEDS=(
   [privilege]="pacman|dpkg-query|rpm|zypper"
   [bluetooth]=bluetoothctl
   [thermalgrid]=i2cdetect
+  # wirelesslink shells out to `iw` for the regulatory domain and the station
+  # statistics. It reads /sys for the interface list, so it degrades to UNKNOWN
+  # rather than failing when iw is absent - which is what is asserted below.
+  [wirelesslink]=iw
+  # dnsresolvers reads systemd-resolved over D-Bus, so it needs busctl.
+  [dnsresolvers]=busctl
 )
-SENSES=(contention privilege thermal thermalgrid display network bluetooth camera rfsense hwmon modelfit)
+# labnetworks, wirelesslink and dnsresolvers were added 2026-10-03: the lab-network
+# builder and its sense, the wireless link detail, and the resolver report. They
+# are here because the failure this file exists to catch is a sense that is
+# complete, importable and grants no consent key, and the only place that shows
+# is against the RUNNING compiled schema on a real image.
+#
+# Note the retired names still listed above: `contention`, `thermal` and `camera`
+# were merged into `capture` and `hwmon` in 2026-09-29 and are kept in this list
+# deliberately - a slot whose schema predates the merge must FAIL here rather than
+# quietly pass by testing fewer things. They are not a claim that those modules
+# exist.
+SENSES=(contention privilege thermal thermalgrid display network bluetooth camera rfsense hwmon modelfit
+        labnetworks wirelesslink dnsresolvers)
 
 if [[ ! -x "$CLI" ]]; then
   res chronoa-machine-state-cli "FAIL (no $CLI in this slot - the image ships no shani-chronoa at all. Overlay the source with slot-test <slot> chronoa-machine-state --local-src-chronoa=<checkout>, or install a built package with --local-pkg=shani-chronoa)"
