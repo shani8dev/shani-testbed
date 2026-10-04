@@ -372,6 +372,44 @@ containers first.
   turned it into a segfault reporter. If it ever reports signal 11 again, check
   the display before believing anything about the apps.
 
+- **A GApplication action can be LISTED over D-Bus but not ACTIVATED with a
+  parameter, from PyGObject (2026-10-04; measured, not worked out).** Cassini
+  publishes `show-section`, and the obvious way to drive a 57-page app by id
+  rather than by clicking a sidebar that does not fit an 800px window is to
+  activate that action. `DescribeAll` lists it — the **name** is fine, and the
+  usual "a D-Bus method name may not contain a hyphen" rule does not apply,
+  because the action name is an *argument* of `Activate(s action_name, av
+  parameter, a{sv} platform-data)`, not a method name. (Cassini had a comment
+  claiming the opposite and a duplicate `show_section` action added to work
+  around it; both are gone.)
+
+  What does not work is supplying the **`av`** argument:
+
+  | route | result |
+  |---|---|
+  | `gdbus call ... Activate show-section '<"storage">' '{}'` | `can not parse as value of type av` — and so do `'["x"]'`, `["x"]`, `"x"` |
+  | `busctl ... Activate sa{sv} ...` | reads the map's first token as an entry count |
+  | `gapplication action APP show-section '<"storage">'` | **reaches the handler**, but delivers the literal text `<"storage">` as the string |
+  | `gapplication action APP show-section ''` | reaches the handler with an **empty** string — which is why it looks like it works |
+  | `GLib.Variant.parse(GLib.VariantType.new("(sava{sv})"), "('show-section', <'storage'>, {})")` | `can not parse as value of type av` — four spellings, all the same |
+  | `GLib.Variant("(sava{sv})", (name, GLib.Variant("s", param), {}))` | `TypeError: Expected GLib.Variant, but got str` |
+  | `GLib.Variant("(sav@a{sv})", ...)` | `Invalid GVariant format string` |
+
+  **So: drive a page by `--section=<id>` on the command line, one launch per
+  page.** That is the interface that works, and it is the one callers already
+  use. An `app`-script action that switches pages in a running instance is the
+  thing to build if that becomes too slow, and this table is why it cannot be
+  built out of `org.gtk.Actions`.
+
+  Two lessons worth more than the table. `gapplication action ... show-section
+  storage` answers `error parsing action parameter: unknown keyword: storage` —
+  which reads as "no such action", and it is not: it found the action and is
+  complaining about the parameter's shape. **An error naming the wrong thing is
+  worse than no error**, because it invites a fix to the wrong code. And four of
+  the failures above were shell-quoting corruption inside `python3 -c` heredocs,
+  each of which looked like a different bug; the marshalling questions only
+  became answerable once the probe was a *file*.
+
 - **Feature checks (`lib/web_features.py`) - pitfalls already paid for:**
   re-find an element by its `data-sf-pick` tag, never by a selector string
   (several share one); measure a theme at the top of the page (a reload
