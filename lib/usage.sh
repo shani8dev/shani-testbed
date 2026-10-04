@@ -34,7 +34,8 @@ Commands:
               Run a second instance on a different port/docroot/cert-host to
               stand in for a second external hostname at the same time.
   enter       Enter a slot via systemd-nspawn (requires <blue|green> [--boot]
-              [--local-src=<dir>] [cmd...]). The repo is available read-only
+              [--local-src=<dir>] [--local-pkg=<name|file>] [--repo-pkg=<name,...>]
+              [cmd...]). The repo is available read-only
               inside at /mnt/repo — run repo scripts directly, e.g.:
               enter blue /mnt/repo/scripts/foo.sh
                --local-src=/opt/shani-deploy/scripts overlays the sibling
@@ -43,6 +44,10 @@ Commands:
                shani-reset, shani-user-setup, beesd-setup) and systemd units
                over the package-installed ones — see "Testing edited
                scripts" in README.md.
+               --local-pkg=<name|file> overlays a BUILT .pkg.tar.zst and
+               --repo-pkg=<name,...> installs from the configured
+               repositories (real pacman, dependencies included) — both into
+               the merged slot, for this run only.
                --local-src-chronoa=<dir> overlays a shani-chronoa checkout's
                usr/bin launchers, the Python package, and the gsettings schema
                (rebuilt in place with glib-compile-schemas) over the image's

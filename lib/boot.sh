@@ -2,16 +2,29 @@ cmd_enter() {
   _ensure_host_machine_id
   _ensure_dbus
   _ensure_by_label_dir
-  local slot="${1:?Usage: $(basename "$0") enter <blue|green> [--boot] [--local-src=<dir>] [--local-src-chronoa=<dir>] [command...]}"
+  local slot="${1:?Usage: $(basename "$0") enter <blue|green> [--boot] [--local-src=<dir>] [--local-src-chronoa=<dir>] [--local-pkg=<name|file>] [--repo-pkg=<name,...>] [command...]}"
   shift || true
   [[ "$slot" =~ ^(blue|green)$ ]] || die "slot must be 'blue' or 'green'"
 
+  # --local-pkg / --repo-pkg were missing here while every other command that
+  # mounts the merged slot (app, probe, desktop, slot-test) already had them.
+  # That is not cosmetic: `enter`'s loop below is also the COMMAND parser, so an
+  # option it does not recognise becomes the command to run, and the failure
+  # names nothing useful — the slot reports `exec: --`, which reads like a
+  # broken payload rather than an unparsed flag. So installing a package into a
+  # slot before entering it was impossible through `enter`, and the only way to
+  # do it was a different command. Both wire onto the same env vars _enter_prep
+  # already reads, so there is one choke point and no per-command handling.
+  # Guarded by tests/enter-args.sh, which can fail on a missing case.
   local boot=0 local_src=""
-  while [[ "${1:-}" == "--boot" || "${1:-}" == --local-src=* || "${1:-}" == --local-src-chronoa=* ]]; do
+  while [[ "${1:-}" == "--boot" || "${1:-}" == --local-src=* || "${1:-}" == --local-src-chronoa=* \
+            || "${1:-}" == --local-pkg=* || "${1:-}" == --repo-pkg=* ]]; do
     case "$1" in
       --boot) boot=1; shift ;;
       --local-src=*) local_src="${1#--local-src=}"; shift ;;
       --local-src-chronoa=*) _set_chronoa_src "${1#--local-src-chronoa=}"; shift ;;
+      --local-pkg=*) export SHANIOS_TEST_LOCAL_PKGS="${SHANIOS_TEST_LOCAL_PKGS:+${SHANIOS_TEST_LOCAL_PKGS},}${1#--local-pkg=}"; shift ;;
+      --repo-pkg=*) export SHANIOS_TEST_REPO_PKGS="${SHANIOS_TEST_REPO_PKGS:+${SHANIOS_TEST_REPO_PKGS},}${1#--repo-pkg=}"; shift ;;
     esac
   done
 
