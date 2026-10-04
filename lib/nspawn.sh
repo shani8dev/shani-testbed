@@ -809,11 +809,17 @@ BOOT_BG_PIDFILE_NAME="nspawn-boot.pid"
 # Starts a full --boot of the prepared slot in the background, console to
 # <logfile>. Sets BOOT_PID and installs an EXIT trap that shuts it down
 # gracefully (see _boot_bg_stop). Call _prepare_boot first.
+#
+# `9>&-` closes the dispatcher's disk-lock descriptor in the booted container's
+# supervisor. It is bounded by _boot_bg_stop, but "bounded" is not "closed": the
+# trap does not run when the harness is SIGKILLed, and a container left running
+# with the descriptor open keeps an flock on the test disk alive with no
+# harness process behind it. Same reason as _ensure_dbus's close.
 # Usage: _boot_bg_start <machine-name> <slot> <logfile>
 _boot_bg_start() {
   local machine="$1" slot="$2" logfile="$3"
   _nspawn_full_boot_args "$machine" "$slot"
-  systemd-nspawn "${NSPAWN_FULL_BOOT_ARGS[@]}" >"$logfile" 2>&1 &
+  systemd-nspawn "${NSPAWN_FULL_BOOT_ARGS[@]}" >"$logfile" 2>&1 9>&- &
   BOOT_PID=$!
   echo "$BOOT_PID" > "${DATA_DIR}/${BOOT_BG_PIDFILE_NAME}"
   trap _boot_bg_stop EXIT

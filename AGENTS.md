@@ -73,6 +73,7 @@ for f in testbed lib/*.sh slot-tests/*.sh tests/*.sh; do bash -n "$f"; done
 python3 -m py_compile lib/*.py mcp/*.py
 tests/run-app-actions.sh        # real Xvfb + GTK4/libadwaita test of lib/app.sh + lib/a11y_client.py, in docker
 tests/run-web-client.sh         # real headless Chromium test of lib/web_client.py + web_serve.py, in docker
+tests/chronoa-singing-results.sh  # proves slot-tests/chronoa-singing.sh's style checks can go red (host, no docker)
 ```
 
 ## Extend the harness — don't write one-off test scripts
@@ -543,6 +544,67 @@ containers first.
 
   Verified 2026-10-01: **11 pass, 0 fail** on `@blue`. If you do drive the container
   yourself, `SHANIOS_TEST_CHRONOA_SRC=<dir>` still works and is equivalent.
+
+  ### `chronoa-singing`: the label has to be earned, and proved able to go red
+
+  `slot-tests/chronoa-singing.sh` had a stage named *"a sung line in a soothing
+  voice"* that sang a line, printed PASS, and never touched `voice_style` at
+  all — the label described an effect the output did not have. The stage now
+  applies the `soothing` preset (`equalizer 180 1.0q +2.16`,
+  `equalizer 3500 1.0q -1.20`) to the sung WAV and **measures** it with a
+  Goertzel filter at those two frequencies (no numpy on the image, and a
+  two-band EQ needs no FFT). Two changes came with it, both found by running:
+
+  - **The gate under-implemented its own comment.** The comment promised a skip
+    unless kokoro, consent *and* a transposer were all present; the code checked
+    only the first two, so the stage could report singing on an image where
+    per-note pitch was impossible. All three are checked now, and the tone stage
+    skips on a missing transposer rather than reporting *"per-syllable pitch did
+    not move as the plan says"* — a confident wrong answer, since the plan was
+    never attempted.
+  - **An empty style is a regression, not a limitation.** If `soothing` resolves
+    but asks for nothing, the stage says FAIL, not SKIP: a SKIP would be the
+    absence-shaped green this repo keeps being bitten by, printing the same line
+    for a slot with no style and for a slot whose style silently stopped
+    applying.
+
+  The stage carries its own negative control in-band: the same measurement is
+  re-run with the **opposite** preset (`bright`, +2.56 dB at 3500 Hz) and has to
+  move 3500 Hz the other way. Without it, "the bands moved" could just mean SoX
+  ran.
+
+  Verified live on `@blue` (`shanios-20260925-gnome`, Chronoa overlaid, kokoro +
+  soundstretch + sox present): **4 pass, 0 fail**, with
+  `low180=1.28x high3500=0.87x control3500=1.40x` — the same class of numbers the
+  presets ask for.
+
+  `tests/chronoa-singing-results.sh` proves those assertions can fail, against a
+  stubbed slot with the *real* package on `PYTHONPATH` (24 pass, 0 fail). It is
+  the second half of `chronoa-speech-results.sh`'s argument: a pass proves the
+  check ran, not that it can say no. Scenarios: a pass-through sox and an
+  exit-0-but-writes-nothing sox both go red; the control goes red with them; no
+  kokoro, consent off and no transposer each SKIP naming their own cause and emit
+  no FAIL (so `cmd_slot_test`'s `pass == 0` rule cannot fire on a stock image);
+  and a doctored `voice_style` with a neutralised `soothing` FAILS. Consent is
+  read through a **real compiled GSettings schema** (the checkout's own XML with
+  one default flipped), not a gsettings stub.
+
+  Two things about writing it, both worth not re-deriving:
+
+  - **sox is stubbed, and the stub has to be faithful in a way that is easy to
+    get wrong.** The `equalizer` stub is a forward FFT, a Gaussian band gain of
+    width f0/Q, and an inverse FFT. It was a biquad first, written from the
+    cookbook, and it produced **−39 dB at 30 Hz** for a "peaking" EQ at 180 Hz —
+    a high-pass. The stage then reported the soothing style as ineffective at
+    180 Hz: true of the stub, false of the product. It also has to preserve
+    *duration* (resample **plus** overlap-add time-stretch), because the tone
+    stage measures each note at the time it was asked for and a shortening stub
+    reads the last note of a rising run as −19 semitones against a +6 plan.
+  - **A missing tool in the harness reads exactly like a broken product.** The
+    first version's `TOOLS` list omitted `tail`, which the slot-test pipes its
+    stage output through, and every stage reported an empty verdict and four
+    FAILs that had nothing to do with the stub under test. Same family as the
+    `usage` heredoc that once ran `pacstrap` on the host.
 
   ### Two harness-rot failures found by the self-test on 2026-10-02 — FIXED
 

@@ -431,7 +431,10 @@ _ensure_systemd_target_services() {
     bin="/usr/lib/systemd/systemd-${svc}"
     pgrep -f "systemd-${svc}" &>/dev/null && continue
     if [[ -x "$bin" ]]; then
-      "$bin" &>/dev/null &
+      # disown says "do not wait for it"; it does not say "do not let it hold the
+      # disk lock". These three are started so configure.sh's chroot can run
+      # hostnamectl/localectl/timedatectl, and nothing ever stops them.
+      "$bin" &>/dev/null 9>&- &
       disown
     else
       warn "$bin not found — hostnamectl/localectl/timedatectl inside configure.sh's chroot may fail"

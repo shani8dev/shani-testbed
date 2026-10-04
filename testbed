@@ -76,9 +76,34 @@ case "$COMMAND" in
   # serve runs beside upgrade (a second terminal) by design: only file serving
   status|serve|web|slot-diff|watch|-h|--help|help) ;;
   *)
-    mkdir -p "$DATA_DIR"
-    exec {_TB_LOCK}>"${DATA_DIR}/.testbed.lock"
-    if ! flock -n "$_TB_LOCK"; then
+mkdir -p "$DATA_DIR"
+    # The lock lives on descriptor 9, and every child that can OUTLIVE this
+    # command closes it with a literal `9>&-` (see _ensure_dbus in
+    # lib/common.sh, _boot_bg_start in lib/boot.sh, Xvfb in lib/app.sh, the
+    # isoinstall VMs). Both halves of that are deliberate:
+    #
+    #   * a fixed number, not `exec {_TB_LOCK}>file`, so each close is a
+    #     readable literal instead of an expansion. A redirection cannot come out
+    #     of a variable expansion, and `{_TB_LOCK}>&-` silently does nothing -
+    #     measured both ways on this bash: `exec {_TB_LOCK}>&-` releases the
+    #     lock, `{_TB_LOCK}>&-` leaves it held. A close that looks right and does
+    #     nothing is worse than no close at all.
+    #   * explicit closes rather than FD_CLOEXEC, because `enter` ends by
+    #     exec'ing systemd-nspawn and `probe` execs into a booted slot: with
+    #     CLOEXEC the lock would be released the moment the command's own image
+    #     is replaced, which is exactly while the slot is being mounted.
+    #
+    # This is not theoretical. On 2026-10-03 `slot-test blue chronoa-singing`
+    # printed its PASS summary and exited 0, and the `enter` that followed it in
+    # the SAME container invocation was refused with "another harness run holds
+    # .../disk: pid 45, `slot-test ...`" - naming a pid that had already exited,
+    # because `_ensure_dbus`'s system bus (which deliberately outlives a single
+    # command) had inherited the descriptor. That made "one container, several
+    # harness commands" - the workspace's own cost habit - impossible, and it
+    # taught a reader to disbelieve a lock message that was reporting the truth.
+    # Guarded by tests/lock-release.sh.
+    exec 9>"${DATA_DIR}/.testbed.lock"
+    if ! flock -n 9; then
       echo "shani-testbed: another harness run holds ${DATA_DIR}: $(cat "${DATA_DIR}/.testbed.lock.who" 2>/dev/null || echo unknown) - wait for it to finish" >&2
       exit 75
     fi

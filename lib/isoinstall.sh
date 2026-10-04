@@ -85,8 +85,12 @@ _isovm_start() {
   # read, Permission denied"), found 2026-10-01.
   mkdir -p "${ISOVM}/tpm"
   chown -R "$(id -u):$(id -g)" "${ISOVM}/tpm" 2>/dev/null || true
+  # 9>&- closes the dispatcher's disk-lock descriptor in these two: both are VMs
+  # that outlive the harness command by design (the firmware boot is inspected
+  # after it finishes), and an inherited descriptor would hold an flock on the
+  # test disk with no harness process behind it. See the comment in `testbed`.
   swtpm socket --tpm2 --tpmstate "dir=${ISOVM}/tpm" \
-    --ctrl "type=unixio,path=${ISOVM}/swtpm.sock" --log "file=${ISOVM}/swtpm.log" &
+    --ctrl "type=unixio,path=${ISOVM}/swtpm.sock" --log "file=${ISOVM}/swtpm.log" 9>&- &
   ISOVM_TPM_PID=$!
   local i; for (( i=0; i<50; i++ )); do [[ -S "${ISOVM}/swtpm.sock" ]] && break; sleep 0.2; done
   [[ -S "${ISOVM}/swtpm.sock" ]] \
@@ -130,7 +134,7 @@ _isovm_start() {
     -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
     -chardev "socket,id=ser0,path=${ISOVM}/serial.sock,server=on,wait=off,logfile=${console}" -serial chardev:ser0 \
     -vga std -display none -monitor none \
-    >"${ISOVM}/qemu-${label}.log" 2>&1 &
+    >"${ISOVM}/qemu-${label}.log" 2>&1 9>&- &
   ISOVM_PID=$!
 }
 

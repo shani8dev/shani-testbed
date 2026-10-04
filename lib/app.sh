@@ -298,7 +298,10 @@ _app_start_llm() {
   dir="${TESTBED_CACHE_DIR:-${DATA_DIR}/../cache}/ollama-models"; mkdir -p "$dir"
   for port in $(seq 11535 11560); do (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null || break; done
   APP_LLM_URL="http://127.0.0.1:${port}"
-  OLLAMA_HOST="127.0.0.1:${port}" OLLAMA_MODELS="$dir" ollama serve >"${APP_OUT}/ollama.log" 2>&1 &
+  # 9>&- on every background service below: they are killed at the end of `app`,
+  # but a killed service's death is not the same as never having inherited the
+  # dispatcher's disk-lock descriptor. See the long comment in `testbed`.
+  OLLAMA_HOST="127.0.0.1:${port}" OLLAMA_MODELS="$dir" ollama serve >"${APP_OUT}/ollama.log" 2>&1 9>&- &
   APP_LLM_PID=$!
   for i in $(seq 100); do curl -fs "${APP_LLM_URL}/api/tags" >/dev/null 2>&1 && break; sleep 0.2; done
   curl -fs "${APP_LLM_URL}/api/tags" >/dev/null 2>&1 || die "--llm: ollama did not start (see ${APP_OUT}/ollama.log)"
@@ -333,7 +336,7 @@ _app_start_display() {
   local n; n="$(_app_free_display)"
   # -ac: no access control — a private throwaway display nobody else can
   # reach; the slot's clients have no Xauthority to present anyway.
-  Xvfb ":${n}" -screen 0 "${size}x24" -nolisten tcp -ac >"${APP_OUT}/xvfb.log" 2>&1 &
+  Xvfb ":${n}" -screen 0 "${size}x24" -nolisten tcp -ac >"${APP_OUT}/xvfb.log" 2>&1 9>&- &
   APP_XVFB_PID=$!
   local i
   for (( i=0; i<50; i++ )); do
@@ -825,9 +828,11 @@ cmd_app() {
   local vsetup=":"
   if (( voice )); then
     _app_ensure_voice
-    vsetup='pipewire >"$XDG_RUNTIME_DIR/pipewire.log" 2>&1 & wireplumber >"$XDG_RUNTIME_DIR/wireplumber.log" 2>&1 &
+    # 9>&- in here too: this string is run by a dbus-daemon --fork inside the
+    # slot, which is itself long-lived relative to the harness command.
+    vsetup='pipewire >"$XDG_RUNTIME_DIR/pipewire.log" 2>&1 9>&- & wireplumber >"$XDG_RUNTIME_DIR/wireplumber.log" 2>&1 9>&- &
       for i in $(seq 100); do [ -S "$XDG_RUNTIME_DIR/pipewire-0" ] && break; sleep 0.1; done
-      pw-loopback --capture-props="media.class=Audio/Sink node.name=testbed-mic-in node.description=Testbed-microphone-input audio.position=[MONO]" --playback-props="media.class=Audio/Source node.name=testbed-mic node.description=Testbed-microphone audio.position=[MONO]" >/dev/null 2>&1 &
+      pw-loopback --capture-props="media.class=Audio/Sink node.name=testbed-mic-in node.description=Testbed-microphone-input audio.position=[MONO]" --playback-props="media.class=Audio/Source node.name=testbed-mic node.description=Testbed-microphone audio.position=[MONO]" >/dev/null 2>&1 9>&- &
       pw-cli create-node adapter "{ factory.name=support.null-audio-sink node.name=testbed-speaker node.description=Testbed-speaker media.class=Audio/Sink object.linger=true audio.position=[FL FR] }" >/dev/null 2>&1
       sleep 1
       pw-metadata 0 default.configured.audio.source "{ \"name\": \"testbed-mic\" }" >/dev/null 2>&1

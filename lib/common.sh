@@ -82,7 +82,13 @@ _ensure_host_machine_id() {
 _ensure_dbus() {
   [[ -S /run/dbus/system_bus_socket ]] && return 0
   mkdir -p /run/dbus
-  dbus-daemon --system --fork \
+  # `9>&-` closes the dispatcher's disk-lock descriptor in this child, and it is
+  # the load-bearing line here: dbus-daemon --fork OUTLIVES the command on
+  # purpose (the next command in the same container reuses it), and an inherited
+  # descriptor keeps an flock held after the harness has exited, so the next
+  # command is refused by a lock whose owner no longer exists. See the long
+  # comment in `testbed` and tests/lock-release.sh.
+  dbus-daemon --system --fork 9>&- \
     || die "Could not start dbus-daemon in the builder container (needed by systemd-nspawn itself)"
 }
 
