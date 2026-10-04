@@ -67,6 +67,31 @@ _gate_identity() {  # <expected YYYYMMDD> — current slot must run that build
   GATE_SLOT="$slot"
 }
 
+# Which base image the installed ISO carries, recorded as its own gate step
+# (iso:version) and setting the caller's iso_img_date / after_first. Called
+# directly from the phase's && chain, NOT through _gate_step or $(...): both of
+# those run it in a subshell, where the assignments - and the `failed=1` that
+# keeps an unchecked ISO from being handed a .passed marker - would be lost.
+# iso-install records the version from the ISO's live root; without it there is
+# nothing to check identity against except the ISO's folder date, which is the
+# comparison that could never pass (ISO 20261003 carries the 20260925 image).
+_gate_record_iso_version() {
+  local v="" f="${DATA_DIR}/isovm/iso-version"
+  # read it only if it is there: a bare `< "$f"` on a missing file kills the
+  # gate under set -e with a bare "No such file or directory" instead of the
+  # reason, which is the one thing an operator needs here
+  [[ -r "$f" ]] && v=$(tr -cd '0-9' < "$f")
+  if [[ ! "$v" =~ ^[0-9]{8}$ ]]; then
+    names+=(iso:version); rcs+=(1); secs+=(0); failed=1
+    warn "gate: ${f} names no base image ('${v:-unreadable}') - iso-install did not record which image this ISO ships, and its folder date is not the image's"
+    return 1
+  fi
+  iso_img_date="$v"
+  after_first="$v"; [[ -n "$stable_date" && "$stable_date" > "$v" ]] && after_first="$stable_date"
+  log "iso version: this ISO ships base image ${iso_img_date} (stable is ${stable_date:-none})"
+  names+=(iso:version); rcs+=(0); secs+=(0)
+}
+
 cmd_gate() {
   local usage_gate="Usage: $(basename "$0") gate -p <profile> [--candidate=<file.zst>] [--for=image|iso] [--skip=iso,fresh,upgrade,desktop] [--encrypted] [--keep] [--reuse-install]"
   local profile="" candidate="" skip="" keep=0 reuse=0 for="" encrypted=0 a
@@ -187,26 +212,34 @@ cmd_gate() {
   # ---- iso: the candidate ISO, for iso-stable.txt. Its first update is what
   # the update timer does on a new install: the default (stable) channel, no
   # --force - an older stable is "no update needed", never a downgrade.
+  #
+  # Identity here is the base image the ISO CARRIES, not the ISO's folder
+  # date: `build.sh iso-release` builds an ISO around the image stable.txt
+  # names, so an ISO published on 20261003 legitimately ships the 20260925
+  # image. Checking the installed disk against the folder date failed every
+  # such ISO (plasma 2026-10-03: "@blue runs 20260925, want 20261003") and
+  # would have held iso-stable.txt at 20260518 forever. iso-install records
+  # the live root's own version; that is the version the disk must end up on.
   if [[ "$skip" != *,iso,* ]]; then
     failed=0
-    local after_first="$iso_date"
-    [[ -n "$stable_date" && "$stable_date" > "$iso_date" ]] && after_first="$stable_date"
+    local after_first="" iso_img_date=""
     _gate_step iso:clean cmd_clean \
       && _gate_step iso:install "${iso_install[@]}" \
       && installed_from="$iso_date" \
-      && _gate_identity_step iso:identity "$iso_date" \
+      && _gate_record_iso_version \
+      && _gate_identity_step iso:identity "$iso_img_date" \
       && _gate_checks iso boot-health fresh-user launchers disk-layout \
       && _gate_step iso:first-update _gate_deploy --channel=stable --no-force \
       && _gate_identity_step iso:identity-after-update "$after_first" || true
-    if _gate_phase_ok && [[ "$after_first" != "$iso_date" ]]; then
+    if _gate_phase_ok && [[ "$after_first" != "$iso_img_date" ]]; then
       _gate_checks iso:updated boot-health fresh-user launchers disk-layout \
         && _gate_step iso:firmware-boot-updated _gate_fw_boot "$GATE_SLOT" \
         && _gate_step iso:rollback cmd_rollback \
-        && _gate_identity_step iso:identity-rolledback "$iso_date" \
+        && _gate_identity_step iso:identity-rolledback "$iso_img_date" \
         && _gate_step iso:verify-boot-rolledback cmd_verifyboot "$GATE_SLOT" 120 \
         && _gate_step iso:firmware-boot-rolledback _gate_fw_boot "$GATE_SLOT" || true
     elif _gate_phase_ok; then
-      log "gate: stable (${stable_date:-none}) is not newer than ISO ${iso_date}: no first update, as on a real install"
+      log "gate: stable (${stable_date:-none}) is not newer than the base image ${iso_img_date} the ISO ${iso_date} carries: no first update, as on a real install"
     fi
     _gate_phase_ok && iso_ok=1
   fi

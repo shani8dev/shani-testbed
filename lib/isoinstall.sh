@@ -433,6 +433,21 @@ cmd_iso_install() {
   done
   log "iso-install: live session up after $(( $(date +%s) - t0 ))s: $(_isovm_qga 'uname -r; cat /etc/os-release | grep ^PRETTY' | tr '\n' ' ')"
 
+  # What the ISO actually ships, read out of its live root and kept for the
+  # gate. build.sh iso-release builds an ISO around the base image stable.txt
+  # names, so the ISO's folder date (what iso-latest.txt and the ISO's own
+  # filename carry) is the ISO's BUILD date, not the date of the
+  # /etc/shani-version inside it - two different dates whenever the ISO was
+  # built after its image was gated, which is the documented cadence. The gate
+  # has to hold the installed disk to what this ISO carries, not to the folder
+  # it was published under.
+  local iso_img_date
+  iso_img_date=$(tr -cd '0-9' < <(_isovm_qga 'cat /etc/shani-version' 60 || true))
+  [[ "$iso_img_date" =~ ^[0-9]{8}$ ]] \
+    || die "iso-install: the ISO's live root has no usable /etc/shani-version (got '${iso_img_date:-unreadable}') - it would install a disk whose identity nothing can check"
+  printf '%s\n' "$iso_img_date" > "$ISOVM/iso-version"
+  log "iso-install: ISO ${ISO_DATE} carries base image ${iso_img_date}"
+
   # ---- 2. os-installer's own invocation of its scripts
   local runner
   runner=$(_isovm_runner "$profile" "$encrypted")

@@ -35,10 +35,19 @@ run() {
       for s in ca clean verifyboot desktop; do eval "cmd_$s() { echo CALL $s \"\$*\"; }"; done
       cmd_slot_test() { echo CALL slot_test "$*"; [[ "${FAIL_STEP:-}" != slot_test ]] || return 3; }
       install_as() { echo blue > "$MNT/@data/current-slot"; echo "$1" > "$MNT/@blue/etc/shani-version"; rm -f "$MNT/@green/etc/shani-version"; }
+      # The ISO folder date and the base image it carries are different dates
+      # whenever the ISO was built after its image was gated (iso-release
+      # builds around the image stable.txt names). ISO_CARRIES is what the
+      # candidate ISO ships; iso-install records it in isovm/iso-version, and
+      # the disk it installs must come up on that, not on the folder date.
       cmd_iso_install() { echo CALL iso_install "$*"
         if [[ "$*" == *--boot-only* ]]; then   # firmware boot: boots what current-slot names
           local want; want=$(grep -oP "(?<=--expect-slot=)[a-z]+" <<<"$*"); [[ "$(cat "$MNT/@data/current-slot")" == "$want" ]] || return 6; return 0; fi
-        [[ -n "${FAIL_ISO:-}" && "$*" == *20260921* ]] && return 4; install_as "$(grep -oP "(?<=--iso=)[0-9]{8}" <<<"$*")"; }
+        local sel carries; sel=$(grep -oP "(?<=--iso=)[0-9]{8}" <<<"$*")
+        [[ -n "${FAIL_ISO:-}" && "$sel" == 20260921 ]] && return 4
+        carries="$sel"; [[ "$sel" == 20260921 ]] && carries="${ISO_CARRIES:-20260921}"
+        [[ -n "${NO_ISO_VERSION:-}" && "$sel" == 20260921 ]] || echo "$carries" > "$DATA_DIR/isovm/iso-version"
+        install_as "$carries"; }
       cmd_bootstrap()   { echo CALL bootstrap "$*"; install_as "$(grep -oE "[0-9]{8}" <<<"$*")"; }
       cmd_upgrade() {
         echo CALL upgrade "$*"
@@ -65,7 +74,7 @@ check "all-pass: image marker = candidate"       "[[ \$IMG == shanios-20260922-g
 check "all-pass: iso marker = ISO folder"        "[[ \$ISO == 20260921 ]]"
 check "iso: installs the candidate ISO"          "has 'CALL iso_install -p gnome --iso=20260921'"
 check "iso: first update = stable, no --force"   "has 'CALL upgrade --self-update --channel=stable --no-force'"
-check "iso: older stable is not a downgrade"     "has 'no update needed' && has 'not newer than ISO 20260921'"
+check "iso: older stable is not a downgrade"     "has 'no update needed' && has 'not newer than the base image 20260921 the ISO 20260921 carries'"
 check "iso: launchers checked on ISO install"    "has 'CALL slot_test blue boot-health fresh-user launchers disk-layout'"
 check "fresh: candidate on the ISO machine"      "has 'CALL upgrade --self-update --channel=latest --no-force'"
 check "fresh: firmware boot of the updated slot" "has 'CALL iso_install -p gnome --iso=installed --boot-only --expect-slot=green'"
@@ -76,6 +85,27 @@ check "upgrade: no launchers on R2 install"      "has 'CALL slot_test green boot
 check "fresh: candidate checks apparmor + status" "has 'CALL slot_test green boot-health fresh-user launchers disk-layout apparmor deploy-status pam-wiring'"
 check "iso: no candidate-only checks on stable"   "has 'CALL slot_test blue boot-health fresh-user launchers disk-layout' && ! grep 'CALL slot_test blue' <<<\"\$OUT\" | grep -q apparmor"
 check "no --force anywhere in the gate"          "! grep 'CALL upgrade' <<<\"\$OUT\" | grep -qv -- '--no-force'"
+
+# An ISO published on one day legitimately ships the base image gated on an
+# earlier day (iso-release builds the ISO around the image stable.txt names).
+# The real 2026-10-03 gate: ISO folder 20261003, /etc/shani-version 20260925,
+# and "identity: @blue runs 20260925 (want 20261003)" held iso-stable.txt at
+# 20260518. Two runs here: an older carried image, and one where the carried
+# image IS newer than stable, so the first update has to stay on it.
+run iso-carries-older-image "ISO_CARRIES=20260915"
+check "older carried image: ISO still promotable" "[[ \$ISO == 20260921 && \$RC -eq 0 ]]"
+check "older carried image: identity is the image" "has 'identity: @blue runs 20260915 (want 20260915)'"
+check "older carried image: no first update"       "has 'not newer than the base image 20260915 the ISO 20260921 carries'"
+
+run iso-carries-newer-image "ISO_CARRIES=20260920"
+check "newer carried image: identity after update" "has 'identity: @blue runs 20260920 (want 20260920)'"
+check "newer carried image: rollback restores it"  "has 'identity: @blue runs 20260920 (want 20260920)' && has 'CALL slot_test blue boot-health fresh-user launchers disk-layout'"
+check "newer carried image: ISO promotable"         "[[ \$ISO == 20260921 ]]"
+
+run iso-version-unrecorded "NO_ISO_VERSION=1"
+check "unrecorded ISO version: ISO not promotable" "[[ -z \$ISO && \$RC -ne 0 ]]"
+check "unrecorded ISO version: says why"            "has 'isovm/iso-version names no base image'"
+check "unrecorded ISO version: image still tested"  "[[ \$IMG == shanios-20260922-gnome.zst ]]"
 
 run iso-broken "FAIL_ISO=1"
 check "iso-broken: exit non-zero"                "[[ $RC -ne 0 ]]"
