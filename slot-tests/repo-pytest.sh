@@ -139,7 +139,20 @@ for repo in shani-cassini shani-chronoa shani-backup; do
         # third of the reasons were still cut.
         if grep -qE '^(FAILED|ERROR) ' <<<"$out"; then
             echo "  | --- why (assertion output, capped) ---"
-            grep -E '^E +' <<<"$out" | head -60 | sed 's/^/  | /'
+            # Two shapes, because pytest has two traceback formats and this only
+            # ever matched one of them:
+            #   --tb=long/auto (the default)  -> "E   assert ..." lines
+            #   --tb=line                     -> "/path/to/test.py:12: AssertionError"
+            # The first version of this grepped only '^E ', so passing
+            # SHANIOS_TEST_PYTEST_ARGS="--tb=line" - the terse form anyone
+            # triaging a long list reaches for - produced a "why" section with
+            # nothing in it. Both are matched now, and the file:line form is
+            # deduplicated because --tb=line repeats it per failure.
+            {
+                grep -E '^E +' <<<"$out"
+                grep -oE '(/[^ ]+\.py:[0-9]+: [A-Za-z]*(Error|Exception)[^$]*)' <<<"$out" \
+                    | sed 's/^/E /' | awk '!seen[$0]++'
+            } | head -60 | sed 's/^/  | /'
         fi
     fi
 done
