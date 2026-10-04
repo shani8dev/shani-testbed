@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+# lib/vmspawn.sh bind-mounts cache/pacman_cache/pkg at /var/cache/pacman/pkg
+# and mkdir -p's it, so it starts empty and is then filled with package files
+# symlinked in from the sibling caches (this repo's own caches/ is 1.2M of
+# that). Local build input, never source.
+cache/
