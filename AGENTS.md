@@ -327,6 +327,51 @@ containers first.
   with a per-suite HOME and no shared runtime dir GTK had no display and the
   first widget segfaulted. A crashing suite is now reported with the test
   that was running.
+
+- **`repo-pytest` reported nothing useful about Arch for a week after that fix,
+  and it was the display (2026-10-04; fixed).** The 2026-10-01 entry above reads
+  like the display problem was closed. It was not - that entry fixed *where* the
+  socket is looked up, and nothing ever checked that a socket appeared. Two
+  things were still wrong:
+
+  1. **The display was hardcoded to `:5`.** A Broadway display `:N` also binds
+     TCP port `8080+N`, so a busy 8085 made `gtk4-broadwayd` log
+     `Unable to listen to port 8085: ... Address already in use` and **exit**,
+     leaving no socket. `GDK_BACKEND=broadway` then found no display,
+     `gtk_icon_theme_get_for_display` asserted on a NULL `GdkDisplay`, and the
+     first widget of every suite died with signal 11 - Cassini at its first
+     test, Chronoa after 266, Backup twice.
+
+     The only diagnostic was `command -v gtk4-broadwayd`, which reports
+     **nothing at all** for a daemon that is present but cannot listen. That is
+     the absence-shaped guard this repo keeps being bitten by, and it was the
+     entire bug: three suites dying at their first widget reads as "the GUI apps
+     are broken on Arch", not "there was no display". Five candidate displays
+     are now tried, the first with a live socket wins (`:9` here), every rejected
+     candidate's log is kept for the message, and if none comes up the test FAILs
+     naming the cause and exits non-zero **instead of running the suites into a
+     segfault**.
+
+  2. **Failing test ids were printed with no reasons.** It reported 25 failures
+     whose ids all read "a machine without <tool> says so" - tests about tools
+     the image *does* ship, so the ids pointed at the opposite of the cause, and
+     triaging needed 25 separate runs. The `E` assertion lines are printed now,
+     capped at 60 (it was 20, which is below one suite's own failure count, so a
+     third of the reasons were still being cut).
+
+  Measured, same slot, same command:
+
+  | | before | after |
+  |---|---|---|
+  | `broadway` | *(no line at all)* | `PASS (GDK_BACKEND=broadway BROADWAY_DISPLAY=:9)` |
+  | `pytest-shani-cassini` | `FAIL (crashed, signal 11; 0 passed before it)` | `FAIL (38 failed, 2548 passed, 20 skipped)` |
+
+  **The 38 were not failing before - they were not running.** That is the
+  general point: this slot-test is the only thing in the workspace that runs
+  these suites on the distribution the app ships on, and a display failure had
+  turned it into a segfault reporter. If it ever reports signal 11 again, check
+  the display before believing anything about the apps.
+
 - **Feature checks (`lib/web_features.py`) - pitfalls already paid for:**
   re-find an element by its `data-sf-pick` tag, never by a selector string
   (several share one); measure a theme at the top of the page (a reload

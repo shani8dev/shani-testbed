@@ -134,10 +134,12 @@ for repo in shani-cassini shani-chronoa shani-backup; do
         # The `E   ` lines are pytest's own assertion output, already filtered to
         # the failure sections; `--tb=line` (if the caller passed it) is even
         # terser. Capped, because a wholly broken suite can emit thousands and
-        # then the detail is as unreadable as the id list was.
+        # then the detail is as unreadable as the id list was - but the cap was
+        # 20, which is below one suite's worth of failures on its own, so a
+        # third of the reasons were still cut.
         if grep -qE '^(FAILED|ERROR) ' <<<"$out"; then
             echo "  | --- why (assertion output, capped) ---"
-            grep -E '^E +' <<<"$out" | head -20 | sed 's/^/  | /'
+            grep -E '^E +' <<<"$out" | head -60 | sed 's/^/  | /'
         fi
     fi
 done
