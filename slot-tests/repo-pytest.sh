@@ -58,13 +58,44 @@ res pytest-available "PASS (pytest $(python3 -c 'import pytest; print(pytest.__v
 # looked up under a different HOME, GTK had no display and the first widget
 # segfaulted (rc 139, 2026-10-01)
 export XDG_RUNTIME_DIR="$T/rt"; mkdir -p -m 700 "$XDG_RUNTIME_DIR"
-if command -v gtk4-broadwayd >/dev/null; then
-    gtk4-broadwayd :5 >/dev/null 2>&1 & BPID=$!
+
+# Start a Broadway display and **prove it came up**.
+#
+# Broadway display :N also binds TCP port 8080+N, and this used to be a hardcoded
+# `:5`. When 8085 was already taken, gtk4-broadwayd logged
+#   Unable to listen to port 8085: Error binding to address [::]:8085: Address already in use
+# and **exited** - leaving no socket. GDK_BACKEND=broadway then found no display,
+# `gtk_icon_theme_get_for_display` asserted on a NULL GdkDisplay, and the first
+# widget in every suite died with signal 11.
+#
+# What made that expensive to read is that the only diagnostic was
+# `command -v gtk4-broadwayd`: a daemon that is present but cannot listen
+# reported **nothing at all**, and three suites crashing at their first widget
+# looks like "the apps are broken on Arch" rather than "there was no display".
+# So the check is now on the socket, not the binary - the absence-shaped guard
+# was the bug.
+#
+# Candidates are tried in order and the first that produces a live socket wins.
+BWDIAG=""
+for n in 5 9 14 21 30; do
+    BPID=""
+    gtk4-broadwayd ":$n" >"$T/broadwayd.log" 2>&1 & BPID=$!
     sleep 1
-    export GDK_BACKEND=broadway BROADWAY_DISPLAY=:5
-else
-    res broadway "SKIP (no gtk4-broadwayd; GUI tests will fail for want of a display)"
+    sock="$XDG_RUNTIME_DIR/broadway$((n + 1)).socket"
+    if [ -S "$sock" ] && kill -0 "$BPID" 2>/dev/null; then
+        export GDK_BACKEND=broadway BROADWAY_DISPLAY=":$n"
+        break
+    fi
+    BWDIAG="$BWDIAG :$n=$(tr '\n' ' ' <"$T/broadwayd.log" 2>/dev/null | tail -c 120)"
+    kill "$BPID" 2>/dev/null; wait "$BPID" 2>/dev/null; BPID=""
+done
+if [ -z "${BROADWAY_DISPLAY:-}" ]; then
+    res broadway "FAIL (no display: gtk4-broadwayd could not listen on any candidate.$BWDIAG)"
+    echo "  | Every GTK suite below would die at its first widget with signal 11"
+    echo "  | and that is a MISSING DISPLAY, not an application fault."
+    exit 1
 fi
+res broadway "PASS (GDK_BACKEND=broadway BROADWAY_DISPLAY=$BROADWAY_DISPLAY)"
 export GSETTINGS_BACKEND=memory NO_AT_BRIDGE=1 PYTHONDONTWRITEBYTECODE=1
 
 # --- the suites -----------------------------------------------------------
@@ -92,5 +123,21 @@ for repo in shani-cassini shani-chronoa shani-backup; do
         res "pytest-$repo" "FAIL (${summary:-rc=$rc})"
         grep -E '^(FAILED|ERROR) ' <<<"$out" | head -25 | sed 's/^/  | /'
         [ -z "$(grep -E '^(FAILED|ERROR) ' <<<"$out")" ] && tail -15 <<<"$out" | sed 's/^/  | /'
+        # **Why** each one failed, not only which. Listing the ids is enough to
+        # see THAT something is wrong and not enough to do anything about it: on
+        # 2026-10-04 this suite reported 25 Arch-only failures whose ids all said
+        # "a machine without <tool> says so", and every one of those tests is
+        # about a tool the image actually ships - so the ids pointed at the
+        # opposite of the cause. Triaging that needed 25 separate runs, one test
+        # each, because this loop printed no reason at all.
+        #
+        # The `E   ` lines are pytest's own assertion output, already filtered to
+        # the failure sections; `--tb=line` (if the caller passed it) is even
+        # terser. Capped, because a wholly broken suite can emit thousands and
+        # then the detail is as unreadable as the id list was.
+        if grep -qE '^(FAILED|ERROR) ' <<<"$out"; then
+            echo "  | --- why (assertion output, capped) ---"
+            grep -E '^E +' <<<"$out" | head -20 | sed 's/^/  | /'
+        fi
     fi
 done
