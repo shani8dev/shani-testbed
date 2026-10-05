@@ -1055,7 +1055,14 @@ reflowing 460px behind the loader), an `img-src` CSP gap blocking AdSense's
 own pixel, 22 Cloudflare-obfuscated `[email protected]` strings baked into
 shani-wiki's code examples, and the wiki's desktop-width horizontal scroll.
 The self-test is `tests/run-web-client.sh` (a clean fixture site must pass
-every check; a broken one must fail each check it plants a fault for).
+every check; a broken one must fail each check it plants a fault for). Each
+feature check operates controls by role and by real input events, so the
+coordinates it clicks are measured, not assumed: a page that is still
+smooth-scrolling when a control is measured (`scroll-behavior: smooth`) moves
+the target out from under them, and the click lands on whatever took its
+place. `click()` therefore re-measures and waits for the scroll position to
+hold still first - the `smooth-scroll` fixture fails the check without that
+and passes with it.
 
 ## What an upgrade changes: `slot-diff`
 

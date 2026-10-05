@@ -10,6 +10,7 @@ F=/fixtures C=/lib-under-test/web_client.py
 # served the way GitHub Pages serves the real sites (lib/web_serve.py)
 python3 /lib-under-test/web_serve.py "$F/good" 8701 >/dev/null 2>&1 &
 python3 /lib-under-test/web_serve.py "$F/bad"  8702 >/dev/null 2>&1 &
+python3 /lib-under-test/web_serve.py "$F/smooth-scroll" 8703 >/dev/null 2>&1 &
 sleep 1
 
 good=$(python3 "$C" --url=http://127.0.0.1:8701/ --expect='#app' --offline --crawl=5 \
@@ -116,3 +117,17 @@ for c in "search desktop" "theme desktop" "breadcrumbs desktop" "focus-visible d
     # phone - innerWidth grows with it, so only clientWidth catches it
     grep -qE "^RESULT $c +FAIL" <<<"$bf" && res "bad feature caught: $c" PASS || res "bad feature caught: $c" "FAIL ($(grep -E "^RESULT $c " <<<"$bf" | cut -c42-160))"
 done
+
+# --- a click must not be dispatched at stale coordinates ------------------------
+# A page with scroll-behavior: smooth is still animating when a check measures a
+# control, so the box it measured is stale by the time the click lands and the
+# click hits whatever moved into its place: shani-website's install-guide button
+# was boxed at scrollY=189, the click itself advanced the scroll to 453, and the
+# click arrived at <section class="hero-section"> with aria-expanded still false.
+# click() now re-measures and waits for the scroll to hold still first, so this
+# fixture's disclosure must expand. Run against the previous click() it FAILs -
+# which is what makes this an assertion about the fix and not a green line.
+sf=$(python3 "$C" --url=http://127.0.0.1:8703/ --devices=mobile --schemes=light --shots= 2>&1)
+echo "$sf" | grep -E '^RESULT' | sed 's/^/  smooth| /'
+grep -qE '^RESULT disclosure mobile +PASS' <<<"$sf" && res smooth-scroll-click-lands PASS \
+  || res smooth-scroll-click-lands "FAIL ($(grep -E '^RESULT disclosure mobile ' <<<"$sf" | cut -c42-160))"

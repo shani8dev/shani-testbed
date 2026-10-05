@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Fixture whose disclosure sits behind a smooth scroll.">
+<title>Smooth-scroll fixture</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--link:#0040a8;color-scheme:light}
+body{margin:0;font-family:sans-serif;background:var(--bg);color:var(--fg)}
+a{color:var(--link);display:inline-block;min-width:44px;min-height:44px;padding:8px;box-sizing:border-box}
+button{min-width:44px;min-height:44px;padding:8px;box-sizing:border-box;color:var(--fg);background:var(--bg);border:1px solid var(--fg)}
+a:focus-visible,button:focus-visible{outline:3px solid #0055cc;outline-offset:2px}
+/* The page is long on purpose: the Escape scroll has to outlast the checks
+   between it and the click. shani-website's is a ~35,000px page. */
+/* The whole page scrolls smoothly. shani-website's stylesheet sets this
+   globally, and it is what makes a coordinate measured a moment ago go
+   stale before the click lands. */
+html{scroll-behavior:smooth}
+header{position:sticky;top:0;background:var(--bg);height:56px;border-bottom:1px solid #888;display:flex;gap:8px;align-items:center;padding:0 8px}
+.spacer{height:12000px}
+#panel[hidden]{display:none}
+</style>
+</head>
+<body>
+<header><button id="menu-toggle" type="button" aria-expanded="false" aria-controls="nav" aria-label="Open menu">Menu</button></header>
+<nav id="nav" aria-label="Main" style="display:none"><a href="/#install">Install</a><a href="/#usage">Usage</a><a href="/#more">More details</a></nav>
+<main>
+  <h1>Smooth scroll fixture</h1>
+  <p>Filler above the disclosure.</p>
+  <div class="spacer" aria-hidden="true"></div>
+  <button id="more" type="button" aria-expanded="false" aria-controls="panel">More details</button>
+  <div id="panel" hidden><p>Details revealed by the disclosure.</p></div>
+  <div class="spacer" aria-hidden="true"></div>
+</main>
+<script>
+// Opening the menu scrolls the page the way an in-page link does. The menu
+// check runs before the disclosure check on a touch device and clicks this, so
+// the disclosure check inherits a page that is still smooth-scrolling at the
+// moment it measures the button - the state shani-website was in.
+document.getElementById('menu-toggle').addEventListener('click', () => {
+  const t = document.getElementById('menu-toggle');
+  const open = t.getAttribute('aria-expanded') !== 'true';
+  t.setAttribute('aria-expanded', String(open));
+  document.getElementById('nav').style.display = open ? 'flex' : 'none';
+});
+// Escape is the LAST thing the menu check does before the disclosure check, so
+// starting a long smooth scroll here leaves the page still animating when the
+// disclosure check measures its button - which is the state shani-website was
+// in when its install-guide button was boxed at scrollY=189, the click itself
+// advanced the scroll to 453, and the click arrived at <section class=
+// "hero-section"> instead of the button.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  document.getElementById('menu-toggle').setAttribute('aria-expanded', 'false');
+  document.getElementById('nav').style.display = 'none';
+  window.scrollTo({ top: 12000, behavior: 'smooth' });
+});
+document.getElementById('more').addEventListener('click', () => {
+  const p = document.getElementById('panel');
+  const open = p.hidden;
+  p.hidden = !open;
+  document.getElementById('more').setAttribute('aria-expanded', String(open));
+});
+</script>
+</body>
+</html>

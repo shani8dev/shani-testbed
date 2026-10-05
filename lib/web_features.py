@@ -174,6 +174,34 @@ class Features:
         return self.page.evaluate(expr, **kw)
 
     def click(self, b):
+        # A box measured a moment ago can be stale: between measuring and
+        # dispatching, the page may still be smooth-scrolling (style.css sets
+        # scroll-behavior: smooth globally on shani-website), and an in-flight
+        # scroll moves the target out from under the coordinates - the click
+        # then lands on whatever took its place. Confirmed on shani-website:
+        # the hero's install-guide button was boxed at scrollY=189, the click
+        # itself advanced the scroll to 453, and pointerdown/mousedown/click
+        # all arrived at SECTION.hero-section with aria-expanded still false.
+        # So: re-measure, and only click once the page has stopped moving.
+        if b.get("pick"):                  # no tag (a raw point): nothing to re-measure
+            self.js2(f"""(() => {{
+                const e = __sf.byPick({json.dumps(b['pick'])});
+                if (e) e.scrollIntoView({{block: 'center', inline: 'center', behavior: 'instant'}});
+            }})()""")
+            y0 = self.js("Math.round(window.scrollY + document.scrollingElement.scrollTop)")
+            for _ in range(24):            # wait for the scroll position to hold still
+                self.cdp.pump(0.25)
+                y1 = self.js("Math.round(window.scrollY + document.scrollingElement.scrollTop)")
+                if y1 == y0:
+                    break
+                y0 = y1
+            n = self.js2(f"""(() => {{
+                const e = __sf.byPick({json.dumps(b['pick'])});
+                if (!e) return null;
+                const r = e.getBoundingClientRect();
+                return {{x: r.left + r.width / 2, y: r.top + r.height / 2}}; }})()""")
+            if n:
+                b = dict(b, **n)
         for t in ("mouseMoved", "mousePressed", "mouseReleased"):
             self.cdp.send("Input.dispatchMouseEvent", {"type": t, "x": b["x"], "y": b["y"], "button": "left",
                                                        "buttons": 1 if t == "mousePressed" else 0, "clickCount": 1})

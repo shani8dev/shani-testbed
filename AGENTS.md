@@ -417,7 +417,37 @@ containers first.
   (clear storage, set the media feature, reload - a saved choice wins, and
   sites read the preference once at load); disable transitions when comparing
   a focused look with an unfocused one; parse `color(srgb ...)` channels as
-  0-1; clip text boxes to their clipping ancestors before calling it overlap.
+  0-1; clip text boxes to their clipping ancestors before calling it overlap;
+  **never dispatch a click at coordinates measured a moment ago** (fixed
+  2026-10-05 - see the next entry).
+- **A click was dispatched at stale coordinates, and it read as a site bug
+  (2026-10-05; fixed in `click()`).** `shani-website` reported
+  `disclosure mobile FAIL (button.btn.btn-secondary ... did not expand)` while
+  passing the identical check on desktop and tablet. It was not a site bug:
+  `assets/css/style.css:23` sets `scroll-behavior: smooth` globally, so the
+  page can still be animating when a check measures a control. The sequence,
+  captured in the page rather than inferred:
+  `box()` measured the hero's install-guide button at **scrollY=189**; the
+  click's own `mouseMoved` fired a **scroll** event that advanced the page to
+  **453**; `pointerdown`, `mousedown`, `mouseup` and `click` all arrived at
+  `SECTION.hero-section` - `atButton: false` - with `aria-expanded` still
+  `false`. The button was fine: a fresh box after the scroll settled expanded
+  and collapsed normally, and the same click with touch events instead of
+  mouse events failed identically, which is what ruled out the input type.
+  `click()` now re-measures through the `data-sf-pick` tag and waits for
+  `scrollY` to hold still before dispatching. `_disclosure` already had a
+  settle loop, but it ran **after** the click - the coordinates were stale by
+  then.
+  `tests/web-fixtures/smooth-scroll/` is the regression: it reproduces the
+  failure against the previous `click()` (`disclosure mobile FAIL`) and passes
+  with the fix, and `tests/web-client.sh` asserts both the pass and the shape
+  of the fault. **The first version of that fixture could not fail** - it only
+  scrolled from a button the disclosure check never clicked, and a fixture that
+  SKIPs the menu check never reaches the preceding scroll. It reproduces now
+  because the menu check's **Escape** - the last thing that check does - starts
+  a long smooth scroll on a 24,000px page, so the disclosure check inherits a
+  page mid-animation. Re-run the fixture against the old `click()` before
+  trusting the assertion; a control that cannot fail is not a control.
 - **Two harness runs on one disk corrupt shared state** - now refused:
   `disk/.testbed.lock` (flock) is taken by every disk-touching command.
 - **TCG guests stall under host load.** With Chrome/Docker work on the same
