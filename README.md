@@ -278,6 +278,20 @@ all check first; calibration safety 84%, sense recall 61%). Negative control: a
 temporary skill running an absent binary unguarded made it FAIL naming exactly
 that skill.
 
+`slot-tests/chronoa-matrix-skills.sh` runs the twenty skills built from that
+matrix's shortlist through Chronoa's real dispatch on the booted slot. It fails
+if a skill reports a binary as missing that the image ships, if `shani-deploy
+--status --json` is present but not read, if a real poppler merge does not come
+back VERIFIED, or if a gated "set" path does not refuse naming its key; its
+control hides `fc-list` and requires the reply to name the Arch package
+(`fontconfig`):
+
+```bash
+./run_in_container.sh build.sh test slot-test blue chronoa-matrix-skills --local-src-chronoa=/opt/shani-chronoa
+```
+
+Verified 2026-10-07 on `@blue` (`shanios-20261006-plasma`): 29 PASS, 0 FAIL.
+
 **Why `--local-pkg` is still needed today.** `shani-pkgbuilds`'s
 `shani-chronoa/PKGBUILD` did not declare `tesseract`, so no published image
 carries the binary — only `shani-install-media`'s profile pins
@@ -1086,6 +1100,48 @@ Besides the earlier ones, `slot-tests/` now has:
   own rule compilation, tmpfiles/sysusers dry runs, `firewall-offline-cmd
   --check-config` and `dconf compile` against the INSTALLED `/etc`, each with a
   deliberately broken negative control;
+- `sysctl-hardening` - the kernel values the shipped `sysctl.d` files ask for,
+  read back from `/proc/sys`, each compared against what those files actually
+  resolve to. `config-validators` proves every key *parses and exists*; this
+  proves it is *in effect*, which is the question that matters - a later file,
+  a service re-running `sysctl` after boot, or NetworkManager rewriting
+  per-interface values all produce a green repo check and an unhardened machine.
+  Its four negative controls deliberately expect wrong values for keys the
+  config really sets, and the run FAILS if any control does not fail, so a
+  comparison that stopped comparing cannot read as a pass. Verified 2026-10-07
+  against a privileged Arch container with real `systemd-sysctl` 262 applying
+  the real files: 30 pass / 0 fail, and both directions of regression were
+  proven detectable (a rogue drop-in re-setting `rp_filter=1` and a config
+  regressed to `use_tempaddr=0` each produced a FAIL naming the key).
+
+  Its comparisons are also proven **from this host**, which a slot-test usually
+  cannot be: `SYSCTL_TEST_PROC_SYS` / `SYSCTL_TEST_CONF_DIRS` point the real
+  script at fixtures (they default to the real paths, so a slot is unaffected),
+  and `tests/sysctl-hardening-results.sh` runs it against a fake `/proc/sys` and
+  a fake `sysctl.d`, requiring each check to go red when its value is wrong -
+  drift between kernel and config, a config regressed in step with the kernel, an
+  absent key reporting SKIP, and no config files at all. 19/19, and each of
+  three deliberately-broken copies of the script fails it. **It also asserts the
+  aggregator's own contract**, which is the bug that made the first version
+  worthless: see below.
+
+  **The first version of this slot-test could not have failed a run.** Its rows
+  read `RESULT <name> net.ipv4... = 0 (config agrees)` and
+  `RESULT <name> kernel has '0', config resolves to '2'` — **neither contains
+  the word `PASS` or `FAIL`**, and `lib/boot.sh` decides a slot-test's outcome
+  with `grep -c '^RESULT .* PASS'` / `FAIL`. On a machine with a real drift the
+  harness therefore counted **3 pass, 0 fail** and would have reported
+  `slot-test PASSED`. Measured after the fix on the same drift (a rogue later
+  file re-setting `rp_filter=1`): **38 PASS, 3 FAIL → slot-test FAILS**, which
+  is the whole point of the test. Found only by counting the rows the harness
+  would actually match, which is why `tests/sysctl-hardening-results.sh` now
+  asserts that count in both states rather than only the row text. `res()`
+  stays for SKIP and informational rows; `pass_()` / `fail()` put the verdict
+  word in the message, and a broken control is reported through `fail()` so the
+  mechanism cannot itself go unobserved.
+
+  What that does **not** prove is that real `systemd-sysctl` applies the real
+  files; that remains the slot run's job;
 - `service-start` - every opt-in service a user can turn on (Samba, NFS,
   libvirt, sshd, cups, avahi, caddy, fail2ban) must actually start; on failure
   the package-owned `/var` paths that are missing are printed. It found that

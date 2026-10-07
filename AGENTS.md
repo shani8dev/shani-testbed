@@ -74,6 +74,7 @@ python3 -m py_compile lib/*.py mcp/*.py
 tests/run-app-actions.sh        # real Xvfb + GTK4/libadwaita test of lib/app.sh + lib/a11y_client.py, in docker
 tests/run-web-client.sh         # real headless Chromium test of lib/web_client.py + web_serve.py, in docker
 tests/chronoa-singing-results.sh  # proves slot-tests/chronoa-singing.sh's style checks can go red (host, no docker)
+tests/sysctl-hardening-results.sh  # proves slot-tests/sysctl-hardening.sh's comparisons can go red (host, no docker)
 ```
 
 ## Extend the harness — don't write one-off test scripts

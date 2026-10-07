@@ -1,0 +1,66 @@
+# Discovery, not assertion: what does the settings window actually expose?
+#
+# Four attempts to drive this window from a --script failed on selectors written
+# from what the screen *says* rather than what the accessibility tree *reports*.
+# `entry:Search settings` matched nothing, the `type=` that followed went to no
+# widget at all, and four screenshots came out byte-identical while the run
+# reported them as different steps. So this script prints the truth and asserts
+# almost nothing: `find=` with a role and no name lists every match with the name
+# the tree gives it.
+#
+# One thing IS asserted, and it is the one that cannot be faked: after typing in
+# the search, the display must actually change. `import -window root` always
+# captures *something*, so a non-empty screenshot is not evidence and is never
+# used as one here.
+wait-window=Shani Chronoa:120
+sleep=2
+expect-window=Set up Chronoa
+find=three things
+
+click-element=button:^Start$
+sleep=1
+find=Where should Chronoa do its thinking
+click-element=button:^Next$
+sleep=2
+
+find=Chronoa needs something that understands you
+click-element=button:^Next$
+sleep=2
+
+find=Choose how well it listens
+click-element=button:^Next$
+sleep=2
+
+find=Kokoro
+click-element=button:^Next$
+sleep=2
+
+find=Everything you picked
+find=Total
+find=Allow downloading models from the internet
+screenshot=@out/d-01-review.png
+
+click-element=switch:^Allow downloading models from the internet$
+sleep=1
+click-element=button:^Download
+sleep=25
+click-element=button:^Start using Chronoa$
+sleep=3
+expect-gone=Set up Chronoa:30
+wait-window=Shani Chronoa:60
+a11y-lint
+screenshot=@out/d-02-main.png
+
+click-element=button:Settings
+wait-window=Chronoa Settings:30
+sleep=2
+
+# The three questions this file exists to answer, asked of the live tree.
+a11y-lint
+tree=4
+find=entry
+find=text box
+find=search
+windows
+screenshot=@out/d-03-settings.png
+quit

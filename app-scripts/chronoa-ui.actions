@@ -1,0 +1,191 @@
+# shani-chronoa's first run and its own window, done as a user does, in a booted
+# slot - and this time it *installs* rather than skipping, because everything
+# after the wizard is only interesting once there is something to run.
+#
+#   SHANIOS_TEST_EXTRA_BINDS=/home/builduser/build/test-env/cache/llm-models:/mnt/llm-models \
+#   app blue --run="shani-chronoa" --local-src-chronoa=/opt/shani-chronoa \
+#       --repo-pkg=llama-cpp,ggml-vulkan \
+#       --script=/opt/shani-testbed/app-scripts/chronoa-ui.actions \
+#       --out-dir=.../eval-out/chronoa-ui --timeout=3600
+#
+# Installed through the wizard's own step functions (the ones its buttons call):
+# the language model, the speech-recognition model, and **Kokoro** for the voice
+# - 639 MB, 32 MB and 131 MB, of which the 639 MB is seeded from the testbed
+# cache and re-hashed so the digest check still runs.
+#
+# Three things this file gets right that an earlier version of it did not, each
+# learned by watching the run go wrong:
+#
+#   * **The wizard is six pages, not four** - welcome, brain, ears, voice,
+#     optional extras, done. Three "Skip for now" clicks land on the *extras*
+#     page, so a script that then looks for the finish button never finds it,
+#     the wizard stays up for the rest of the run, and every later screenshot
+#     is of the wizard. Nothing fails loudly: the run reports most of its own
+#     steps green while measuring the wrong window. The page order is asserted
+#     here for that reason.
+#   * **`quit` at the end, always.** Without it the harness waits for the app to
+#     exit on its own, a GTK4 app never does, and the run holds the slot lock
+#     until someone kills the container.
+#   * **Every extras section is visited on its own.** Eyes, Imagine, Memory,
+#     Languages and Photos are five different things a person might want, with
+#     five different states and five different reasons to be missing. One
+#     screenshot of the page they all share proves none of them, and a tour that
+#     lumps them together hides exactly the failure it should catch.
+#
+# Assertions are through the accessibility tree and pixel comparisons, never
+# "a file exists" and never OCR:
+#   * `a11y-lint` on every window - any control a screen reader would announce as
+#     just "button" fails. That is the floor of good UX and screenshots cannot
+#     see it.
+#   * `expect-changed` between consecutive screenshots - a non-empty PNG proves
+#     nothing (`import -window root` always captures something), so the evidence
+#     is that the page *changed*.
+#   * `expect-clean-log` - a window that looks right and emits GTK warnings is
+#     not finished.
+
+wait-window=Shani Chronoa:120
+sleep=2
+expect-window=Set up Chronoa
+a11y-lint
+screenshot=@out/ui-00-welcome.png
+find=three things
+
+# --- 1. welcome -> where should Chronoa think? -------------------------
+# The wizard now asks *where* before *what*, because the two answers have
+# different consequences: one downloads a gigabyte, the other sends every
+# question to somebody else's computer. Asking "which 1.1 GB model?" to someone
+# who intends to use Claude was asking them to pay for an answer they had not
+# been asked.
+click-element=button:^Start$
+wait-element=Where should Chronoa do its thinking:30
+screenshot=@out/ui-01-mode.png
+a11y-lint
+click-element=button:^Next: Brain$
+wait-element=Chronoa needs something that understands you:30
+
+# --- 2. the brain: a status page first, the model chooser one click away --
+# With a cloud key already answering, the honest first page says so; the 1.1 GB
+# list is then opt-in rather than the first thing asked for.
+find=Chronoa needs something that understands you
+screenshot=@out/ui-02-brain.png
+a11y-lint
+click-element=button:^Use a model on this computer$
+wait-element=Choose a model:30
+screenshot=@out/ui-02b-model-picker.png
+a11y-lint
+click-element=button:^Next: Ears$
+wait-element=Choose how well it listens:30
+
+# --- 3. the ears --------------------------------------------------------
+find=Choose how well it listens
+screenshot=@out/ui-03-ears.png
+a11y-lint
+click-element=button:^Next: Voice$
+wait-element=Kokoro:30
+
+# --- 4. the voice: Piper and Kokoro on one page, with their models ------
+# They are both ways to speak, so they belong under one heading with the model
+# choice beneath - not as two lists a person has to decode.
+find=Kokoro
+screenshot=@out/ui-04-voice.png
+a11y-lint
+# Kokoro is what this tour installs, so it has to be the one selected. The
+# check button's accessible name is not the row title, so the row is matched
+# instead - a selector written from what the screen *says* rather than what the
+# accessibility tree reports is how the earlier four steps silently did nothing.
+click-element=^Sarah - warm, American$
+wait-element=Sarah:15
+click-element=button:^Next: Review$
+wait-element=Everything you picked:30
+
+# --- 5. the review: one list, one total, one consent switch, one download
+# Everything above recorded a choice instead of fetching it, so this is the
+# first and only page where bytes move - and the only place the size of the
+# whole decision is on screen before it happens.
+find=Everything you picked
+screenshot=@out/ui-05-review.png
+a11y-lint
+find=Total
+find=Allow downloading models from the internet
+
+# The download button must be insensitive until the consent switch is on: a gate
+# that opens when you push it is not a gate.
+find=button:^Download
+click-element=switch:^Allow downloading models from the internet$
+wait-element=^Download:15
+screenshot=@out/ui-06-review-consented.png
+click-element=button:^Download
+# Wait for the page to *say* it finished, rather than for a fixed time: the
+# downloads here are 0.6-1.1 GB and a fixed sleep is either wasted or too short.
+# Being too short is exactly what made two screenshots of different pages
+# byte-identical (73995 bytes each) while the run reported the step as done.
+wait-element=Finished:1500
+screenshot=@out/ui-07-downloaded.png
+click-element=button:^Start using Chronoa$
+expect-gone=Set up Chronoa:60
+
+# --- 7. and now the app, with a brain ------------------------------------
+wait-window=Shani Chronoa:60
+a11y-lint
+tree=4
+screenshot=@out/ui-10-main.png
+
+# --- 7. settings: every section reached by name -------------------------
+#
+# Each one is now waited on rather than slept on, because a fixed sleep after
+# a click cannot tell "it worked" from "it has not drawn yet" - and when it
+# guessed short, four screenshots of four different sections came out
+# byte-identical while every step reported green.
+click-element=button:Settings
+wait-window=Chronoa Settings:30
+wait-element=Search settings:20
+a11y-lint
+tree=3
+screenshot=@out/ui-11-settings.png
+
+# Privacy first: it is also the only section whose title is a single word,
+click-element=search box:Search settings
+type=privacy
+wait-element=privacy:20
+screenshot=@out/ui-12-privacy.png
+expect-changed=@out/ui-11-settings.png
+click-element=search box:Search settings
+type=senses
+wait-element=senses:20
+screenshot=@out/ui-13-senses.png
+expect-changed=@out/ui-12-privacy.png
+click-element=search box:Search settings
+type=approvals
+wait-element=approvals:20
+screenshot=@out/ui-14-approvals.png
+expect-changed=@out/ui-13-senses.png
+click-element=search box:Search settings
+type=tool-activity
+wait-element=tool-activity:20
+screenshot=@out/ui-15-tool-activity.png
+expect-changed=@out/ui-14-approvals.png
+click-element=search box:Search settings
+type=voice
+wait-element=voice:20
+screenshot=@out/ui-16-voice.png
+expect-changed=@out/ui-15-tool-activity.png
+click-element=search box:Search settings
+type=models
+wait-element=models:20
+screenshot=@out/ui-17-models.png
+expect-changed=@out/ui-16-voice.png
+click-element=search box:Search settings
+type=system
+wait-element=system:20
+screenshot=@out/ui-18-system.png
+expect-changed=@out/ui-17-models.png
+key=ctrl+a
+key=Escape
+
+# --- 10. behaviour, not just appearance ----------------------------------
+# Twelve random clicks on whatever the tree says is clickable: a window that
+# falls over when a user presses something is not shippable, and no screenshot
+# would ever show it.
+monkey=12:20261004
+expect-clean-log
+quit

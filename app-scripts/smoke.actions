@@ -1,0 +1,5 @@
+wait-window=Shani Cassini:70
+sleep=4
+a11y-lint
+screenshot=@out/smoke.png
+quit
