@@ -525,6 +525,48 @@ _export_osi_encryption() {
   fi
 }
 
+# install --label-clash=foreign|target: install.sh's check_label_clash, for
+# real. ShaniOS finds root and the ESP by label, so a second disk that already
+# carries shani_root/shani_boot (an old install on the internal disk while
+# installing to a USB SSD) makes every by-label lookup ambiguous.
+#   foreign: a decoy loop disk labelled shani_root is attached. install.sh must
+#            refuse, name the decoy, and not have formatted the target.
+#   target:  the target itself carries stale labels (reinstalling over an old
+#            ShaniOS - the common case). install.sh must NOT refuse; the run
+#            continues as a normal install. This is foreign's negative control:
+#            the same labels, on the disk being overwritten.
+_label_clash_foreign() {
+  local target="$1" img="${DATA_DIR}/decoy.img" decoy out rc=0 bad=0
+  rm -f "$img"
+  truncate -s 256M "$img"
+  decoy=$(losetup --find --show "$img") || die "Failed to attach the decoy disk"
+  mkfs.btrfs -q -f -L shani_root "$decoy" >/dev/null
+  log "Decoy disk ${decoy} carries LABEL=shani_root (another disk's ShaniOS) - install.sh must refuse"
+  out=$(bash "${OSI_ROOT}/scripts/install.sh" 2>&1) || rc=$?
+  printf '%s\n' "$out" | sed 's/^/  | /'
+  losetup -d "$decoy"
+  rm -f "$img"
+  if (( rc != 0 )); then log "RESULT label-clash-refused              PASS (exit ${rc})"
+  else log "RESULT label-clash-refused              FAIL (install.sh exited 0)"; bad=1; fi
+  if grep -q "Another disk already has a ShaniOS label: ${decoy} (LABEL=shani_root)" <<<"$out"; then
+    log "RESULT label-clash-names-device         PASS (${decoy})"
+  else log "RESULT label-clash-names-device         FAIL (no clash message naming ${decoy})"; bad=1; fi
+  if [[ -z "$(blkid -p -o value -s TYPE "${target}p2" 2>/dev/null)" ]]; then
+    log "RESULT label-clash-target-untouched     PASS (${target}p2 has no filesystem)"
+  else log "RESULT label-clash-target-untouched     FAIL (${target}p2 was formatted before the refusal)"; bad=1; fi
+  (( bad == 0 )) || die "install --label-clash=foreign: install.sh did not refuse correctly"
+  log "install --label-clash=foreign PASSED (target left unformatted; nothing to configure)"
+}
+
+_label_clash_target() {
+  local target="$1" layout="$2"
+  sfdisk -q --force "$target" < "$layout" >/dev/null
+  partx -u "$target" 2>/dev/null || true
+  mkfs.fat -F32 -n shani_boot "${target}p1" >/dev/null
+  mkfs.btrfs -q -f -L shani_root "${target}p2" >/dev/null
+  log "Target ${target} carries stale shani_boot/shani_root labels (reinstall over an old ShaniOS) - install.sh must proceed"
+}
+
 cmd_install() {
   check_dependencies_install
 
@@ -538,6 +580,9 @@ cmd_install() {
   _take_encrypted "$@"
   set -- "${REST_ARGS[@]}"
   local encrypted="$ENCRYPTED"
+  _take_label_clash "$@"
+  set -- "${REST_ARGS[@]}"
+  local label_clash="$LABEL_CLASH"
 
   local profile="" date_sel="latest" opt OPTARG OPTIND=1
   while getopts "p:d:" opt "$@"; do
@@ -547,7 +592,7 @@ cmd_install() {
       *) ;;
     esac
   done
-  [[ -n "$profile" ]] || die "Usage: $(basename "$0") install -p <profile> [-d latest|stable|<date>] [--encrypted] [--from-r2|--from-iso=<iso-latest|iso-stable|date|file>]"
+  [[ -n "$profile" ]] || die "Usage: $(basename "$0") install -p <profile> [-d latest|stable|<date>] [--encrypted] [--label-clash=foreign|target] [--from-r2|--from-iso=<iso-latest|iso-stable|date|file>]"
 
   (( from_r2 )) && _fetch_published "$profile" "$date_sel"
   _reset_slot_overlays
@@ -633,6 +678,12 @@ cmd_install() {
   if (( encrypted )); then
     log "Encryption requested — LUKS passphrase for this disk: '${test_pin}' (override with SHANIOS_TEST_LUKS_PIN)"
   fi
+
+  if [[ "$label_clash" == foreign ]]; then
+    _label_clash_foreign "$disk_loop"
+    return
+  fi
+  [[ "$label_clash" == target ]] && _label_clash_target "$disk_loop" "$sfdisk_layout"
 
   log "Running the REAL install.sh from ${OSI_ROOT} against ${disk_loop} (profile=${profile}, image=$(basename "$image"), encrypted=${encrypted})"
   bash "${OSI_ROOT}/scripts/install.sh"

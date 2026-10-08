@@ -77,7 +77,7 @@ directly by the dispatcher at the bottom:
 | `serve [port] [docroot] [cert-host]` | `test.sh`'s `cmd_serve` | Serves a docroot (default `OUTPUT_DIR`) as-is over real HTTPS as a stand-in for a CA'd hostname (default `downloads.shani.dev`) — see "The local mirror" below for standing up a second instance for a second hostname |
 | `enter <blue\|green> [--boot] [--local-src=<dir>]` | `test.sh`'s `cmd_enter` | Enters a slot via `systemd-nspawn`, looking exactly like a booted ShaniOS system to the deploy and system tools. `--local-src=/opt/shani-deploy/scripts` overlays the sibling `shani-deploy` checkout's CURRENT scripts (and its `systemd/{system,user}/` units) over the package-installed ones — see "Testing edited scripts" below |
 | `verify-boot [blue\|green] [seconds] [--local-src=<dir>]` | `test.sh`'s `cmd_verifyboot` | Headless boot smoke test: full `systemd --boot`, console captured to `disk/boot-<slot>-console.log`, then reports whether the target/failed units look healthy. No display or TTY needed — CI-friendly. `--local-src` works exactly as it does for `enter` — **use it whenever verifying a unit-file change**, since a bootstrapped image's baked-in units can be stale relative to the repo's current working tree otherwise |
-| `install -p <profile> [-d latest\|stable\|<date>] [--encrypted]` | `test.sh`'s `cmd_install` | Runs the REAL, unmodified `os-installer-config/scripts/install.sh` against a fresh whole-disk loop image (partitioning, optional LUKS, Btrfs subvolumes, image extraction) — see "install / configure" below. Writes `disk/install.img` (default 24G, override with `INSTALL_DISK_SIZE`): the only layout `install.sh` can produce (it partitions a whole disk itself) and the only one that's actually bootable via OVMF, since `qemu`/`gui` prefer it |
+| `install -p <profile> [-d latest\|stable\|<date>] [--encrypted] [--label-clash=foreign\|target]` | `test.sh`'s `cmd_install` | Runs the REAL, unmodified `os-installer-config/scripts/install.sh` against a fresh whole-disk loop image (partitioning, optional LUKS, Btrfs subvolumes, image extraction) — see "install / configure" below. Writes `disk/install.img` (default 24G, override with `INSTALL_DISK_SIZE`): the only layout `install.sh` can produce (it partitions a whole disk itself) and the only one that's actually bootable via OVMF, since `qemu`/`gui` prefer it |
 | `configure -p <profile> [--encrypted]` | `test.sh`'s `cmd_configure` | Runs the REAL, unmodified `os-installer-config/scripts/configure.sh` (locale/hostname/user/Secure Boot/UKI) against `install`'s result — see "install / configure" below. Populates `disk/install.img`'s ESP with the signed UKI and boot entries (`gen-efi.sh`/`finalize_boot_entries`) — what makes `install.img` bootable for `qemu`/`gui` |
 | `upgrade [--local-src=<dir>] [extra shani-deploy args]` | `test.sh`'s `cmd_upgrade` | Calls `shani-deploy` **directly** (`--force --channel latest --skip-self-update`) — a real, complete deploy: download, SHA256+GPG verify, extract, `gen-efi` UKI generation/signing, boot-entry write. |
 | `update-check [--local-src=<dir>]` | `test.sh`'s `cmd_updatecheck` | Compatibility smoke check for the replacement update path: runs the read-only `shani-deploy --status --check --json` contract consumed by Shani Cassini and its update agent. It does not install, switch slots, run the notification agent, or change state; use `upgrade` or `rollback` for those operations |
@@ -1107,6 +1107,13 @@ Besides the earlier ones, `slot-tests/` now has:
 - `unit-verify` - `systemd-analyze verify` over every unit ShaniOS ships
   (shani-* packages and image overlays), unstubbed, plus every load-time
   complaint PID 1 logged this boot;
+- `initramfs-drivers` - every `shanios-*.efi` on the ESP carries the drivers a
+  root disk can need (uas, usb_storage, thunderbolt, SD/eMMC, NVMe/VMD,
+  ata_piix, Hyper-V, dm_crypt, an I2C keyboard), read from the UKI itself with
+  `lsinitrd`. A driver built into the kernel passes. A hostonly initramfs left
+  uas/usb_storage out of a USB-SSD install and it hung in the initqueue; the VMs
+  boot from built-in virtio_blk, so no boot test could have seen it. Negative
+  control: the same listing with uas removed must be flagged;
 - `config-validators` - visudo, udevadm verify, testparm, `sshd -t`, polkitd's
   own rule compilation, tmpfiles/sysusers dry runs, `firewall-offline-cmd
   --check-config` and `dconf compile` against the INSTALLED `/etc`, each with a

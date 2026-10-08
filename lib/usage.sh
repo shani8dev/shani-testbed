@@ -125,10 +125,15 @@ slot-test   <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=
                 it first:
                   bootstrap -p <profile> -d latest --from-r2
                 and then run this command against that slot, which needs no flag.
-  install     -p <profile> [-d latest|stable|<date>] [--encrypted]   Runs the
+  install     -p <profile> [-d latest|stable|<date>] [--encrypted]
+              [--label-clash=foreign|target]   Runs the
               REAL os-installer-config install.sh (partitioning, LUKS,
               subvolumes, image extraction) against a fresh whole-disk image
               — see "install / configure" in README.md.
+              --label-clash=foreign attaches a decoy disk labelled shani_root:
+              install.sh must refuse, name it, and leave the target unformatted.
+              --label-clash=target puts stale shani_* labels on the target
+              itself (reinstall over an old ShaniOS): install.sh must proceed.
   configure   -p <profile> [--encrypted]   Runs the REAL os-installer-config
               configure.sh (locale/hostname/user/Secure Boot/UKI) against
               install's result. Must follow install (same --encrypted).

@@ -157,6 +157,20 @@ _take_from_iso() {
   done
 }
 
+# --label-clash=foreign|target (install only) - see _label_clash_setup
+_take_label_clash() {
+  LABEL_CLASH=""
+  REST_ARGS=()
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --label-clash=foreign|--label-clash=target) LABEL_CLASH="${a#--label-clash=}" ;;
+      --label-clash=*) die "--label-clash takes foreign or target, not '${a#--label-clash=}'" ;;
+      *) REST_ARGS+=("$a") ;;
+    esac
+  done
+}
+
 _take_encrypted() {
   ENCRYPTED=0
   REST_ARGS=()
