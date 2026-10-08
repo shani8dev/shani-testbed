@@ -119,7 +119,7 @@ ok, why = presence.apply(presence.Presence.DROWSY, is_up=local_llm.is_up,
 print(ok, why)' 300)
 else
     released=$(py "from shani_chronoa import local_llm
-# The same lever, minus systemd: what `stop_service()` asks the unit to do.
+# The same lever, minus systemd: what stop_service() asks the unit to do.
 print(('True released', '')[0])" 30)
     kill "$SERVER" 2>/dev/null; SERVER=""
     sleep 2

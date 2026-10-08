@@ -11,7 +11,10 @@ die()  { echo "[die] $*" >&2; exit 2; }
 source "$LIB_DIR/app.sh"
 res() { printf 'RESULT %-34s %s\n' "$1" "$2"; }
 
-pacman -Sy --noconfirm --needed "${APP_TOOLS_PKGS[@]}" gtk4 libadwaita ttf-dejavu tesseract tesseract-data-eng >/dev/null 2>&1 || { echo "pkg install failed"; exit 1; }
+# -Syu, not -Sy: archlinux:latest already has glib2, and --needed kept that
+# older copy while installing the newest gtk4 - libgtk-4.so.1 then failed to
+# load (undefined symbol g_timeout_source_new_ns) and 17 of 30 checks went red.
+pacman -Syu --noconfirm --needed "${APP_TOOLS_PKGS[@]}" gtk4 libadwaita ttf-dejavu tesseract tesseract-data-eng >/dev/null 2>&1 || { echo "pkg install failed"; exit 1; }
 APP_OUT=$(mktemp -d); APP_SIZE=1024x768
 _app_start_display virtual "$APP_SIZE"; export DISPLAY="$APP_DISPLAY"
 echo "display: $APP_DISPLAY"

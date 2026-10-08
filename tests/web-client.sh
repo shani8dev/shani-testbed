@@ -5,7 +5,7 @@
 # fail is not a check.
 set -u
 res() { printf 'RESULT %-40s %s\n' "$1" "$2"; }
-pacman -Sy --noconfirm --needed chromium python >/dev/null 2>&1 || { res install "FAIL"; exit 1; }
+pacman -Syu --noconfirm --needed chromium python >/dev/null 2>&1 || { res install "FAIL"; exit 1; }
 F=/fixtures C=/lib-under-test/web_client.py
 # served the way GitHub Pages serves the real sites (lib/web_serve.py)
 python3 /lib-under-test/web_serve.py "$F/good" 8701 >/dev/null 2>&1 &

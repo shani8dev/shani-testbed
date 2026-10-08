@@ -4,7 +4,7 @@
 # archlinux:latest with the chronoa package at /chronoa (read-only).
 set -u
 res() { printf 'RESULT %-36s %s\n' "$1" "$2"; }
-pacman -Sy --noconfirm --needed xorg-server-xvfb python-gobject at-spi2-core gtk4 gtk3 ttf-dejavu dbus python-httpx >/dev/null 2>&1 \
+pacman -Syu --noconfirm --needed xorg-server-xvfb python-gobject at-spi2-core gtk4 gtk3 ttf-dejavu dbus python-httpx >/dev/null 2>&1 \
     || { echo "pkg install failed"; exit 1; }
 export XDG_RUNTIME_DIR=/run/ui-test HOME=/tmp/home; mkdir -p -m 700 "$XDG_RUNTIME_DIR" "$HOME"
 Xvfb :9 -screen 0 1024x768x24 >/dev/null 2>&1 & sleep 1; export DISPLAY=:9
