@@ -4,6 +4,7 @@
 #   iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso>
 #               [--encrypted] [--live-timeout=S] [--install-timeout=S]
 #               [--boot-timeout=S] [--boot-only [--reset-firmware]] [--disk-size=BYTES]
+#               [--disk-bus=virtio|usb|uas|ehci] [--boot-disk-bus=BUS]
 #
 # --boot-only: skip 1-2 and boot the disk the last iso-install installed,
 # with its NVRAM and TPM state (debugging the firmware boot without a
@@ -70,6 +71,26 @@ for cmd in ("qmp_capabilities", sys.argv[2]):
 PY
 }
 
+# The target disk's qemu devices for a bus (--disk-bus / --boot-disk-bus).
+# virtio is the default. The USB ones model an external SSD (user report
+# 2026-10-08: an unencrypted plasma install to a USB SSD hung in the dracut
+# initqueue): usb = usb-storage (BOT) on xHCI, uas = USB Attached SCSI on
+# xHCI (most SSD enclosures), ehci = usb-storage on a USB 2 EHCI controller.
+# Every bus keeps serial=shanitarget, which the live runner looks the disk up
+# by. Installing on one bus and booting on another is a different port or
+# controller on the same machine - the case a hostonly initramfs can miss.
+_isovm_disk_args() {  # <bus> -> ISOVM_DISK_ARGS
+  local tgt=(-drive "file=${INSTALL_IMG},if=none,id=target,format=raw")
+  case "$1" in
+    virtio) ISOVM_DISK_ARGS=("${tgt[@]}" -device "virtio-blk-pci,drive=target,serial=shanitarget,bootindex=2") ;;
+    usb)    ISOVM_DISK_ARGS=("${tgt[@]}" -device qemu-xhci,id=tgtxhci -device "usb-storage,bus=tgtxhci.0,drive=target,serial=shanitarget,removable=off,bootindex=2") ;;
+    uas)    ISOVM_DISK_ARGS=("${tgt[@]}" -device qemu-xhci,id=tgtxhci -device usb-uas,id=tgtuas,bus=tgtxhci.0,serial=shanitarget
+                             -device "scsi-hd,bus=tgtuas.0,scsi-id=0,lun=0,drive=target,serial=shanitarget,bootindex=2") ;;
+    ehci)   ISOVM_DISK_ARGS=("${tgt[@]}" -device usb-ehci,id=tgtehci -device "usb-storage,bus=tgtehci.0,drive=target,serial=shanitarget,removable=off,bootindex=2") ;;
+    *) die "iso-install: unknown disk bus '$1' (virtio|usb|uas|ehci)" ;;
+  esac
+}
+
 # <label> <console-log> <boot-from: iso|disk> — starts swtpm + qemu in the
 # background; sets ISOVM_PID / ISOVM_TPM_PID.
 _isovm_start() {
@@ -96,6 +117,8 @@ _isovm_start() {
   [[ -S "${ISOVM}/swtpm.sock" ]] \
     || die "iso-install: swtpm did not start: $(tail -3 "${ISOVM}/swtpm.log" 2>/dev/null | tr '\n' ' ')"
   local -a accel=(-accel tcg) media=() dbg=()
+  if [[ "$from" == iso ]]; then _isovm_disk_args "${ISOVM_DISK_BUS:-virtio}"
+  else _isovm_disk_args "${ISOVM_BOOT_DISK_BUS:-${ISOVM_DISK_BUS:-virtio}}"; fi
   [[ -w /dev/kvm ]] && accel=(-accel kvm -cpu host)
   if [[ "$from" == iso ]]; then
     media=(-drive "file=${ISO_FILE},if=none,id=cd,media=cdrom,readonly=on" -device ide-cd,drive=cd,bus=ide.0,bootindex=1)
@@ -125,7 +148,7 @@ _isovm_start() {
     -drive "if=pflash,format=raw,readonly=on,file=${ISOVM_CODE}" \
     -drive "if=pflash,format=raw,file=${ISOVM}/OVMF_VARS.fd" \
     -chardev "socket,id=chrtpm,path=${ISOVM}/swtpm.sock" -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0 \
-    -drive "file=${INSTALL_IMG},if=none,id=target,format=raw" -device "virtio-blk-pci,drive=target,serial=shanitarget,bootindex=2" \
+    "${ISOVM_DISK_ARGS[@]}" \
     "${media[@]}" \
     -chardev "socket,path=${ISOVM}/qga.sock,server=on,wait=off,id=qga0" \
     -device virtio-serial -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 \
@@ -177,7 +200,12 @@ _isovm_runner() {
   # Progress also goes to the serial console, so the host log shows it live.
   cat <<EOF
 set -u
-dev=\$(readlink -f /dev/disk/by-id/virtio-shanitarget) || { echo "no target disk" > /tmp/osi/fatal; exit 1; }
+# by serial, whatever the bus (virtio-shanitarget, usb-..._shanitarget-0:0, ...). For
+# USB, udev names the disk from the USB device's serial, so usb-uas carries it too.
+for _ in \$(seq 30); do
+  dev=\$(ls /dev/disk/by-id/ 2>/dev/null | grep shanitarget | grep -v -- '-part[0-9]' | head -1); [ -n "\$dev" ] && break; sleep 1
+done
+[ -n "\$dev" ] && dev=\$(readlink -f "/dev/disk/by-id/\$dev") || { echo "no target disk (by-id: \$(ls /dev/disk/by-id/ | tr '\\n' ' '))" > /tmp/osi/fatal; exit 1; }
 user=\$(getent group wheel | cut -d: -f4 | cut -d, -f1); user=\${user:-shani}
 cd /
 step() {  # <name> <env...>
@@ -340,7 +368,7 @@ _isovm_boot_installed() {  # <timeout> [expected slot]
 }
 
 cmd_iso_install() {
-  local usage="Usage: $(basename "$0") iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso> [--encrypted] [--live-timeout=S] [--install-timeout=S] [--boot-timeout=S] [--boot-only [--reset-firmware]] [--disk-size=BYTES] [--expect-slot=blue|green] [--console-exec=CMD] [--console-put=LOCAL:REMOTE] [--console-timeout=S] [--expect-tpm-unlock]"
+  local usage="Usage: $(basename "$0") iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso> [--encrypted] [--live-timeout=S] [--install-timeout=S] [--boot-timeout=S] [--boot-only [--reset-firmware]] [--disk-size=BYTES] [--disk-bus=virtio|usb|uas|ehci] [--boot-disk-bus=BUS] [--expect-slot=blue|green] [--console-exec=CMD] [--console-put=LOCAL:REMOTE] [--console-timeout=S] [--expect-tpm-unlock]"
   local profile="" sel="" encrypted=0 live_to=1800 inst_to=10800 boot_to=1800 boot_only=0 reset_fw=0 disk_size="" expect_slot=""
   while (( $# )); do
     case "$1" in
@@ -353,6 +381,8 @@ cmd_iso_install() {
       --boot-only) boot_only=1 ;;
       --reset-firmware) reset_fw=1 ;;
       --disk-size=*) disk_size="${1#*=}" ;;
+      --disk-bus=*) ISOVM_DISK_BUS="${1#*=}" ;;
+      --boot-disk-bus=*) ISOVM_BOOT_DISK_BUS="${1#*=}" ;;
       --expect-slot=*) expect_slot="${1#*=}" ;;
       --console-exec=*) ISOVM_CONSOLE_EXEC="${1#*=}" ;;
       --console-timeout=*) ISOVM_CONSOLE_TIMEOUT="${1#*=}" ;;

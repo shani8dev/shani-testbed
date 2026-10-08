@@ -450,7 +450,18 @@ Not covered: clicking the os-installer GUI pages (they only collect the
 iso-install's NVRAM and TPM when it is still that disk, or with fresh ones
 when `bootstrap`/`install` has re-created it since (a new inode) - so a
 bootstrap disk gets a real UEFI + TPM boot and `--console-exec` too.
-`--reset-firmware` forces fresh NVRAM and TPM. With `--console-exec`, this is
+`--reset-firmware` forces fresh NVRAM and TPM.
+`--disk-bus=virtio|usb|uas|ehci` attaches the target disk on another bus
+(default virtio): `usb` is usb-storage on xHCI, `uas` USB Attached SCSI on
+xHCI (most SSD enclosures), `ehci` usb-storage on USB 2. `--boot-disk-bus=`
+boots the installed disk on a different one (default: the install bus) - the
+same disk on another port or controller. This is how a USB-SSD install was
+found to hang in the dracut initqueue (2026-10-08: `uas`/`usb_storage` are
+modules on the Arch kernel and the hostonly initramfs had neither), which
+virtio could never show: `virtio_blk` is built in. OVMF has no UAS driver, so a
+`uas` disk installs but cannot firmware-boot ("No bootable option or device
+was found"); boot it with `--boot-only --boot-disk-bus=usb`.
+With `--console-exec`, this is
 how a check sees what only a real boot shows: `systemd.volatile=state`'s
 empty `/var`, the real kernel, the TPM. Under TCG keep the host otherwise
 idle: a loaded host stalls the guest kernel in timer calibration

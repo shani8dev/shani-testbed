@@ -168,6 +168,10 @@ slot-test   <blue|green> <name...|all> [--local-src=<dir>] [--local-src-chronoa=
                                        re-created the disk since
               [--reset-firmware]       with --boot-only: fresh NVRAM and TPM regardless
                                        (recovers a corrupted swtpm state)
+              [--disk-bus=virtio|usb|uas|ehci] target disk's bus (default virtio):
+                                       usb/uas on xHCI, ehci = USB 2 (an external SSD)
+              [--boot-disk-bus=BUS]    boot the installed disk on another bus (OVMF
+                                       cannot boot uas: use usb)
               [--expect-slot=blue|green] fail unless firmware booted that slot
               [--expect-tpm-unlock]    fail if the passphrase is asked (TPM2 unlock)
               [--console-exec=CMD]     run CMD as root on the booted system, in
