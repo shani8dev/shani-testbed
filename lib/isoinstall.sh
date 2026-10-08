@@ -135,7 +135,10 @@ _isovm_start() {
     # Not a second serial port: OVMF takes that as another console and the
     # boot menu stopped counting down (the machine never booted).
     if [[ -n "${ISOVM_CONSOLE_EXEC:-}" ]]; then
-      extra+=" systemd.debug_shell=/dev/hvc0"
+      # serial-getty@hvc0 masked: a getty on the same tty took it over again
+      # and again, each debug shell respawned and got a slice of the typed
+      # line, and a mangled command still reported CE_RC=0 (see below)
+      extra+=" systemd.debug_shell=/dev/hvc0 systemd.mask=serial-getty@hvc0.service"
       : > "${ISOVM}/debug-console.log"
       dbg=(-chardev "socket,id=dbg0,path=${ISOVM}/debug.sock,server=on,wait=off,logfile=${ISOVM}/debug-console.log"
            -device virtconsole,chardev=dbg0)  # after -device virtio-serial below
@@ -296,14 +299,22 @@ _isovm_console_exec() {  # <boot log (unused)> <cmd> <timeout>
   done
   # base64: no quoting of <cmd> on a typed command line; the marker is only
   # produced by the shell expanding $? - the echoed typed line shows it raw
+  # The script runs only if it arrived intact: a getty sharing hvc0 once
+  # handed the shell just the tail of this line, base64 -d wrote an empty
+  # script, and `bash` of nothing returned CE_RC=0 - a check that never ran
+  # read as a pass. A mismatch is CE_RC=97. No pager, no stdin: on the
+  # debug shell's tty `systemctl --failed` opened less and waited for a key.
+  local sum
   b64=$(printf '%s' "$cmd" | base64 -w0)
+  sum=$(printf '%s' "$cmd" | sha256sum | cut -c1-16)
   off=$(stat -c %s "$log")
-  _isovm_type "echo $b64 | base64 -d > /tmp/ce.sh; bash /tmp/ce.sh 2>&1; echo CE_RC=\$?_END" "$sock"
+  _isovm_type "echo $b64 | base64 -d > /tmp/ce.sh; if [ \"\$(sha256sum < /tmp/ce.sh | cut -c1-16)\" = $sum ]; then SYSTEMD_PAGER=cat PAGER=cat bash /tmp/ce.sh 2>&1 </dev/null; else (exit 97); fi; echo CE_RC=\$?_END" "$sock"
   _isovm_wait_log "$log" "$off" 'CE_RC=[0-9]+_END' "$to" || { _isovm_console_tail "$log" "$off"; warn "console-exec: no result in ${to}s"; return 93; }
   rc=$(tail -c +"$(( off + 1 ))" "$log" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | grep -aoE 'CE_RC=[0-9]+_END' | tail -1 | tr -cd '0-9')
   log "iso-install: console-exec output (rc=${rc}):"
   tail -c +"$(( off + 1 ))" "$log" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\r//g' \
     | grep -av -e 'base64 -d > /tmp/ce.sh' -e 'CE_RC=' | sed 's/^/  $ /' || true
+  [[ "$rc" == 97 ]] && warn "console-exec: the command arrived mangled on hvc0 and was not run"
   return "${rc:-94}"
 }
 
