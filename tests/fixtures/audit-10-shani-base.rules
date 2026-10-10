@@ -1,0 +1,193 @@
+# /etc/audit/rules.d/audit.rules
+# Minimal audit ruleset — addresses Lynis ACCT-9630 (empty ruleset warning).
+# Apply with: sudo augenrules --load
+
+# ── Buffer & failure mode ─────────────────────────────────────────────────────
+-b 8192
+# Failure mode 1 = log and continue (use 2 to panic on failure, not recommended for desktop)
+-f 1
+
+# ── Identity & authentication changes ────────────────────────────────────────
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/sudoers -p wa -k identity
+-w /etc/sudoers.d/ -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+
+# ── Login & session tracking ──────────────────────────────────────────────────
+-w /var/log/faillog -p wa -k logins
+-w /var/log/lastlog -p wa -k logins
+-w /var/run/faillock/ -p wa -k logins
+
+# ── Privilege escalation ──────────────────────────────────────────────────────
+-w /bin/su -p x -k privileged
+-w /usr/bin/sudo -p x -k privileged
+-w /usr/bin/newgrp -p x -k privileged
+-a always,exit -F arch=b64 -S setuid -S setgid -S setreuid -S setregid -k privilege_escalation
+-a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=4294967295 -k privilege_escalation
+
+# ── Filesystem mount events ───────────────────────────────────────────────────
+-a always,exit -F arch=b64 -S mount -k mounts
+-a always,exit -F arch=b32 -S mount -k mounts
+
+# ── File deletion by users ────────────────────────────────────────────────────
+-a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -F auid!=4294967295 -k delete
+-a always,exit -F arch=b32 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -F auid!=4294967295 -k delete
+
+# ── Kernel module loading/unloading ──────────────────────────────────────────
+-w /sbin/insmod -p x -k modules
+-w /sbin/rmmod -p x -k modules
+-w /sbin/modprobe -p x -k modules
+-a always,exit -F arch=b64 -S init_module -S finit_module -S delete_module -k modules
+
+# ── System time changes ───────────────────────────────────────────────────────
+# clock_settime added 2026-10-07: settimeofday is the legacy entry point and
+# clock_settime is the timespec one, and they are SEPARATE syscall numbers —
+# adjtimex + settimeofday alone does not catch a modern time-sync daemon.
+# Verified by grepping the ecosystem for the time-setting path: shani-settings'
+# own .install runs `systemctl enable systemd-timesyncd`, so the fleet has a
+# daemon that can set the clock and was previously unaudited while doing it.
+-a always,exit -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time-change
+-a always,exit -F arch=b32 -S adjtimex -S settimeofday -S stime -k time-change
+-w /etc/localtime -p wa -k time-change
+
+# ── Network configuration changes ────────────────────────────────────────────
+-a always,exit -F arch=b64 -S sethostname -S setdomainname -k system-locale
+-w /etc/hosts -p wa -k system-locale
+-w /etc/hostname -p wa -k system-locale
+
+# NetworkManager is the one network manager on every profile that installs this
+# package (shani-pkgbuilds/shani-network depends on networkmanager and its
+# .install runs `systemctl enable NetworkManager.service`). Its connection
+# profiles are therefore the actual network configuration on this machine —
+# including VPN credentials and static addressing — and /etc/hosts and
+# /etc/hostname above cover only a fraction of it. Added 2026-10-07.
+-w /etc/NetworkManager/ -p wa -k network
+# system-connections holds the per-profile .nmconnection files (VPN
+# certificates, PSKs, static routes) as referenced by the directory watch
+# above; naming it explicitly is redundant for audit but documents intent and
+# survives a future change that narrows the parent watch to specific files.
+-w /etc/NetworkManager/system-connections/ -p wa -k network
+
+# ── Audit tampering: the daemon, its config, and the rules above ──────────────
+# Added 2026-10-10. Every rule in this file is advisory until something
+# guarantees the recorder itself cannot be turned off. These watches do that:
+# rewriting auditd.conf, dropping a different file into rules.d, or running
+# auditctl/augenrules all switch the logging off first and then do whatever it
+# was there to record, and until now nothing here covered any of it.
+# All four paths measured present in the `audit` package on a real Arch tree.
+-w /etc/audit/auditd.conf -p wa -k audit_config
+-w /etc/audit/auditd.conf.d/ -p wa -k audit_config
+-w /etc/audit/rules.d/ -p wa -k audit_config
+-w /etc/audit/plugins.d/ -p wa -k audit_config
+-w /etc/audit/audisp/ -p wa -k audit_config
+# The two programs that can apply a whole different ruleset without editing any
+# of the files above, so they get watches of their own rather than relying on
+# the directory ones.
+-w /usr/sbin/auditctl -p x -k audit_config
+-w /usr/sbin/auditd -p x -k audit_config
+-w /usr/sbin/augenrules -p x -k audit_config
+
+# ── Account & password management: the command, not just the file it wrote ────
+# The identity watches at the top catch the /etc/passwd *write*. These catch the
+# execve that caused it, and the two are not the same record: the write shows a
+# file changed, the execve names which account was created, changed or deleted
+# and traces to the admin who did it — every one of these runs as root.
+# Paths read out of pacman's own database (`pacman -Qo`) on a real Arch tree
+# rather than assumed from the command name. **`passwd` is /usr/bin/passwd while
+# chpasswd, chage and every user*/group* tool live in /usr/sbin** — getting that
+# pair backwards would produce a watch on a path that does not exist, which is a
+# rule that never fires and reads as coverage.
+-w /usr/sbin/useradd -p x -k identity
+-w /usr/sbin/userdel -p x -k identity
+-w /usr/sbin/usermod -p x -k identity
+-w /usr/sbin/groupadd -p x -k identity
+-w /usr/sbin/groupdel -p x -k identity
+-w /usr/sbin/groupmod -p x -k identity
+-w /usr/sbin/gpasswd -p x -k identity
+-w /usr/sbin/chpasswd -p x -k identity
+-w /usr/bin/passwd -p x -k identity
+-w /usr/sbin/chage -p x -k identity
+
+# ── PAM, login policy, and the smart-card/Kerberos surface this repo owns ────
+# A change here changes whether the next login can succeed at all. The
+# smartcard and Kerberos pages of shani-cassini write /etc/security/ and
+# /etc/pam_pkcs11/, and the server ruleset in image_profiles already watches
+# both of these paths; the desktop ruleset shipped by this file did not.
+-w /etc/pam.d/ -p wa -k identity
+-w /etc/security/ -p wa -k identity
+-w /etc/login.defs -p wa -k identity
+-w /etc/securetty -p wa -k identity
+# NOT watched: /etc/pam_pkcs11/. The pam_pkcs11 package is not installed on
+# this fleet (measured: the directory does not exist on a real Arch tree), so a
+# watch there would be dead config. shani-cassini's subject_mapping target only
+# becomes real once something actually installs pam_pkcs11 — revisit then.
+
+# ── SSH server configuration ──────────────────────────────────────────────────
+# openssh is in shani-network's depends, so every desktop profile carries it and
+# /etc/ssh/sshd_config exists on all of them (openssh ships it via
+# /usr/share/factory). **sshd.service is not enabled on the desktop profiles —
+# only the server image enables it** (image_profiles/server/server-customization.sh),
+# so on a default install this is watching a file nothing currently reads.
+# It is recorded here anyway, deliberately: editing sshd_config is exactly what
+# precedes turning remote access on, so the watch catches the setup step rather
+# than the running service.
+-w /etc/ssh/sshd_config -p wa -k sshd_config
+-w /etc/ssh/sshd_config.d/ -p wa -k sshd_config
+-w /usr/bin/sshd -p x -k sshd_config
+
+# ── polkit: the on-disk half of privilege escalation ──────────────────────────
+# The setuid/execve rules above catch a process *gaining* root. These catch the
+# configuration that decides who may. Every file in rules.d is JavaScript
+# evaluated by polkit on every privileged call, so editing one redefines what an
+# unprivileged local user can do without any file elsewhere changing. This is not
+# hypothetical on this fleet: shani-cassini-save is dispatched through pkexec, so
+# the mechanism is in live use.
+-w /usr/share/polkit-1/rules.d/ -p wa -k privileged
+-w /usr/share/polkit-1/actions/ -p wa -k privileged
+
+# ── Mount & device configuration persistence ──────────────────────────────────
+# The mount syscall rules catch an active mount. These catch the files that make
+# a mount (or a LUKS device) come back on the next boot, which is the persistence
+# half of the same question.
+-w /etc/fstab -p wa -k mounts
+-w /etc/crypttab -p wa -k mounts
+
+# ── systemd units: the persistence surface that is neither cron nor a module ──
+# /etc/systemd/system outranks /usr/lib/systemd/system, so a unit dropped here
+# wins over whatever the package installed and starts on every boot. Nothing
+# else in this file covers that, and it is the mechanism every systemd box
+# actually gets a foothold through.
+# NOT watched: cron or at. cronie ships only in shani-tools-extra, which is not
+# in any desktop profile's package-list (measured), so /etc/cron.d and
+# /var/spool/cron do not exist here — a watch on them would be dead config.
+-w /etc/systemd/system/ -p wa -k systemd_units
+-w /etc/systemd/user/ -p wa -k systemd_units
+
+# ── Capability changes ────────────────────────────────────────────────────────
+# setuid/setgid/reuid/regid above catch the classic privilege transition. capset
+# catches a process changing the capability sets around them, which is how root
+# is dropped or re-gained with no setuid call at all — a wide class, not an edge
+# case, and rare enough in normal operation that it is worth logging.
+-a always,exit -F arch=b64 -S capset -k privilege_escalation
+-a always,exit -F arch=b32 -S capset -k privilege_escalation
+
+# ── Deliberately NOT added, with the measurement that decided it ──────────────
+# Recorded so the next person does not re-derive these:
+#   ** chmod/chown/setxattr syscall rules** — the CIS-recommended set
+#     (fchmodat, fchownat, fsetxattr, lsetxattr, ...) is a firehose on this
+#     layout: /etc is an overlay on @data, so package installs, homed, and every
+#     daemon that fixes its own directory modes are all legitimate writes. Alert
+#     volume destroys the signal the rest of this file is for.
+#   ** unshare / clone with CLONE_NEWUSER** — same reason; bubblewrap, distrobox
+#     and the sandbox executor all create user namespaces on a working desktop.
+#     The seccomp/Landlock layer in the sandbox is where that is actually
+#     enforced, so an audit rule here would be noise rather than a control.
+#   ** /etc/pam_pkcs11/ and cron paths** — do not exist on this fleet (above).
+
+# ── Make the configuration immutable (optional — comment out during tuning) ──
+# Once set, rules cannot be changed until reboot.
+# Uncomment when you are satisfied with the ruleset.
+#-e 2

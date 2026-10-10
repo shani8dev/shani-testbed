@@ -476,7 +476,25 @@ containers first.
   only the host's own swap. (2026-09-25)
 - **Console on a firmware-booted install:** `iso-install --boot-only
   --console-exec=CMD [--console-put=LOCAL:REMOTE]` runs as root in systemd's
-  debug shell on a virtio console (hvc0). Not a second serial port (OVMF
+  debug shell on a virtio console (hvc0).
+  **It is also the only way to run a command against the image's OWN kernel, and
+  that is what proved the new audit rules load (2026-10-10).** nspawn cannot: it
+  shares this host's kernel, and this environment refuses every audit netlink
+  request from it (measured with `--userns=host` and real uid 0 - still EPERM), so
+  `config-validators`' `audit-rules-loaded` SKIPs there by design. A VM boots the
+  image's kernel, where audit is independent of the host: the proof ran inside a
+  guest on **`7.2.6-arch2-1`** with **auditd active** and loaded **64 of 64** rules,
+  plus both controls. Harness-side pieces: `tests/audit-boot-proof.sh` and the
+  digest-pinned snapshot in `tests/fixtures/` - the snapshot is a copy because
+  shani-settings is not in run_in_container.sh's sibling-mount loop, so
+  `--console-put` otherwise cannot reach it, and the recorded sha256 keeps a stale
+  snapshot detectable instead of silent. The script was dry-run against a stub
+  kernel in both directions before the boot (a kernel refusing the capset rules
+  made it report `FAIL 62 of 64`), so the boot was confirming a check already known
+  to discriminate. **Two flag traps:** this boot takes `--iso=` only to satisfy the
+  arg parser - the fetch is in the non-`--boot-only` branch, so `--iso=iso-latest`
+  downloads nothing - and `--timeout`/`--settle` are slot-test flags here, so the
+  boot's own is `--boot-timeout=`. Not a second serial port (OVMF
   stopped at the boot menu); not a login (the ISO installer creates no
   user, `skip_user`). `--expect-tpm-unlock` fails a boot that asks for the
   passphrase. Used to verify TPM2 enroll → prompt-free boot → remove.

@@ -1,0 +1,13 @@
+# Recorded so the fixture's drift is detectable rather than silent.
+# A SNAPSHOT of shani-settings/etc/audit/rules.d/10-shani-base.rules at
+# shani-settings commit d21bd414f010325ebfcf1ea0717f20ec5de1748d. iso-install --console-put uses it to prove
+# the rules load into a real kernel, which nspawn cannot: it shares a host
+# kernel that refuses every audit netlink request from this environment.
+#
+# shani-settings is not bind-mounted into the harness container (see the
+# loop in run_in_container.sh), so a copy is the only way --console-put can
+# reach the file. If shani-settings changes it, re-copy and update this
+# line - never test a stale snapshot and call it the current ruleset.
+sha256  62b93477b486497e1396db300a087778a44518b7106544cd05420cef9fe5a266
+commit  d21bd414f010325ebfcf1ea0717f20ec5de1748d
+rules   64   (-a and -w lines: what the kernel load counts)
