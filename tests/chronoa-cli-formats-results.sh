@@ -155,6 +155,71 @@ else
   ok "no probe runs its tool without going through the bounded probe()"
 fi
 
+# --- every RESULT name appears once in the OUTPUT ------------------------------
+# **A check nested inside a loop prints once per iteration, and nothing before
+# this noticed.** The rclone block landed between a `for t in zcat...` loop's
+# `rc=` line and its `res` line, so its six results printed once per
+# decompressor - six identical copies - while the summary happily counted them
+# as part of "187 pass, 0 fail". A count with duplicate names in it is a count,
+# not a measurement.
+#
+# **Checked on the output, not the source, and the distinction is the whole
+# finding.** A source scan for `res "name"` printed twice would NOT have caught
+# it: the bug was one source line sitting inside a loop, so the file held a
+# single copy and only its *output* duplicated. The same scan also flags
+# legitimate if/else verdict pairs (`res "x" PASS` / `res "x" FAIL`), which print
+# once. So this drives the real slot test through the capture seam and counts
+# what it actually emitted.
+REPLAY_OUT="$(CLI_FORMATS_CAPTURE_DIR="$GOOD" bash "$SLOT_TEST" 2>&1)"
+mapfile -t emitted < <(printf '%s\n' "$REPLAY_OUT" | grep -oE '^RESULT [^ ]+' | awk '{print $2}')
+dup_out=$(printf '%s\n' "${emitted[@]}" | sort | uniq -d)
+if [[ -z "$dup_out" ]]; then
+  ok "every one of the ${#emitted[@]} RESULT names is emitted once"
+else
+  no "a RESULT name is emitted more than once - a check is nested inside a loop"
+  printf '#   duplicated: %s\n' "$dup_out"
+fi
+
+# The control: this must be able to fail. **A copy of the slot test that emits an
+# existing RESULT name a second time must be refused.**
+#
+# The first version of this control duplicated a check *inside the zcat loop* -
+# which in the replay fixture never iterates, because the GOOD capture holds no
+# gz-*.rc files, so the duplicate was never printed and the control passed for a
+# reason unrelated to the check. A control that cannot fail is not a control.
+NESTED="$T/dup.sh"
+cp "$SLOT_TEST" "$NESTED"
+# An existing name, emitted a second time in a plain sequence - so the check is
+# exercised by cause-free duplication rather than by a loop that may not run.
+python3 - "$NESTED" <<'PYEOF'
+import sys
+dst = sys.argv[1]
+text = open(dst).read()
+marker = 'echo "== probe done"'
+assert marker in text, "the probe-done marker moved - update this fixture"
+open(dst, "w").write(text.replace(
+    marker,
+    'res "pdffonts-table-shape" "PASS (a second copy, to prove the check fails)"\n' + marker))
+PYEOF
+dup_out="$(CLI_FORMATS_CAPTURE_DIR="$GOOD" bash "$NESTED" 2>&1)"
+mapfile -t dup_names < <(printf '%s\n' "$dup_out" | grep -oE '^RESULT [^ ]+' | awk '{print $2}')
+if printf '%s\n' "${dup_names[@]}" | sort | uniq -d | grep -q 'pdffonts-table-shape'; then
+  ok "the duplicate check refuses a slot-test that emits one name twice"
+else
+  no "the duplicate check accepted a slot-test that emits one name twice - it cannot fail"
+fi
+
+# --- no rclone probe may pass on a refusal ------------------------------------
+# The second bug: `RCLONE_CONFIG_DIR` was not honoured, every probe answered
+# rc=1 with "Config file ... not found - using defaults", and a check that
+# recorded rc=1 as PASS printed all of them green. An environment that
+# measured nothing must be a FAIL, so the assertion names the cause.
+if grep -qE 'rclone-lsd-shape.*FAIL' "$SLOT_TEST"; then
+  ok "rclone-lsd-shape can FAIL, so a remote that never configured is not a pass"
+else
+  no "rclone-lsd-shape has no FAIL branch - a refusal would be reported as a measurement"
+fi
+
 printf '\n1..%d\n' "$((pass + fail))"
 if (( fail )); then
   echo "# FAILED ${fail} of $((pass + fail)) — chronoa-cli-formats.sh cannot be trusted to say no"

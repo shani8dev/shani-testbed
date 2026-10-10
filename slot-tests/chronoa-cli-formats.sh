@@ -55,7 +55,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # Each command runs once into $WORK. A binary absent from the image is a finding,
 # not a failure: it is exactly the dependency-missing case the parsers must
 # degrade through, so which way the image goes is recorded either way.
-for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip compsize bootctl v4l2-ctl clockdiff cryptsetup iotop iostat nethogs bandwhich strace unrar cabextract lrzip lzop arj unar lsar svn hg restic rclone iperf3 socat iftop arpwatch delv host nslookup wget aria2c sensors inxi fastfetch lsof capinfos dmidecode sar logrotate iwconfig nmap ethtool vnstat playerctl grim ydotool words bc micro dialog expect pv gdisk sgdisk unzip zip 7za unace ngrep netstat ifconfig iftop btop nvtop ncdu tree; do
+for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip compsize bootctl v4l2-ctl clockdiff cryptsetup iotop iostat nethogs bandwhich strace unrar cabextract lrzip lzop arj unar lsar svn hg restic rclone iperf3 socat iftop arpwatch delv host nslookup wget aria2c sensors inxi fastfetch lsof capinfos dmidecode sar logrotate iwconfig nmap ethtool vnstat playerctl grim ydotool words bc micro dialog expect pv gdisk sgdisk unzip zip 7za unace ngrep netstat ifconfig btop nvtop ncdu tree; do
   if have "$b"; then res "present-$b" "PASS ($(command -v "$b"))"
   else res "present-$b" "PASS (not on this image: its skill must report UNKNOWN, never a clean result)"
   fi
