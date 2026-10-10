@@ -107,8 +107,8 @@ PDF
   # `system_info` reads lscpu and /proc. `inxi` prints GPUs, disks and battery
   # in one call, so its output decides whether it is worth a fallback path.
   if have inxi; then
-    timeout 25 inxi -Fzx --no-color >"$WORK/inxi.out" 2>"$WORK/inxi.err"; echo "$?" >"$WORK/inxi.rc"
-    timeout 25 inxi -Fz --no-color >"$WORK/inxi-short.out" 2>&1; echo "$?" >"$WORK/inxi-short.rc"
+    timeout 25 inxi -Fzx -C >"$WORK/inxi.out" 2>"$WORK/inxi.err"; echo "$?" >"$WORK/inxi.rc"
+    timeout 25 inxi -Fz -C >"$WORK/inxi-short.out" 2>&1; echo "$?" >"$WORK/inxi-short.rc"
   fi
   if have fastfetch; then
     timeout 25 fastfetch --format json >"$WORK/fastfetch.out" 2>"$WORK/fastfetch.err"
@@ -178,16 +178,16 @@ PDF
     echo "$?" >"$WORK/nmap-local.rc"
   fi
   if have wget; then
-    timeout 30 wget -q -O "$WORK/wget-probe.txt" "data:,chronoa" >"$WORK/wget.out" 2>"$WORK/wget.err"
+    timeout 30 wget -q -T 10 -O "$WORK/wget-probe.txt" https://example.com/ >"$WORK/wget.out" 2>"$WORK/wget.err"
     echo "$?" >"$WORK/wget.rc"
   fi
   # A *real* socat forward: open a listener, connect through it, and echo.
   # socat's own refusal is the other half and is measured too.
   if have socat; then
-    ( timeout 30 socat -T 10 -u TCP-LISTEN:53199,bind=127.0.0.1,reuseaddr,fork SYSTEM:'echo socat-forward-ok' \
+    ( timeout 30 socat -T 10 TCP-LISTEN:53199,bind=127.0.0.1,reuseaddr,fork SYSTEM:'echo socat-forward-ok' \
         >"$WORK/socat-server.out" 2>&1 ) &
     sleep 2
-    timeout 15 socat -T 5 -u TCP:127.0.0.1:53199 - >"$WORK/socat-client.out" 2>"$WORK/socat-client.err"
+    timeout 15 socat -T 5 TCP:127.0.0.1:53199 - >"$WORK/socat-client.out" 2>"$WORK/socat-client.err"
     echo "$?" >"$WORK/socat-client.rc"
     wait 2>/dev/null || true
     timeout 10 socat -T 2 -u TCP:127.0.0.1:53198 - >"$WORK/socat-refused.out" 2>"$WORK/socat-refused.err"
@@ -217,7 +217,18 @@ PY
   if [[ -s "$WORK/std.zip" ]]; then
     for t in unzip 7z 7za bsdtar; do
       have "$t" || continue
-      timeout 25 "$t" -l "$WORK/std.zip" >"$WORK/zip-$t.out" 2>"$WORK/zip-$t.err"
+      # **Each reader's own listing syntax, which differ.** `unzip -l`,
+      # `7z l` (a bare subcommand), `bsdtar -tf`. All three reject `-l` with
+      # a non-zero exit and **no output**, so "printed nothing" cannot mean
+      # "archive unreadable" - it can equally mean "called wrongly", and the
+      # first version of this check did exactly that and reported 3 FAILs
+      # against tools that read zip perfectly.
+      case $t in
+        unzip) args=(-l "$WORK/std.zip") ;;
+        7z|7za) args=(l "$WORK/std.zip") ;;
+        bsdtar) args=(-tf "$WORK/std.zip") ;;
+      esac
+      timeout 25 "$t" "${args[@]}" >"$WORK/zip-$t.out" 2>"$WORK/zip-$t.err"
       echo "$?" >"$WORK/zip-$t.rc"
     done
   fi
