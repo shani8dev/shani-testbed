@@ -366,7 +366,13 @@ directory variable rather than probing inline — `chronoa-driver-tools.sh` from
 `tests/<name>-results.sh` drive the same assertions on the host against
 doctored captures, including ones that must FAIL. A capture that measured
 nothing must produce a SKIP naming what it did not measure, never a PASS: an
-absence-shaped green is a pass that examined nothing.
+absence-shaped green is a pass that examined nothing. `driver-boot-facts.sh` goes
+one step further and runs inside a real firmware boot (`iso-install --boot-only
+--console-exec`), printing `DRIVERFACT key=value` lines that
+`driver-boot-verify.sh` turns into PASS/FAIL/SKIP about the **claims recorded in
+the repos' AGENTS.md** — so a claim that goes stale goes red rather than quietly
+becoming wrong. `tests/driver-boot-verify-results.sh` proves that checker can say
+no before a boot is trusted to say yes.
 `fresh-user` is the "what a new install gives a
 new person" check: it creates a user from `/etc/skel` as the installer does, then
 checks that user's first zsh/bash/fish (no errors, fastfetch greeting, starship),

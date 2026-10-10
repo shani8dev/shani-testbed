@@ -981,3 +981,65 @@ rather than a scratchpad for the reason above. It prints `DRIVERFACT key=value`
 lines so the parser matches on a **key**: pinning prose is the trap this file
 already records for the espeak argv and the hardcoded module path, and a
 measurement whose output format is a sentence cannot be asserted on safely.
+
+### `driver-boot-verify`: a claim written down is a claim that rots silently (2026-10-10)
+
+`tests/driver-boot-facts.sh` measures the driver environment inside a firmware
+boot. **Measuring is not checking** — so this pair of files closes the loop:
+`tests/driver-boot-verify.sh` turns the `DRIVERFACT key=value` stream into
+PASS/FAIL/SKIP, and `tests/driver-boot-verify-results.sh` proves it can say no
+before any boot is trusted to say yes.
+
+That ordering is `tests/audit-boot-proof.sh`'s practice restated: the audit script
+was dry-run against a stub kernel in both directions first, so the boot was
+confirming a check already known to discriminate. **A checker whose first ever
+run is a real boot has not been shown it can say no** — and this one exists to
+police claims already written down, so a checker that only ever says PASS is
+worse than none: it reads as the platform still being measured when nothing is.
+
+**Every verdict is about the DOCUMENTED claim, not about the machine.** A future
+image may legitimately gain `linux-headers`; when it does this reports FAIL and
+says the refusal in `driver_status` has become a lie by omission. That is the
+whole point: eight of its nine checks are staleness detectors.
+
+**Three defects of mine, found by the self-test rather than by reading:**
+
+- **`grep -qE '^-rw'` could never match a device node.** A node's mode is
+  `crw-rw----+`, so it begins `crw-`, not `rw-` — the check existed only in the
+  source, the same shape as the EEPROM denylist in shani-chronoa's own
+  `user_driver`. It now asks the actual question: the others-READ bit, index 7 of
+  the mode field.
+- **That fix was then off by two.** Index 9 is the others-EXECUTE bit, so
+  `crw-rw-rw-` still read as *not* world-readable and the doctored stream still
+  passed. Found by the same self-test, immediately after the fix.
+- **`kernel_source` was not in the required-key list**, though every other fact is
+  attributed by it — so the incomplete-stream scenario deleted that very key and
+  was answered with a full set of PASSes. Without it, "these facts describe the
+  image" is an assumption.
+
+**And one structural defect, from running the verifier against the live boot:**
+a superseded `case` block sat beside the `if/elif` chain that replaced it, so
+`module-dir-readonly` was emitted **twice** — a PASS and a leftover PASS, which
+reads as one strong result. Two new checks pin it: no check may report twice, and
+the verifier emits exactly nine verdicts. **Every other check here is about a
+verdict being right; this one is about there being exactly one of it.**
+
+The `case` statements were rewritten as `if`/`elif` because `bash -n` refused to
+parse the `*)` branch of one — "syntax error near unexpected token `)`" — while
+every minimal reconstruction of that exact line parsed. Ten minutes went into
+that; the `if/elif` form says the same thing and parses, which is the whole
+argument for it.
+
+**26 host checks, 3 mutations confirmed to fail** (the impossible `^-rw`, the
+un-required attribution key, and a completeness guard that never fires). Run
+against the real 2026-10-10 boot stream: **9 verdicts, all PASS or a named SKIP,
+exit 0**. Floor unaffected — `bash -n` across every harness file, `py_compile`
+clean, and `chronoa-driver-tools-results` 30/30 and
+`chronoa-cli-formats-results` 15/15.
+
+Two facts that boot settled, both recorded in shani-chronoa's AGENTS.md: the
+image's kernel is `7.2.6-arch2-1` while **pacman calls the same package
+`7.2.6.arch2-1`**, so the two sides of that comparison must be compared with
+separators folded away; and `/sys/kernel/security/lockdown` **enforces `none`**
+with no SecureBoot efivar present, so an unsigned module is *not* refused for its
+signature here and the signing story in the driver skills had to be corrected.
