@@ -55,7 +55,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # Each command runs once into $WORK. A binary absent from the image is a finding,
 # not a failure: it is exactly the dependency-missing case the parsers must
 # degrade through, so which way the image goes is recorded either way.
-for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip compsize bootctl; do
+for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip compsize bootctl v4l2-ctl clockdiff cryptsetup; do
   if have "$b"; then res "present-$b" "PASS ($(command -v "$b"))"
   else res "present-$b" "PASS (not on this image: its skill must report UNKNOWN, never a clean result)"
   fi
@@ -204,6 +204,28 @@ if [[ -z "${CLI_FORMATS_CAPTURE_DIR:-}" ]]; then
     bootctl list >"$WORK/bootctl-list.out" 2>"$WORK/bootctl-list.err"; echo "$?" >"$WORK/bootctl-list.rc"
     bootctl --json list >"$WORK/bootctl.out" 2>"$WORK/bootctl.err"; echo "$?" >"$WORK/bootctl.rc"
   fi
+  # Three more that the Ubuntu dev box lacks and both images ship, each the
+  # answer to a question no Chronoa skill can answer today: what the webcam
+  # can actually do, whether this machine's clock is right, and what a LUKS
+  # volume really is (disk_health only sees "crypto_LUKS" in lsblk).
+  if have v4l2-ctl; then
+    v4l2-ctl --list-devices >"$WORK/v4l2-devices.out" 2>"$WORK/v4l2-devices.err"; echo "$?" >"$WORK/v4l2-devices.rc"
+    first=$(grep -oE '/dev/video[0-9]+' "$WORK/v4l2-devices.out" 2>/dev/null | head -1)
+    if [[ -n "$first" ]]; then
+      v4l2-ctl -d "$first" --list-formats >"$WORK/v4l2-formats.out" 2>"$WORK/v4l2-formats.err"; echo "$?" >"$WORK/v4l2-formats.rc"
+      v4l2-ctl -d "$first" --all >"$WORK/v4l2-all.out" 2>&1; echo "$?" >"$WORK/v4l2-all.rc"
+    fi
+  fi
+  if have clockdiff; then
+    gw=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')
+    if [[ -n "$gw" ]]; then
+      clockdiff -o "$gw" >"$WORK/clockdiff.out" 2>"$WORK/clockdiff.err"; echo "$?" >"$WORK/clockdiff.rc"
+    fi
+  fi
+  if have cryptsetup; then
+    luks=$(lsblk -rno NAME,FSTYPE 2>/dev/null | awk '$2=="crypto_LUKS"{print "/dev/"$1; exit}')
+    cryptsetup luksDump ${luks:-/dev/null} >"$WORK/luksdump.out" 2>"$WORK/luksdump.err"; echo "$?" >"$WORK/luksdump.rc"
+  fi
   # 7z: a real round-trip, so the listing's parseable shape and the extraction's
   # exit contract are both measured rather than remembered. extract_archive
   # handles tar and zip through Python's stdlib and nothing else.
@@ -316,6 +338,49 @@ if [[ -f "$WORK/7z-slt.rc" ]]; then
   if [[ -f "$WORK/7z-evil.rc" ]]; then
     evil_out=$(tr -d '\n' <"$WORK/7z-evil.out" 2>/dev/null | head -c 110)
     res "7z-symlink-member" "PASS (x rc=$(cat "$WORK/7z-evil.rc") with a symlink member: ${evil_out})"
+  fi
+fi
+
+# --- v4l2: what the camera can actually do ------------------------------------
+if [[ -f "$WORK/v4l2-formats.rc" ]]; then
+  fmts=$(cat "$WORK/v4l2-formats.out")
+  if grep -qE '^\s*\[\d+\]' <<<"$fmts"; then
+    printf '%s\n' "$fmts" | head -30 | sed 's/^/  | /'
+    res "v4l2-formats-shape" "PASS ($(grep -cE '^\s*\[[0-9]+\]' <<<"$fmts") pixel-format classes, printed whole so the parser is written against the real list)"
+  else
+    err=$(tr -d '\n' <"$WORK/v4l2-formats.err" | head -c 100)
+    res "v4l2-formats-shape" "FAIL (rc=$(cat "$WORK/v4l2-formats.rc"), no '[N]' format lines: ${err})"
+  fi
+fi
+
+# --- clockdiff: is this machine's clock right ----------------------------------
+# `timebase` reports whether NTP *says* it is synchronised; this measures the
+# actual offset against a peer, which is the other half of the same question.
+if [[ -f "$WORK/clockdiff.rc" ]]; then
+  out=$(cat "$WORK/clockdiff.out"); rc=$(cat "$WORK/clockdiff.rc")
+  if [[ "$rc" == 0 ]] && grep -qiE 'offset|delay' <<<"$out"; then
+    printf '%s\n' "$out" | sed 's/^/  | /'
+    res "clockdiff-shape" "PASS ($(tr -d '\n' <<<"$out" | head -c 80))"
+  else
+    err=$(tr -d '\n' <"$WORK/clockdiff.err" | head -c 100)
+    res "clockdiff-shape" "SKIP (rc=${rc}: ${err:-no offset in output} - clockdiff needs the peer to answer ICMP timestamps, and a gateway that does not is a legitimate environmental cause)"
+  fi
+fi
+
+# --- luksDump: what a LUKS volume actually is ---------------------------------
+# disk_health reports "crypto_LUKS" from lsblk and stops. The cipher, key
+# size, hash and how many key slots are used are what "is it encrypted" means
+# to anyone who has to answer for it.
+if [[ -f "$WORK/luksdump.rc" ]]; then
+  out=$(cat "$WORK/luksdump.out"); rc=$(cat "$WORK/luksdump.rc")
+  if [[ "$rc" == 0 ]] && grep -qE 'Cipher name|Version' <<<"$out"; then
+    cipher=$(grep -m1 'Cipher name' <<<"$out" | tr -s ' \t' ' ')
+    slots=$(grep -cE '^ *[0-9]+: ENABLED' <<<"$out")
+    res "luksdump-shape" "PASS (rc=0, ${cipher}, ${slots} enabled key slot(s) - the whole dump is what a parser would read)"
+    head -20 "$WORK/luksdump.out" | sed 's/^/  | /'
+  else
+    err=$(tr -d '\n' <"$WORK/luksdump.err" | head -c 110)
+    res "luksdump-shape" "SKIP (rc=${rc}: ${err} - no LUKS volume on this slot, or the tool refused it; both are honest causes and neither is a shape failure)"
   fi
 fi
 
