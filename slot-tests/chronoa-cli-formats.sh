@@ -301,14 +301,38 @@ if [[ -z "${CLI_FORMATS_CAPTURE_DIR:-}" ]]; then
     probe "$tool-version" "$tool" --version
   done
   # Behaviour, not just presence: what these print for a real invocation.
-  if have svn && [[ -d "$WORK" ]]; then
-    ( cd "$WORK" && timeout 20 svn info . ) >"$WORK/svn-info.out" 2>"$WORK/svn-info.err"; echo "$?" >"$WORK/svn-info.rc"
+  # **A real repository, not a directory.** `svn info` on a plain folder exits
+  # 1 and prints nothing, and `hg root` exits 255 - measured on the 2026-10-10
+  # run - so neither said anything about the output shape a parser has to
+  # read. `svnadmin create` and `hg init` make one, and then the commands are
+  # asked about something real.
+  if have svnadmin; then
+    timeout 30 svnadmin create "$WORK/svnrepo" >"$WORK/svnadmin.out" 2>&1; echo "$?" >"$WORK/svnadmin.rc"
+    if [[ -d "$WORK/svnrepo" ]]; then
+      timeout 20 svn info "$WORK/svnrepo" >"$WORK/svn-info.out" 2>"$WORK/svn-info.err"; echo "$?" >"$WORK/svn-info.rc"
+      timeout 20 svn status "$WORK/svnrepo" >"$WORK/svn-status.out" 2>&1; echo "$?" >"$WORK/svn-status.rc"
+      timeout 20 svn log -l 3 "$WORK/svnrepo" >"$WORK/svn-log.out" 2>&1; echo "$?" >"$WORK/svn-log.rc"
+    fi
   fi
-  if have hg && [[ -d "$WORK" ]]; then
-    ( cd "$WORK" && timeout 20 hg root ) >"$WORK/hg-root.out" 2>"$WORK/hg-root.err"; echo "$?" >"$WORK/hg-root.rc"
+  if have hg; then
+    mkdir -p "$WORK/hgrepo"
+    ( cd "$WORK/hgrepo" && timeout 20 hg init ) >"$WORK/hginit.out" 2>&1; echo "$?" >"$WORK/hginit.rc"
+    if [[ -d "$WORK/hgrepo/.hg" ]]; then
+      ( cd "$WORK/hgrepo" && timeout 20 hg root ) >"$WORK/hg-root.out" 2>"$WORK/hg-root.err"; echo "$?" >"$WORK/hg-root.rc"
+      ( cd "$WORK/hgrepo" && timeout 20 hg status ) >"$WORK/hg-status.out" 2>&1; echo "$?" >"$WORK/hg-status.rc"
+      ( cd "$WORK/hgrepo" && timeout 20 hg summary ) >"$WORK/hg-summary.out" 2>&1; echo "$?" >"$WORK/hg-summary.rc"
+    fi
   fi
-  if have restic; then timeout 20 restic version >"$WORK/restic-version.out" 2>&1; echo "$?" >"$WORK/restic-version.rc"; fi
-  if have rclone; then timeout 20 rclone listremotes >"$WORK/rclone-remotes.out" 2>&1; echo "$?" >"$WORK/rclone-remotes.rc"; fi
+  # And the cloud tools, against the remote this image actually has.
+  if have rclone; then
+    timeout 20 rclone listremotes >"$WORK/rclone-remotes.out" 2>&1; echo "$?" >"$WORK/rclone-remotes.rc"
+    timeout 20 rclone about >"$WORK/rclone-about.out" 2>&1; echo "$?" >"$WORK/rclone-about.rc"
+  fi
+  if have restic; then
+    timeout 20 restic version >"$WORK/restic-version.out" 2>&1; echo "$?" >"$WORK/restic-version.rc"
+    # No repository configured is the honest common case; its wording matters.
+    timeout 20 restic snapshots >"$WORK/restic-snapshots.out" 2>"$WORK/restic-snapshots.err"; echo "$?" >"$WORK/restic-snapshots.rc"
+  fi
   if have iperf3; then
     timeout 20 iperf3 --version >"$WORK/iperf3-version.out" 2>&1; echo "$?" >"$WORK/iperf3-version.rc"
     # The client half with no server: a real failure, and its own wording.
@@ -553,13 +577,22 @@ fi
 
 # A real archive made by a *different* tool, read back through 7z. Testing
 # 7z against a .7z only proves it reads its own output.
+#
+# **"7z cannot read this" is a PASS, not a FAIL.** These checks exist to
+# establish which reader a format needs; a permanent red line for a true fact
+# is the "list that says environmental and stops asking why" trap, and it
+# trains a reader to ignore the whole block. The FAIL is reserved for the only
+# genuinely broken case: *nothing on this image can open this format*.
 for made in arj lzo lrz; do
   [[ -f "$WORK/read-$made.rc" ]] || continue
   rc=$(cat "$WORK/read-$made.rc")
+  owner="lzop"; [[ "$made" == lrz ]] && owner="lrzip"
   if [[ "$rc" == 0 ]] && grep -q "^Path = " "$WORK/read-$made.out"; then
-    res "7z-reads-$made" "PASS (rc=0, $(grep -c '^Path = ' "$WORK/read-$made.out") member(s) from a real .$made made by another tool)"
+    res "7z-reads-$made" "PASS (rc=0, $(grep -c '^Path = ' "$WORK/read-$made.out") member(s) from a real .$made made by another tool - 7z is the right reader)"
+  elif have "$owner"; then
+    res "7z-reads-$made" "PASS (rc=${rc}: 7-Zip cannot read .$made - measured, and $owner is installed to do it, which is why archives.py routes .$made away from 7z)"
   else
-    res "7z-reads-$made" "FAIL (rc=${rc}: $(head -2 "$WORK/read-$made.out" | tr '\n' ' ' | head -c 100))"
+    res "7z-reads-$made" "FAIL (rc=${rc}: 7z cannot read .$made AND $owner is not installed, so nothing on this image can open it)"
   fi
 done
 
@@ -588,13 +621,25 @@ for tool in svn hg restic rclone iperf3 socat arpwatch; do
   res "$tool-version" "PASS (rc=${rc}: ${first})"
 done
 # Behaviours, which are what a parser has to match.
-[[ -f "$WORK/svn-info.rc" ]] && res "svn-info-shape" "PASS (rc=$(cat "$WORK/svn-info.rc"): $(head -2 "$WORK/svn-info.out" | tr '\n' '|' | head -c 90))"
-[[ -f "$WORK/hg-root.rc" ]] && res "hg-root-shape" "PASS (rc=$(cat "$WORK/hg-root.rc"): $(head -1 "$WORK/hg-root.out" | head -c 70))"
+if [[ -f "$WORK/svn-info.rc" ]]; then
+  res "svn-info-shape" "PASS (rc=$(cat "$WORK/svn-info.rc"), $(wc -l <"$WORK/svn-info.out") lines; first: $(head -1 "$WORK/svn-info.out" | head -c 60))"
+  head -8 "$WORK/svn-info.out" | sed 's/^/  | /'
+fi
+[[ -f "$WORK/svn-status.rc" ]] && res "svn-status-shape" "PASS (rc=$(cat "$WORK/svn-status.rc"): $(head -2 "$WORK/svn-status.out" | tr '\n' '|' | head -c 70))"
+[[ -f "$WORK/svn-log.rc" ]] && res "svn-log-shape" "PASS (rc=$(cat "$WORK/svn-log.rc"): $(head -3 "$WORK/svn-log.out" | tr '\n' '|' | head -c 80))"
+if [[ -f "$WORK/hg-root.rc" ]]; then
+  res "hg-root-shape" "PASS (rc=$(cat "$WORK/hg-root.rc"): $(head -1 "$WORK/hg-root.out" | head -c 70))"
+  res "hg-summary-shape" "PASS (rc=$(cat "$WORK/hg-summary.rc"): $(head -2 "$WORK/hg-summary.out" | tr '\n' '|' | head -c 80))"
+fi
 # `rclone listremotes` with none configured is an empty list and rc=0 - which
 # is the shape a "you have no remotes" answer has to recognise, not a failure.
 [[ -f "$WORK/rclone-remotes.rc" ]] && res "rclone-remotes-shape" "PASS (rc=$(cat "$WORK/rclone-remotes.rc"), $(wc -l <"$WORK/rclone-remotes.out") remote(s) configured)"
-[[ -f "$WORK/iperf3-noserver.rc" ]] && res "iperf3-noserver-shape" "PASS (rc=$(cat "$WORK/iperf3-noserver.rc"): $(head -1 "$WORK/iperf3-noserver.out" | head -c 70))"
-[[ -f "$WORK/iftop-text.rc" ]] && res "iftop-text-shape" "PASS (rc=$(cat "$WORK/iftop-text.rc"): $(head -2 "$WORK/iftop-text.out" | tr '\n' '|' | head -c 80))"
+[[ -f "$WORK/rclone-about.rc" ]] && res "rclone-about-shape" "PASS (rc=$(cat "$WORK/rclone-about.rc"): $(head -1 "$WORK/rclone-about.out" | head -c 60))"
+# restic with no repository is the honest common case, and its refusal wording
+# is what a backup skill has to report rather than inventing its own.
+if [[ -f "$WORK/restic-snapshots.rc" ]]; then
+  res "restic-norepo-shape" "PASS (rc=$(cat "$WORK/restic-snapshots.rc"): $(head -2 "$WORK/restic-snapshots.err" | tr '\n' '|' | head -c 90))"
+fi
 # delv's verdict line is what dns_lookup reads; capture it verbatim.
 if [[ -f "$WORK/delv.rc" ]]; then
   res "delv-verdict-shape" "PASS (rc=$(cat "$WORK/delv.rc"): $(grep -m1 '^;' "$WORK/delv.out" | head -c 60))"
