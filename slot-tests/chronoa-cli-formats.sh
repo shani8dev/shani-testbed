@@ -250,6 +250,46 @@ if [[ -z "${CLI_FORMATS_CAPTURE_DIR:-}" ]]; then
   for tool in 7z unrar cabextract lrzip lzop arj unar lsar; do
     if have "$tool"; then probe "arch-$tool-help" "$tool" --help; fi
   done
+  # **Which formats does this image's 7z actually read?** Measured, not
+  # assumed. `extract_archive` and `list_archive` both delegate every
+  # non-tar/zip archive to `7z`, and the module docstrings claim it opens a
+  # `.rar`. Whether it can depends on the build's codec set - Arch's `p7zip`
+  # carries no RAR decoder and `7zip` (7-Zip proper) does - so a claim in a
+  # docstring is not evidence and this is the check that settles it.
+  if have 7z; then
+    timeout 25 7z i >"$WORK/7z-info.out" 2>&1; echo "$?" >"$WORK/7z-info.rc"
+  fi
+  # **A real archive in each format the image can CREATE, read back through
+  # `7z l -slt`.** Testing 7z against a `.7z` only proves it reads its own
+  # output; these three are made by entirely different tools. This is the
+  # measurement behind "7z opens .arj / .lzo / .lrz".
+  if have arj; then
+    ( cd "$WORK/arch" && timeout 20 arj a -r "$WORK/probe.arj" probe.txt ) >/dev/null 2>&1 || true
+  fi
+  if have lzop; then
+    ( cd "$WORK/arch" && timeout 20 lzop -o "$WORK/probe.lzo" probe.txt ) >/dev/null 2>&1 || true
+  fi
+  if have lrzip; then
+    ( cd "$WORK/arch" && timeout 20 lrzip -q -o "$WORK/probe.lrz" probe.txt ) >/dev/null 2>&1 || true
+  fi
+  for made in arj lzo lrz; do
+    if [[ -f "$WORK/probe.$made" ]] && have 7z; then
+      timeout 25 7z l -slt "$WORK/probe.$made" >"$WORK/read-$made.out" 2>&1
+      echo "$?" >"$WORK/read-$made.rc"
+    fi
+  done
+  # **The measurement above showed 7z cannot open .lzo or .lrz** (rc=2 on
+  # both, against archives their own tools created). So a parser for those
+  # formats needs `lzop`/`lrzip`'s *own* interfaces, which are a different
+  # shape from `7z l -slt` - so they are captured here rather than guessed.
+  if have lzop && [[ -f "$WORK/probe.lzo" ]]; then
+    timeout 20 lzop -l "$WORK/probe.lzo" >"$WORK/lzop-list.out" 2>&1; echo "$?" >"$WORK/lzop-list.rc"
+    timeout 20 lzop -d -c "$WORK/probe.lzo" >"$WORK/lzop-cat.out" 2>"$WORK/lzop-cat.err"; echo "$?" >"$WORK/lzop-cat.rc"
+  fi
+  if have lrzip && [[ -f "$WORK/probe.lrz" ]]; then
+    timeout 20 lrzip -t "$WORK/probe.lrz" >"$WORK/lrzip-list.out" 2>&1; echo "$?" >"$WORK/lrzip-list.rc"
+    timeout 20 lrzcat "$WORK/probe.lrz" >"$WORK/lrzcat.out" 2>"$WORK/lrzcat.err"; echo "$?" >"$WORK/lrzcat.rc"
+  fi
   # And the per-process I/O and network monitors shani-tools ships: "why is my
   # disk busy" and "what is using my bandwidth" have no Chronoa answer at all.
   if have iotop; then probe iotop iotop -b -n 1 -o; fi
@@ -463,5 +503,45 @@ for tool in iotop nethogs bandwhich strace; do
     res "$tool-shape" "SKIP (rc=${rc}, no output; stderr: ${err:-empty} - most of these need root or a terminal)"
   fi
 done
+
+# --- can 7z really read these formats? (not just its own) --------------------
+# The claim under test is the one both `extract_archive` and `list_archive`
+# make in their docstrings. A docstring is not evidence.
+if [[ -f "$WORK/7z-info.rc" ]]; then
+  info=$(cat "$WORK/7z-info.out" 2>/dev/null)
+  if grep -qiE 'rar' <<<"$info"; then
+    res "sevenzip-reads-rar" "PASS (this image's 7z lists RAR: $(grep -oiE '[a-z0-9]*rar[a-z0-9]*' <<<"$info" | sort -u | tr '\n' ' ' | head -c 60))"
+  else
+    fmts=$(awk '/^Formats:/,/^Codecs:/' <<<"$info" | tr -cs 'A-Za-z0-9' '\n' | grep -E '.{2,}' | sort -u | tr '\n' ' ')
+    res "sevenzip-reads-rar" "FAIL (this image's 7z does NOT list RAR. A .rar must be routed to unar/lsar, which ship in shani-tools-extra for exactly that. Formats it does list: ${fmts:0:140})"
+  fi
+fi
+
+# A real archive made by a *different* tool, read back through 7z. Testing
+# 7z against a .7z only proves it reads its own output.
+for made in arj lzo lrz; do
+  [[ -f "$WORK/read-$made.rc" ]] || continue
+  rc=$(cat "$WORK/read-$made.rc")
+  if [[ "$rc" == 0 ]] && grep -q "^Path = " "$WORK/read-$made.out"; then
+    res "7z-reads-$made" "PASS (rc=0, $(grep -c '^Path = ' "$WORK/read-$made.out") member(s) from a real .$made made by another tool)"
+  else
+    res "7z-reads-$made" "FAIL (rc=${rc}: $(head -2 "$WORK/read-$made.out" | tr '\n' ' ' | head -c 100))"
+  fi
+done
+
+# The tools that CAN open what 7z cannot, and what their own output looks
+# like. This is the measurement a parser for .lzo/.lrz has to be written
+# against, and until it exists those two formats are refused rather than
+# guessed at.
+if [[ -f "$WORK/lzop-list.rc" ]]; then
+  res "lzop-list-shape" "PASS (rc=$(cat "$WORK/lzop-list.rc"): $(head -3 "$WORK/lzop-list.out" | tr '\n' '|' | head -c 110))"
+  head -6 "$WORK/lzop-list.out" | sed 's/^/  | /'
+  res "lzop-cat-shape" "PASS (rc=$(cat "$WORK/lzop-cat.rc"), $(wc -c <"$WORK/lzop-cat.out") byte(s) to stdout)"
+fi
+if [[ -f "$WORK/lrzip-list.rc" ]]; then
+  res "lrzip-list-shape" "PASS (rc=$(cat "$WORK/lrzip-list.rc"): $(head -3 "$WORK/lrzip-list.out" | tr '\n' '|' | head -c 110))"
+  head -6 "$WORK/lrzip-list.out" | sed 's/^/  | /'
+  res "lrzcat-shape" "PASS (rc=$(cat "$WORK/lrzcat.rc"), $(wc -c <"$WORK/lrzcat.out") byte(s) to stdout)"
+fi
 
 echo "== probe done"
