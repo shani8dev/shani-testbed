@@ -135,3 +135,65 @@ if have dconf && compgen -G '/etc/dconf/db/*.d' >/dev/null; then
     if dconf compile "$T/bad.db" "$T/bad.d" >/dev/null 2>&1; then res dconf-negative-control "FAIL (broken keyfile accepted)"
     else res dconf-negative-control "PASS (broken keyfile rejected)"; fi
 else res dconf-keyfiles "SKIP (no dconf system databases)"; fi
+
+# --- auditd: does the shipped ruleset actually LOAD on a real boot? ---------
+# A rules file that PARSES is not a rules file the kernel ACCEPTED. On boot
+# auditd runs augenrules, which loads every file in /etc/audit/rules.d; a
+# malformed rule there fails that load and the slot runs with a short or empty
+# ruleset while every file on disk still reads as fine.
+# shani-settings/tests/validate-configs.sh checks the file's SYNTAX by running
+# auditctl -R per line; it cannot see a rule the kernel refused, so this is the
+# check that closes it.
+#
+# `augenrules --check` is deliberately NOT used anywhere here: measured on a
+# real Arch tree (audit 4.x) it returns 0 for a file containing nothing but the
+# text "this is not a rule", so it is a check that cannot fail.
+#
+# The count is compared, not just non-zero: a ruleset that loads 2 of its 66
+# rules is a regression, and "some rules loaded" would report it as a pass.
+if have auditctl && have auditd; then
+    # What the shipped file asks for: -a (syscall) and -w (watch) lines, the
+    # two forms `auditctl -l` lists. -b/-f/-D/-e are directives and do not
+    # appear in it.
+    want=0
+    for f in /etc/audit/rules.d/*.rules; do
+        [ -f "$f" ] || continue
+        want=$(( want + $(grep -cE '^[[:space:]]*-[aw]' "$f") ))
+    done
+    if out=$(auditctl -l 2>&1); then
+        got=$(grep -cE '^[[:space:]]*-[aw]' <<<"$out")
+        if [ "$got" -eq "$want" ]; then
+            res audit-rules-loaded "PASS ($got of $want rules loaded)"
+        elif [ "$got" -gt 0 ]; then
+            res audit-rules-loaded "FAIL ($got of $want rules loaded: the ruleset is short)"
+            printf '  | loaded keys missing from the loaded set:\n'
+            comm -13 <(grep -oE '-k [a-z_-]+' <<<"$out" | sort -u) \
+                     <(cat /etc/audit/rules.d/*.rules | grep -oE '-k [a-z_-]+' | sort -u) | head -10
+        else
+            res audit-rules-loaded "FAIL (0 of $want rules loaded: auditd is up but the ruleset did not load)"
+        fi
+    else
+        # auditctl exists but the kernel will not answer. Under nspawn this
+        # host's kernel has audit unavailable, which is an environment fact and
+        # not a verdict about the image - say so rather than guessing. (A real
+        # firmware boot on real hardware is where this check actually bites.)
+        res audit-rules-loaded "SKIP (kernel audit unavailable in this slot: $(head -1 <<<"$out"))"
+    fi
+    # Negative control. This one is valid in BOTH states above, because it does
+    # not need the kernel: auditctl parses in userspace first, so a rule that
+    # FAILS to parse exits 1 with no output, while one that parses gets as far
+    # as the netlink call and prints "Error sending add rule data request".
+    # "no output" is therefore a real rejection and "the EPERM wording" means it
+    # was accepted - which is why this control discriminates even here.
+    printf -- '-w /etc/passwd -p zzz -k identity\n' > "$T/bad-audit.rules"
+    ctl=$(auditctl -R "$T/bad-audit.rules" 2>&1)
+    if [ -z "$ctl" ]; then
+        res audit-negative-control "PASS (unparseable rule rejected by userspace parser)"
+    else
+        res audit-negative-control "FAIL (unparseable rule was accepted: $ctl)"
+    fi
+else
+    res audit-rules-loaded "SKIP (auditd/auditctl not installed)"
+    printf -- '-w /etc/passwd -p zzz -k identity\n' > "$T/bad-audit.rules"
+    [ -f "$T/bad-audit.rules" ] && res audit-negative-control "SKIP (no auditctl to run the control against)"
+fi
