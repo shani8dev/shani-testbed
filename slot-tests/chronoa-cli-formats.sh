@@ -55,7 +55,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # Each command runs once into $WORK. A binary absent from the image is a finding,
 # not a failure: it is exactly the dependency-missing case the parsers must
 # degrade through, so which way the image goes is recorded either way.
-for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip; do
+for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip compsize bootctl; do
   if have "$b"; then res "present-$b" "PASS ($(command -v "$b"))"
   else res "present-$b" "PASS (not on this image: its skill must report UNKNOWN, never a clean result)"
   fi
@@ -176,6 +176,72 @@ if have ip; then
     res "ip-neigh-field-order" "PASS ('IP dev <iface>' holds on Arch: ${neigh:0:90})"
   else
     res "ip-neigh-field-order" "FAIL (the neighbour table does not start 'IP dev <iface>': ${neigh:0:90} — check_internet reads those fields by position)"
+  fi
+fi
+
+if [[ -z "${CLI_FORMATS_CAPTURE_DIR:-}" ]]; then
+  if have compsize; then compsize / >"$WORK/compsize.out" 2>"$WORK/compsize.err"; echo "$?" >"$WORK/compsize.rc"; fi
+  if have bootctl; then
+    # **Three invocations were tried and all three were wrong**, which is why
+    # the help text is captured: guessing a fourth would be the same mistake.
+    #   `bootctl --json list`            -> "option '--json' requires an argument"
+    #   `bootctl --json list` (=auto)    -> "Unknown argument to --json= switch: ..."
+    # so this systemd's `bootctl` may not speak JSON at all. The help output
+    # settles it in one run instead of one guess per run.
+    bootctl --help >"$WORK/bootctl-help.out" 2>&1; echo "$?" >"$WORK/bootctl-help.rc"
+    bootctl list >"$WORK/bootctl-list.out" 2>"$WORK/bootctl-list.err"; echo "$?" >"$WORK/bootctl-list.rc"
+    bootctl --json list >"$WORK/bootctl.out" 2>"$WORK/bootctl.err"; echo "$?" >"$WORK/bootctl.rc"
+  fi
+fi
+
+# --- compsize: how much btrfs compression is actually saving -------------------
+# ShaniOS installs on btrfs with compression, and nothing here answers "how
+# much is it saving me". `compsize` walks the extents and reports the ratio.
+#
+# **Measured 2026-10-10: it is on the image and exits 1 with no output in an
+# nspawn slot.** The stderr is what separates "this tool cannot answer here"
+# from "the shape is wrong", so it is printed rather than summarised - a FAIL
+# that names no cause is the harness bug this repo has paid for twice.
+if [[ -f "$WORK/compsize.rc" ]]; then
+  out=$(cat "$WORK/compsize.out"); rc=$(cat "$WORK/compsize.rc")
+  err=$(tr -d '\n' <"$WORK/compsize.err" 2>/dev/null | head -c 120)
+  if [[ "$rc" == 0 ]] && grep -qiE 'disk size|uncompressed|compressed' <<<"$out"; then
+    line=$(grep -iE 'TOTAL|disk size' <<<"$out" | head -1 | tr -s ' \t' ' ')
+    res "compsize-shape" "PASS (rc=0 with a size line: ${line:0:90})"
+  elif grep -qiE 'not btrfs|No such file|permission denied' <<<"$err"; then
+    res "compsize-shape" "SKIP (rc=${rc}, and the reason is environmental, not a shape: ${err})"
+  else
+    res "compsize-shape" "FAIL (rc=${rc}, no size line; stderr: ${err:-<empty>})"
+  fi
+fi
+
+# --- bootctl: the EFI boot entries, read as JSON -------------------------------
+# The JSON shape is asserted when the tool speaks it and the prose shape when
+# it does not; which one this systemd has is a measurement, and the help text
+# above is how it is settled without guessing.
+if [[ -f "$WORK/bootctl.rc" ]]; then
+  rc=$(cat "$WORK/bootctl.rc")
+  err=$(tr -d '\n' <"$WORK/bootctl.err" 2>/dev/null | head -c 120)
+  if python3 -c "import json; json.load(open('$WORK/bootctl.out'))" 2>/dev/null; then
+    n=$(python3 -c "import json; print(len(json.load(open('$WORK/bootctl.out')).get('entries', [])))" 2>/dev/null)
+    res "bootctl-json-shape" "PASS (rc=${rc}, ${n} boot entry/entries, JSON-parsed rather than scraped)"
+  elif grep -qiE 'Unknown argument to --json|requires an argument' <<<"$err"; then
+    # **This systemd has no JSON output, and that is a finding, not a failure.**
+    # The prose path is then what a parser reads, so the list's own shape is
+    # asserted instead - and the WHOLE list is printed, because the last run
+    # truncated it at 110 characters and the parser writer was left completing
+    # a fixture by hand, which is exactly how a remembered format ships.
+    list_rc=$(cat "$WORK/bootctl-list.rc" 2>/dev/null || echo 1)
+    if [[ "$list_rc" == 0 ]] && grep -qE 'type:|title:' <<<"$(cat "$WORK/bootctl-list.out" 2>/dev/null)"; then
+      res "bootctl-json-shape" "SKIP (no --json on this systemd: ${err}; \`bootctl list\` works)"
+      printf '%s\n' "$(cat "$WORK/bootctl-list.out")" | sed 's/^/  | /'
+    else
+      res "bootctl-json-shape" "FAIL (--json refused AND \`bootctl list\` produced nothing (rc=${list_rc}), so neither shape is readable)"
+    fi
+  elif grep -qiE 'efivars|EFI system partition|No such file|not supported|permission denied' <<<"$err"; then
+    res "bootctl-json-shape" "SKIP (rc=${rc}, environmental rather than a shape: ${err})"
+  else
+    res "bootctl-json-shape" "FAIL (rc=${rc}, not JSON; stderr: ${err:-<empty>})"
   fi
 fi
 
