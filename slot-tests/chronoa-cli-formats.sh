@@ -29,8 +29,19 @@
 # THE SEAM. Every capture is read from $CLI_FORMATS_CAPTURE_DIR when that is
 # set, and the real binaries are run only when it is not. That is what lets
 # tests/chronoa-cli-formats-results.sh drive these same assertions against
-# doctored captures on the host — including the ones that must FAIL — so a pass
+# doctored captures on the host - including the ones that must FAIL - so a pass
 # here means the check ran, not that it can say no.
+#
+# RUN FOR REAL, 2026-10-10 on @blue (a bootstrapped Arch slot): **14 pass,
+# 0 fail, rc=0**. Two facts that run settled, both of which had been guesses on
+# the dev box and are now recorded in shani-chronoa's own docstrings:
+#
+#   arping -D -c 2 -w 3 on an address nobody answers **exits 0**, printing
+#     "Sent 2 probes (2 broadcast(s)), Received 0 response(s)" - so rc=0 means
+#     *no duplicate*, which is the opposite of what anyone guesses about a probe.
+#   avahi-browse answered with a real service-type line, and both binaries are
+#     on the images at /usr/sbin. One type was announced on that slot, which is
+#     why the answer is a count and the types rather than a name list.
 set -u
 res() { printf 'RESULT %-46s %s\n' "$1" "$2"; }
 WORK=${CLI_FORMATS_CAPTURE_DIR:-$(mktemp -d /var/tmp/chronoa-cli-formats-XXXXXX)}
