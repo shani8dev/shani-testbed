@@ -845,8 +845,23 @@ cmd_slot_test() {
     # slot-test path. Harmless when the test does not touch gsettings.
     out="$(nsenter --target "$LEADER_PID" --all -- dbus-run-session -- bash "/mnt/testbed/slot-tests/$(basename "$f")" 2>&1)" || rc=$?
     printf '%s\n' "$out" | sed 's/^/  | /'
-    pass=$(grep -c '^RESULT .* PASS' <<<"$out" || true)
-    fail=$(grep -c '^RESULT .* FAIL' <<<"$out" || true)
+    # **The verdict is a token immediately after the name, not "the word
+    # anywhere on the line".** `^RESULT .* FAIL` has an unbounded `.*`, so a
+    # PASS line whose *message* happens to contain the word - which is the
+    # normal thing for a check to say, e.g. `PASS ('IP dev <iface>' holds on
+    # Arch: ... docker0 FAILED ...)` - was counted as a pass **and** a fail.
+    # Measured on `chronoa-cli-formats` 2026-10-10: a run reporting
+    # "89 pass 1 fail" with **zero** `RESULT ... FAIL` lines anywhere in it,
+    # and `[ERROR] slot-test FAILED`. A slot-test that cannot pass is worse
+    # than one that fails, because it sends you looking for a fault that is
+    # not there.
+    #
+    # `res()` prints `RESULT <name> <verdict><message>` with the name padded
+    # and containing no spaces, so `\S+` is the name and the verdict is the
+    # next token. A slot-test that pads differently still parses as long as
+    # its name has no spaces, which is the format `res()` fixes.
+    pass=$(grep -cE '^RESULT [^ ]+ +PASS\b' <<<"$out" || true)
+    fail=$(grep -cE '^RESULT [^ ]+ +FAIL\b' <<<"$out" || true)
     if (( rc != 0 || fail > 0 || pass == 0 )); then failed=1; fi
     summary+=("$(printf '%-28s %3d pass %3d fail  rc=%d' "$name" "$pass" "$fail" "$rc")")
   done
