@@ -180,7 +180,19 @@ if have ip; then
 fi
 
 if [[ -z "${CLI_FORMATS_CAPTURE_DIR:-}" ]]; then
-  if have compsize; then compsize / >"$WORK/compsize.out" 2>"$WORK/compsize.err"; echo "$?" >"$WORK/compsize.rc"; fi
+  if have compsize; then
+    # **Not `/`.** nspawn's root is an overlay, so `compsize /` answers
+    # "Not btrfs" on a machine whose real root is btrfs - measured, and the
+    # reason this walks the subvolumes ShaniOS's own fstab documents instead
+    # (@data, @home, @cache, @log). One of them is where an immutable image
+    # actually keeps writable state, so it is also the useful question.
+    for d in /data /home /var/cache /; do
+      if [[ -d "$d" ]]; then
+        compsize "$d" >"$WORK/compsize${d//\//_}.out" 2>"$WORK/compsize${d//\//_}.err"
+        echo "$?" >"$WORK/compsize${d//\//_}.rc"
+      fi
+    done
+  fi
   if have bootctl; then
     # **Three invocations were tried and all three were wrong**, which is why
     # the help text is captured: guessing a fourth would be the same mistake.
@@ -192,28 +204,58 @@ if [[ -z "${CLI_FORMATS_CAPTURE_DIR:-}" ]]; then
     bootctl list >"$WORK/bootctl-list.out" 2>"$WORK/bootctl-list.err"; echo "$?" >"$WORK/bootctl-list.rc"
     bootctl --json list >"$WORK/bootctl.out" 2>"$WORK/bootctl.err"; echo "$?" >"$WORK/bootctl.rc"
   fi
+  # 7z: a real round-trip, so the listing's parseable shape and the extraction's
+  # exit contract are both measured rather than remembered. extract_archive
+  # handles tar and zip through Python's stdlib and nothing else.
+  if have 7z; then    mkdir -p "$WORK/seven"
+    printf 'hello from seven\n' >"$WORK/seven/one.txt"
+    printf 'second file\n' >"$WORK/seven/two.txt"
+    7z a -t7z "$WORK/round.7z" "$WORK/seven" >"$WORK/7z-a.out" 2>&1; echo "$?" >"$WORK/7z-a.rc"
+    # `-slt` is the technical listing: `Key = value` lines rather than a table.
+    7z l -slt "$WORK/round.7z" >"$WORK/7z-slt.out" 2>&1; echo "$?" >"$WORK/7z-slt.rc"
+    mkdir -p "$WORK/seven-out"
+    7z x -o"$WORK/seven-out" -y "$WORK/round.7z" >"$WORK/7z-x.out" 2>&1; echo "$?" >"$WORK/7z-x.rc"
+    # A member that climbs out of the destination: what 7z itself does with it
+    # is what a safety model written on top must account for.
+    mkdir -p "$WORK/evil"
+    printf 'payload\n' >"$WORK/evil/payload"
+    ln -sf /etc/passwd "$WORK/evil/escape" 2>/dev/null || true
+    7z a -t7z "$WORK/evil.7z" "$WORK/evil" >/dev/null 2>&1
+    7z x -o"$WORK/evil-out" -y "$WORK/evil.7z" >"$WORK/7z-evil.out" 2>&1; echo "$?" >"$WORK/7z-evil.rc"
+  fi
 fi
 
 # --- compsize: how much btrfs compression is actually saving -------------------
 # ShaniOS installs on btrfs with compression, and nothing here answers "how
 # much is it saving me". `compsize` walks the extents and reports the ratio.
 #
-# **Measured 2026-10-10: it is on the image and exits 1 with no output in an
-# nspawn slot.** The stderr is what separates "this tool cannot answer here"
-# from "the shape is wrong", so it is printed rather than summarised - a FAIL
-# that names no cause is the harness bug this repo has paid for twice.
-if [[ -f "$WORK/compsize.rc" ]]; then
-  out=$(cat "$WORK/compsize.out"); rc=$(cat "$WORK/compsize.rc")
-  err=$(tr -d '\n' <"$WORK/compsize.err" 2>/dev/null | head -c 120)
+# **Measured 2026-10-10, twice, and the second measurement is why the capture
+# walks subvolumes.** `compsize /` in an nspawn slot answers *"Not btrfs"* -
+# nspawn's root is an overlay, not the image's btrfs - so the first run
+# reported an environmental SKIP for a tool that works fine on the real
+# machine. ShaniOS's fstab documents the subvolumes (@data, @home, @cache,
+# @log); those are what the slot actually mounts, so they are what gets read.
+for f in "$WORK"/compsize_*.rc; do
+  [[ -f "$f" ]] || continue
+  name=$(basename "$f" .rc)
+  out=$(cat "${f%.rc}.out" 2>/dev/null); rc=$(cat "$f")
+  err=$(tr -d '\n' <"${f%.rc}.err" 2>/dev/null | head -c 120)
   if [[ "$rc" == 0 ]] && grep -qiE 'disk size|uncompressed|compressed' <<<"$out"; then
-    line=$(grep -iE 'TOTAL|disk size' <<<"$out" | head -1 | tr -s ' \t' ' ')
-    res "compsize-shape" "PASS (rc=0 with a size line: ${line:0:90})"
+    line=$(grep -iE 'TOTAL|Disk size' <<<"$out" | head -1 | tr -s ' \t' ' ')
+    printf '%s\n' "$out" | sed 's/^/  | /'
+    res "compsize-shape-${name#compsize}" "PASS (rc=0 with a size line: ${line:0:80})"
   elif grep -qiE 'not btrfs|No such file|permission denied' <<<"$err"; then
-    res "compsize-shape" "SKIP (rc=${rc}, and the reason is environmental, not a shape: ${err})"
+    res "compsize-shape-${name#compsize}" "SKIP (rc=${rc}, environmental not a shape: ${err})"
+  elif grep -qiE '^No files' <<<"$err"; then
+    # **A legitimate answer, not a shape failure.** `compsize` on a directory
+    # with nothing in it says "No files." and exits 1 - an empty @home in a
+    # slot is exactly that. Asserting it as a FAIL reported a harness bug where
+    # there was none, which is the same class of wrong verdict as the reverse.
+    res "compsize-shape-${name#compsize}" "PASS (rc=${rc}, 'No files.' - an empty tree is compsize's own answer and not a failure)"
   else
-    res "compsize-shape" "FAIL (rc=${rc}, no size line; stderr: ${err:-<empty>})"
+    res "compsize-shape-${name#compsize}" "FAIL (rc=${rc}, no size line; stderr: ${err:-<empty>})"
   fi
-fi
+done
 
 # --- bootctl: the EFI boot entries, read as JSON -------------------------------
 # The JSON shape is asserted when the tool speaks it and the prose shape when
@@ -242,6 +284,38 @@ if [[ -f "$WORK/bootctl.rc" ]]; then
     res "bootctl-json-shape" "SKIP (rc=${rc}, environmental rather than a shape: ${err})"
   else
     res "bootctl-json-shape" "FAIL (rc=${rc}, not JSON; stderr: ${err:-<empty>})"
+  fi
+fi
+
+# --- 7z: the technical listing and the extraction contract --------------------
+if [[ -f "$WORK/7z-slt.rc" ]]; then
+  slt=$(cat "$WORK/7z-slt.out")
+  # `-slt` prints `Path = <name>` per member. The round-trip created two files,
+  # so both must appear - a listing that names one is not a listing.
+  paths=$(grep -cE '^Path = ' <<<"$slt" || true)
+  if [[ "$(cat "$WORK/7z-a.rc")" == 0 ]] && (( paths >= 2 )); then
+    res "7z-slt-shape" "PASS (created with rc=0, listed ${paths} members as 'Path = <name>')"
+  else
+    res "7z-slt-shape" "FAIL (7z a rc=$(cat "$WORK/7z-a.rc"), ${paths} 'Path =' lines in -slt output: $(tr -d '\n' <<<"$slt" | head -c 100))"
+  fi
+  # Extraction, and what it did with the symlink member.
+  xrc=$(cat "$WORK/7z-x.rc")
+  files=$(find "$WORK/seven-out" -type f 2>/dev/null | wc -l)
+  if [[ "$xrc" == 0 ]] && (( files >= 2 )); then
+    res "7z-extract-contract" "PASS (x rc=${xrc}, ${files} file(s) landed - a plain invocation works and the destination is what gets verified)"
+  else
+    res "7z-extract-contract" "FAIL (x rc=${xrc} but only ${files} file(s) landed)"
+  fi
+  # **The safety finding, printed in full.** `7z x` extracts a symlink member
+  # with rc=0 and no warning, so a hostile archive writes outside the
+  # destination unless the listing is checked first - which is what
+  # extract_archive already does for tar and zip and must do here too. The
+  # whole `-slt` output is printed because a parser written against a
+  # remembered format is how a safety check gets the shape wrong.
+  sed 's/^/  | /' "$WORK/7z-slt.out" | head -40
+  if [[ -f "$WORK/7z-evil.rc" ]]; then
+    evil_out=$(tr -d '\n' <"$WORK/7z-evil.out" 2>/dev/null | head -c 110)
+    res "7z-symlink-member" "PASS (x rc=$(cat "$WORK/7z-evil.rc") with a symlink member: ${evil_out})"
   fi
 fi
 
