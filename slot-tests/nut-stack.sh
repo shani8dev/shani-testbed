@@ -200,6 +200,29 @@ NUTCFG
 chmod 0644 /etc/nut/*.conf
 res "config-present" "PASS (4 files from shani-settings)"
 
+# --- what the package's own scriptlets would have done -----------------------
+# `--local-pkg` overlays the files and EXPLICITLY runs no .install scriptlet, so
+# neither systemd-sysusers (which creates the `nut` group) nor
+# systemd-tmpfiles (which creates /var/lib/nut and /run/nut, owned nut:nut) has
+# run. Without them both units die immediately - upsd on `Can't chdir to
+# /var/lib/nut`, upsmon on `OS user nut not found` - which reads as a broken
+# config and is actually a missing user.
+#
+# So the test does what the package declares, using the package's OWN files
+# rather than a re-typed copy: run the sysusers and tmpfiles fragments Arch's nut
+# package ships. On a real install pacman has already done this, and doing it
+# again is a no-op.
+systemd-sysusers /usr/lib/sysusers.d/nut-common-sysusers.conf 2>/dev/null || \
+    getent group nut >/dev/null || groupadd -r nut
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/nut-common-tmpfiles.conf \
+    2>/dev/null || true
+if getent passwd nut >/dev/null && [ -d /var/lib/nut ]; then
+    res "package-scriptlets-prereqs" "PASS (nut user, /var/lib/nut, /run/nut)"
+else
+    res "package-scriptlets-prereqs" "FAIL (no nut user or no /var/lib/nut)"
+    fail=1
+fi
+
 # The install hook's credential, generated the way the hook generates it: 24
 # bytes from /dev/urandom, written 0640, MONITOR inserted between the markers.
 PIN=$(head -c 32 /dev/urandom | base64 | tr -d '\n=+/' | cut -c1-24)
