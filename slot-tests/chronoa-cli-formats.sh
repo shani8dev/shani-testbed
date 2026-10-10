@@ -309,9 +309,19 @@ if [[ -z "${CLI_FORMATS_CAPTURE_DIR:-}" ]]; then
   if have svnadmin; then
     timeout 30 svnadmin create "$WORK/svnrepo" >"$WORK/svnadmin.out" 2>&1; echo "$?" >"$WORK/svnadmin.rc"
     if [[ -d "$WORK/svnrepo" ]]; then
-      timeout 20 svn info "$WORK/svnrepo" >"$WORK/svn-info.out" 2>"$WORK/svn-info.err"; echo "$?" >"$WORK/svn-info.rc"
-      timeout 20 svn status "$WORK/svnrepo" >"$WORK/svn-status.out" 2>&1; echo "$?" >"$WORK/svn-status.rc"
-      timeout 20 svn log -l 3 "$WORK/svnrepo" >"$WORK/svn-log.out" 2>&1; echo "$?" >"$WORK/svn-log.rc"
+      # **A checkout, not the repository.** Measured on the first attempt:
+      # `svnadmin create` makes the server-side store, and `svn info` /
+      # `svn log` against *that* path exit 1 with "is not a working copy" - so
+      # it reported a shape of nothing. Checking out a working copy is what
+      # these commands are ever asked about by a person.
+      timeout 30 svn checkout "file://$WORK/svnrepo" "$WORK/svnwc" \
+        >"$WORK/svnco.out" 2>&1; echo "$?" >"$WORK/svnco.rc"
+      svnwc="$WORK/svnwc"
+      [[ -d "$svnwc" ]] || svnwc="$WORK/svnrepo"
+      timeout 20 svn info "$svnwc" >"$WORK/svn-info.out" 2>"$WORK/svn-info.err"; echo "$?" >"$WORK/svn-info.rc"
+      timeout 20 svn status "$svnwc" >"$WORK/svn-status.out" 2>&1; echo "$?" >"$WORK/svn-status.rc"
+      timeout 20 svn log -l 3 "$svnwc" >"$WORK/svn-log.out" 2>&1; echo "$?" >"$WORK/svn-log.rc"
+      timeout 20 svnversion "$svnwc" >"$WORK/svnversion.out" 2>&1; echo "$?" >"$WORK/svnversion.rc"
     fi
   fi
   if have hg; then
@@ -326,7 +336,12 @@ if [[ -z "${CLI_FORMATS_CAPTURE_DIR:-}" ]]; then
   # And the cloud tools, against the remote this image actually has.
   if have rclone; then
     timeout 20 rclone listremotes >"$WORK/rclone-remotes.out" 2>&1; echo "$?" >"$WORK/rclone-remotes.rc"
-    timeout 20 rclone about >"$WORK/rclone-about.out" 2>&1; echo "$?" >"$WORK/rclone-about.rc"
+    # `rclone about` with no argument prints a usage message and exits 2 -
+    # measured. It names a remote, so take the first one listremotes printed.
+    rfirst=$(head -1 "$WORK/rclone-remotes.out" 2>/dev/null | tr -d ':')
+    if [[ -n "$rfirst" ]]; then
+      timeout 20 rclone about "$rfirst" >"$WORK/rclone-about.out" 2>&1; echo "$?" >"$WORK/rclone-about.rc"
+    fi
   fi
   if have restic; then
     timeout 20 restic version >"$WORK/restic-version.out" 2>&1; echo "$?" >"$WORK/restic-version.rc"
@@ -627,6 +642,7 @@ if [[ -f "$WORK/svn-info.rc" ]]; then
 fi
 [[ -f "$WORK/svn-status.rc" ]] && res "svn-status-shape" "PASS (rc=$(cat "$WORK/svn-status.rc"): $(head -2 "$WORK/svn-status.out" | tr '\n' '|' | head -c 70))"
 [[ -f "$WORK/svn-log.rc" ]] && res "svn-log-shape" "PASS (rc=$(cat "$WORK/svn-log.rc"): $(head -3 "$WORK/svn-log.out" | tr '\n' '|' | head -c 80))"
+[[ -f "$WORK/svnversion.rc" ]] && res "svnversion-shape" "PASS (rc=$(cat "$WORK/svnversion.rc"): $(head -1 "$WORK/svnversion.out" | head -c 70))"
 if [[ -f "$WORK/hg-root.rc" ]]; then
   res "hg-root-shape" "PASS (rc=$(cat "$WORK/hg-root.rc"): $(head -1 "$WORK/hg-root.out" | head -c 70))"
   res "hg-summary-shape" "PASS (rc=$(cat "$WORK/hg-summary.rc"): $(head -2 "$WORK/hg-summary.out" | tr '\n' '|' | head -c 80))"
