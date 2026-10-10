@@ -347,6 +347,41 @@ if [[ -z "${CLI_FORMATS_CAPTURE_DIR:-}" ]]; then
     timeout 20 restic version >"$WORK/restic-version.out" 2>&1; echo "$?" >"$WORK/restic-version.rc"
     # No repository configured is the honest common case; its wording matters.
     timeout 20 restic snapshots >"$WORK/restic-snapshots.out" 2>"$WORK/restic-snapshots.err"; echo "$?" >"$WORK/restic-snapshots.rc"
+    # **And a real repository with a real backup in it.** "Is my backup
+    # working?" is answered by the snapshot *table*, and its columns cannot be
+    # guessed - so far only the no-repo refusal was measured, which is the easy
+    # half: a reader for that alone would exist for a machine that can never
+    # get past it.
+    export RESTIC_REPOSITORY="$WORK/restic-repo" RESTIC_PASSWORD=chronoa-test
+    if timeout 30 restic init >"$WORK/restic-init.out" 2>"$WORK/restic-init.err"; then
+      echo 0 >"$WORK/restic-init.rc"
+      mkdir -p "$WORK/tobackup"
+      printf 'one\n' >"$WORK/tobackup/a.txt"
+      printf 'two\n' >"$WORK/tobackup/b.txt"
+      timeout 60 restic backup "$WORK/tobackup" >"$WORK/restic-backup.out" 2>"$WORK/restic-backup.err"
+      echo "$?" >"$WORK/restic-backup.rc"
+      timeout 30 restic snapshots >"$WORK/restic-real-snapshots.out" 2>&1
+      echo "$?" >"$WORK/restic-real-snapshots.rc"
+      timeout 30 restic check >"$WORK/restic-check.out" 2>&1; echo "$?" >"$WORK/restic-check.rc"
+    else
+      echo 1 >"$WORK/restic-init.rc"
+    fi
+    unset RESTIC_REPOSITORY RESTIC_PASSWORD
+  fi
+  # **iperf3 against a real server on the far end.** The client's output with
+  # no server is a refusal; a bandwidth answer has a different shape entirely.
+  if have iperf3; then
+    ( timeout 45 iperf3 -s -1 -p 53100 >"$WORK/iperf3-server.out" 2>&1 ) &
+    sleep 2
+    timeout 30 iperf3 -c 127.0.0.1 -p 53100 -t 2 >"$WORK/iperf3-real.out" 2>"$WORK/iperf3-real.err"
+    echo "$?" >"$WORK/iperf3-real.rc"
+    wait 2>/dev/null || true
+  fi
+  # iftop's one-shot text mode. The first attempt's `-t -n 1` was rejected with
+  # "found arguments following options", so its own help is captured as well.
+  if have iftop; then
+    timeout 15 iftop --help >"$WORK/iftop-help.out" 2>&1; echo "$?" >"$WORK/iftop-help.rc"
+    timeout 20 iftop -t -n 1 -i lo >"$WORK/iftop-text.out" 2>&1; echo "$?" >"$WORK/iftop-text.rc"
   fi
   if have iperf3; then
     timeout 20 iperf3 --version >"$WORK/iperf3-version.out" 2>&1; echo "$?" >"$WORK/iperf3-version.rc"
@@ -656,6 +691,19 @@ fi
 if [[ -f "$WORK/restic-snapshots.rc" ]]; then
   res "restic-norepo-shape" "PASS (rc=$(cat "$WORK/restic-snapshots.rc"): $(head -2 "$WORK/restic-snapshots.err" | tr '\n' '|' | head -c 90))"
 fi
+# And the snapshot table, which is the actual answer to "is my backup working".
+if [[ -f "$WORK/restic-real-snapshots.rc" ]]; then
+  res "restic-snapshot-table" "PASS (rc=$(cat "$WORK/restic-real-snapshots.rc"), $(wc -l <"$WORK/restic-real-snapshots.out") lines)"
+  head -5 "$WORK/restic-real-snapshots.out" | sed 's/^/  | /'
+  res "restic-backup-shape" "PASS (rc=$(cat "$WORK/restic-backup.rc"): $(tail -2 "$WORK/restic-backup.err" | tr '\n' '|' | head -c 80))"
+  res "restic-check-shape" "PASS (rc=$(cat "$WORK/restic-check.rc"): $(head -2 "$WORK/restic-check.out" | tr '\n' '|' | head -c 70))"
+fi
+# iperf3's real throughput report, which is nothing like its refusal.
+if [[ -f "$WORK/iperf3-real.rc" ]]; then
+  res "iperf3-real-shape" "PASS (rc=$(cat "$WORK/iperf3-real.rc"): $(grep -m1 'receiver' "$WORK/iperf3-real.out" | head -c 90))"
+  grep -E 'receiver|sender' "$WORK/iperf3-real.out" | head -2 | sed 's/^/  | /'
+fi
+[[ -f "$WORK/iftop-text.rc" ]] && res "iftop-text-shape" "PASS (rc=$(cat "$WORK/iftop-text.rc"): $(head -2 "$WORK/iftop-text.out" | tr '\n' '|' | head -c 80))"
 # delv's verdict line is what dns_lookup reads; capture it verbatim.
 if [[ -f "$WORK/delv.rc" ]]; then
   res "delv-verdict-shape" "PASS (rc=$(cat "$WORK/delv.rc"): $(grep -m1 '^;' "$WORK/delv.out" | head -c 60))"
