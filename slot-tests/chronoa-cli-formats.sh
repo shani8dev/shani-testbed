@@ -55,7 +55,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # Each command runs once into $WORK. A binary absent from the image is a finding,
 # not a failure: it is exactly the dependency-missing case the parsers must
 # degrade through, so which way the image goes is recorded either way.
-for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip compsize bootctl v4l2-ctl clockdiff cryptsetup iotop iostat nethogs bandwhich strace unrar cabextract lrzip lzop arj unar lsar; do
+for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip compsize bootctl v4l2-ctl clockdiff cryptsetup iotop iostat nethogs bandwhich strace unrar cabextract lrzip lzop arj unar lsar svn hg restic rclone iperf3 socat iftop arpwatch delv host nslookup wget aria2c; do
   if have "$b"; then res "present-$b" "PASS ($(command -v "$b"))"
   else res "present-$b" "PASS (not on this image: its skill must report UNKNOWN, never a clean result)"
   fi
@@ -290,6 +290,40 @@ if [[ -z "${CLI_FORMATS_CAPTURE_DIR:-}" ]]; then
     timeout 20 lrzip -t "$WORK/probe.lrz" >"$WORK/lrzip-list.out" 2>&1; echo "$?" >"$WORK/lrzip-list.rc"
     timeout 20 lrzcat "$WORK/probe.lrz" >"$WORK/lrzcat.out" 2>"$WORK/lrzcat.err"; echo "$?" >"$WORK/lrzcat.rc"
   fi
+  # --- the rest of what shani-tools ships, captured in ONE run ----------------
+  # The remaining gap list is ~65 commands and measuring them a few at a time
+  # cost a 6-minute boot each. These are the ones that answer a question a
+  # person actually asks; the rest (hdparm, cloudflared, caddy, gobuster,
+  # zsync, nbdkit, telnet, ftp) are root-only, servers, or brute-forcers, and
+  # are recorded as deliberately not built rather than measured.
+  for tool in svn hg restic rclone iperf3 socat iftop arpwatch delv host nslookup wget aria2c; do
+    have "$tool" || continue
+    probe "$tool-version" "$tool" --version
+  done
+  # Behaviour, not just presence: what these print for a real invocation.
+  if have svn && [[ -d "$WORK" ]]; then
+    ( cd "$WORK" && timeout 20 svn info . ) >"$WORK/svn-info.out" 2>"$WORK/svn-info.err"; echo "$?" >"$WORK/svn-info.rc"
+  fi
+  if have hg && [[ -d "$WORK" ]]; then
+    ( cd "$WORK" && timeout 20 hg root ) >"$WORK/hg-root.out" 2>"$WORK/hg-root.err"; echo "$?" >"$WORK/hg-root.rc"
+  fi
+  if have restic; then timeout 20 restic version >"$WORK/restic-version.out" 2>&1; echo "$?" >"$WORK/restic-version.rc"; fi
+  if have rclone; then timeout 20 rclone listremotes >"$WORK/rclone-remotes.out" 2>&1; echo "$?" >"$WORK/rclone-remotes.rc"; fi
+  if have iperf3; then
+    timeout 20 iperf3 --version >"$WORK/iperf3-version.out" 2>&1; echo "$?" >"$WORK/iperf3-version.rc"
+    # The client half with no server: a real failure, and its own wording.
+    timeout 20 iperf3 -c 127.0.0.1 -t 1 -p 59999 >"$WORK/iperf3-noserver.out" 2>&1; echo "$?" >"$WORK/iperf3-noserver.rc"
+  fi
+  if have socat; then timeout 20 socat -V >"$WORK/socat-version.out" 2>&1; echo "$?" >"$WORK/socat-version.rc"; fi
+  if have iftop; then
+    # iftop is a curses UI; `-t` makes it one-shot text, and without a bound
+    # it sits there refreshing forever.
+    timeout 15 iftop -t -n 1 >"$WORK/iftop-text.out" 2>&1; echo "$?" >"$WORK/iftop-text.rc"
+  fi
+  if have arpwatch; then timeout 20 arpwatch --version >"$WORK/arpwatch-version.out" 2>&1; echo "$?" >"$WORK/arpwatch-version.rc"; fi
+  if have delv; then timeout 20 delv example.com A >"$WORK/delv.out" 2>&1; echo "$?" >"$WORK/delv.rc"; fi
+  if have host; then timeout 20 host example.com >"$WORK/host.out" 2>&1; echo "$?" >"$WORK/host.rc"; fi
+  if have nslookup; then timeout 20 nslookup example.com >"$WORK/nslookup.out" 2>&1; echo "$?" >"$WORK/nslookup.rc"; fi
   # And the per-process I/O and network monitors shani-tools ships: "why is my
   # disk busy" and "what is using my bandwidth" have no Chronoa answer at all.
   if have iotop; then probe iotop iotop -b -n 1 -o; fi
@@ -543,5 +577,29 @@ if [[ -f "$WORK/lrzip-list.rc" ]]; then
   head -6 "$WORK/lrzip-list.out" | sed 's/^/  | /'
   res "lrzcat-shape" "PASS (rc=$(cat "$WORK/lrzcat.rc"), $(wc -c <"$WORK/lrzcat.out") byte(s) to stdout)"
 fi
+
+# --- the rest of what shani-tools ships -------------------------------------
+# Each prints the real first lines, so a parser can be written against what
+# the tool actually said rather than what a man page says it says.
+for tool in svn hg restic rclone iperf3 socat arpwatch; do
+  [[ -f "$WORK/$tool-version.rc" ]] || continue
+  rc=$(cat "$WORK/$tool-version.rc")
+  first=$(head -1 "$WORK/$tool-version.out" 2>/dev/null | head -c 70)
+  res "$tool-version" "PASS (rc=${rc}: ${first})"
+done
+# Behaviours, which are what a parser has to match.
+[[ -f "$WORK/svn-info.rc" ]] && res "svn-info-shape" "PASS (rc=$(cat "$WORK/svn-info.rc"): $(head -2 "$WORK/svn-info.out" | tr '\n' '|' | head -c 90))"
+[[ -f "$WORK/hg-root.rc" ]] && res "hg-root-shape" "PASS (rc=$(cat "$WORK/hg-root.rc"): $(head -1 "$WORK/hg-root.out" | head -c 70))"
+# `rclone listremotes` with none configured is an empty list and rc=0 - which
+# is the shape a "you have no remotes" answer has to recognise, not a failure.
+[[ -f "$WORK/rclone-remotes.rc" ]] && res "rclone-remotes-shape" "PASS (rc=$(cat "$WORK/rclone-remotes.rc"), $(wc -l <"$WORK/rclone-remotes.out") remote(s) configured)"
+[[ -f "$WORK/iperf3-noserver.rc" ]] && res "iperf3-noserver-shape" "PASS (rc=$(cat "$WORK/iperf3-noserver.rc"): $(head -1 "$WORK/iperf3-noserver.out" | head -c 70))"
+[[ -f "$WORK/iftop-text.rc" ]] && res "iftop-text-shape" "PASS (rc=$(cat "$WORK/iftop-text.rc"): $(head -2 "$WORK/iftop-text.out" | tr '\n' '|' | head -c 80))"
+# delv's verdict line is what dns_lookup reads; capture it verbatim.
+if [[ -f "$WORK/delv.rc" ]]; then
+  res "delv-verdict-shape" "PASS (rc=$(cat "$WORK/delv.rc"): $(grep -m1 '^;' "$WORK/delv.out" | head -c 60))"
+fi
+[[ -f "$WORK/host.rc" ]] && res "host-shape" "PASS (rc=$(cat "$WORK/host.rc"): $(head -1 "$WORK/host.out" | head -c 70))"
+[[ -f "$WORK/nslookup.rc" ]] && res "nslookup-shape" "PASS (rc=$(cat "$WORK/nslookup.rc"): $(grep -m1 'Server:' "$WORK/nslookup.out" | head -c 60))"
 
 echo "== probe done"
