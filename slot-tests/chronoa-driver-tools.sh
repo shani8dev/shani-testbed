@@ -45,6 +45,35 @@ WORK=${DRIVER_TOOLS_CAPTURE_DIR:-$(mktemp -d /var/tmp/chronoa-driver-tools-XXXXX
 [[ -n "${DRIVER_TOOLS_CAPTURE_DIR:-}" ]] || trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK"
 
+# Whether the running kernel is the image's own or a shared host one.
+#
+# **This is a function rather than inline code because the first version wrote
+# the decision inline in the capture phase, and a mutation of it survived the
+# self-test completely** - the replay path reads a doctored `kernelsource` file
+# and never runs the capture code, so an assertion can only cover the decision
+# if the decision is callable. Measured pair from the real slot: release
+# `7.0.0-38-generic` against image `7.2.6-arch2-1` is a HOST kernel.
+kernel_source() { # kernel_source <uname -r> <pacman's linux version>
+  # **The separators differ, and reading the real output is what showed it.**
+  # Measured in the slot: pacman reports the image's kernel as
+  # `7.2.6.arch2-1` while the booted kernel's `uname -r` is
+  # `7.2.6-arch2-1` - Arch's PKGBUILD version carries a `.` that becomes `-` in
+  # KERNELRELEASE. So a plain prefix comparison says "host kernel" on a boot
+  # that is running the image's own kernel, which is precisely the wrong
+  # direction: it would attach the "this describes your dev machine" caveat to a
+  # real boot and hide a real build tree. Both sides are compared with every
+  # separator folded away.
+  local running=${1:-} image_ver=${2:-}
+  local r i
+  r=$(printf '%s' "$running" | tr -cd '[:alnum:]')
+  i=$(printf '%s' "$image_ver" | tr -cd '[:alnum:]')
+  if [ -n "$i" ] && [ -n "$r" ] && [ "${r#"$i"}" != "$r" ]; then
+    printf 'image\n'
+  else
+    printf 'host\n'
+  fi
+}
+
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # --- capture ------------------------------------------------------------------
@@ -64,10 +93,45 @@ if [[ -z "${DRIVER_TOOLS_CAPTURE_DIR:-}" ]]; then
   # meaningful against the kernel it looked for.
   uname -r >"$WORK/uname" 2>/dev/null || printf '(unknown)\n' >"$WORK/uname"
   release=$(cat "$WORK/uname")
+
+  # **THE IMAGE'S OWN KERNEL, which under nspawn is NOT `uname -r`.**
+  # Measured on a real slot 2026-10-10: `uname -r` there is the *host's*
+  # kernel (`7.0.0-38-generic`), because `systemd-nspawn` shares the host kernel
+  # - so the first version of this check looked for
+  # `/lib/modules/7.0.0-38-generic/build` and reported "no linux-headers", which
+  # is a fact about the development machine wearing the image's clothes. This
+  # harness's AGENTS.md already says the same thing about `audit-rules-loaded`
+  # ("nspawn cannot: it shares this host's kernel"), and the lesson generalises
+  # to every `uname`-derived fact in a slot test.
+  #
+  # So the image's own kernel is read out of pacman, and both are recorded:
+  # only a boot with the image's kernel (vmspawn / iso-install) can settle
+  # whether *that* kernel has headers, and this slot cannot.
+  if command -v pacman >/dev/null 2>&1; then
+    pacman -Q linux 2>/dev/null | awk '{print $2}' >"$WORK/imgkernel" \
+      || : >"$WORK/imgkernel.none"
+  else
+    : >"$WORK/imgkernel.none"
+  fi
+  # Whether this boot is the image's kernel or a shared one. Decided by
+  # comparing, never assumed - and through the callable, so the self-test can
+  # cover the decision rather than only the sentence that repeats it.
+  img=$(cat "$WORK/imgkernel" 2>/dev/null || true)
+  kernel_source "$release" "$img" >"$WORK/kernelsource"
+
   for d in "/lib/modules/$release/build" "/usr/lib/modules/$release/build"; do
     if [[ -e "$d" ]]; then printf '%s\n' "$d" >"$WORK/builddir"; break; fi
   done
   : >"$WORK/builddir.absent"
+  # And whether the *headers package* is installed at all - a question about
+  # the image that does not depend on which kernel is booted.
+  if command -v pacman >/dev/null 2>&1; then
+    if pacman -Qq linux-headers linux-lts-headers >/dev/null 2>&1; then
+      printf 'installed\n' >"$WORK/headers"
+    else
+      printf 'absent\n' >"$WORK/headers"
+    fi
+  fi
 
   # /sys/kernel/security/lockdown, verbatim. The parser takes the bracketed
   # token as the enforced mode, so the WHOLE line is kept - a file this
@@ -159,12 +223,33 @@ absent_bin() { [[ -f "$WORK/have-$1.absent" ]]; }
 # is only that each piece was actually looked for, so "cannot be built here"
 # is a claim about four probes rather than an assertion about the universe.
 release=$(cap uname)
+img=$(cap imgkernel)
+src=$(cap kernelsource)
 if [[ -n "$release" && "$release" != "(unknown)" ]]; then
+  if [[ "$src" == "host" ]]; then
+    # **This is the caveat, stated in the result rather than left implicit.**
+    # Under nspawn the kernel is the host's, so the tree below says what the
+    # *host* has - which is why the headers *package* is the line that can
+    # actually answer the question about the image.
+    res "kernel-boot-source" "PASS (running ${release}, but the image's own kernel is ${img:-unknown}: this slot shares the HOST kernel, so anything derived from uname describes the development machine, not the image. Settle it with vmspawn or iso-install)"
+  else
+    res "kernel-boot-source" "PASS (running ${release}, which matches the image's own linux ${img}: this boot is the image's kernel, so the build tree below is a fact about it)"
+  fi
   if [[ -f "$WORK/builddir" ]]; then
     res "kernel-build-tree" "PASS (present for ${release}: $(cap builddir))"
   else
-    res "kernel-build-tree" "PASS (ABSENT for ${release}, which is what makes a kernel module unbuildable here: no /lib/modules/<release>/build, so linux-headers is not installed)"
+    res "kernel-build-tree" "PASS (ABSENT for ${release} - and note which kernel that is, per kernel-boot-source: ${src} kernel)"
   fi
+fi
+# The package question, which no amount of uname can answer.
+if [[ -f "$WORK/headers" ]]; then
+  if [[ "$(cap headers)" == "installed" ]]; then
+    res "kernel-headers-package" "PASS (a linux-headers package IS installed, so a kernel module could be built against the image's own kernel - and shani-chronoa's 'no desktop profile installs linux-headers' claim is STALE for this image)"
+  else
+    res "kernel-headers-package" "PASS (no linux-headers package installed, which is what makes a kernel module unbuildable on this image independently of which kernel is booted)"
+  fi
+elif [[ ! -f "$WORK/imgkernel" ]]; then
+  res "kernel-headers-package" "SKIP (pacman is not readable here, so which packages the image installs could not be asked - the header claim stays unmeasured rather than assumed)"
 fi
 for b in gcc make dkms; do
   if present "$b"; then
@@ -224,7 +309,7 @@ esac
 # is recorded rather than asserted, because asserting `writable` would report a
 # harness problem as a platform finding.
 case "$(cap modulesdir)" in
-  writable) res "module-install-location" "PASS (/usr/lib/modules is writable, so a module could be installed here - the read-only-slot claim in driver_status does not apply to this machine)" ;;
+  writable) res "module-install-location" "PASS (/usr/lib/modules is WRITABLE here - measured on a real slot 2026-10-10, and that is the slot's writable overlay rather than the real layout: on a real blue/green boot / is a read-only subvolume. So this line does not contradict driver_status's read-only-slot note; it shows the two are different machines, and only vmspawn or iso-install can measure the real one)" ;;
   readonly) res "module-install-location" "PASS (/usr/lib/modules is read-only, which is the blue/green layout: / is a read-only slot and /var is $(cap varfstype), so a module has nowhere to persist across a reboot - the reason driver_build says so and `install` is not offered)" ;;
   *)        res "module-install-location" "SKIP (no /usr/lib/modules at all, so there is nothing to say about installing one)" ;;
 esac

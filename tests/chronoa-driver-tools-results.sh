@@ -64,7 +64,12 @@ desktop_capture() { # desktop_capture <dir>
   printf '/usr/bin/modprobe\n' >"$d/have-modprobe"
   printf '/usr/bin/insmod\n'   >"$d/have-insmod"
   printf '/usr/bin/modinfo\n'  >"$d/have-modinfo"
-  printf '7.2.6-arch2-1\n'     >"$d/uname"
+  # `uname` is the HOST kernel here on purpose: that is what a slot reports, and
+  # it is the distinction scenario 9 checks.
+  printf '7.0.0-38-generic\n'  >"$d/uname"
+  printf '7.2.6-arch2-1\n'      >"$d/imgkernel"
+  printf 'host\n'              >"$d/kernelsource"
+  printf 'absent\n'            >"$d/headers"
   : >"$d/builddir.absent"
   # The real lockdown line from the dev box, verbatim.
   printf '[none] integrity confidentiality\n' >"$d/lockdown"
@@ -141,7 +146,8 @@ d4=$(scenario with-toolchain); desktop_capture "$d4"
 printf '/usr/bin/gcc\n' >"$d4/have-gcc";  rm -f "$d4/have-gcc.absent"
 printf '/usr/bin/make\n' >"$d4/have-make"; rm -f "$d4/have-make.absent"
 printf '/usr/bin/dkms\n' >"$d4/have-dkms"; rm -f "$d4/have-dkms.absent"
-printf '/usr/lib/modules/7.2.6-arch2-1/build\n' >"$d4/builddir"; rm -f "$d4/builddir.absent"
+printf '/usr/lib/modules/7.0.0-38-generic/build\n' >"$d4/builddir"; rm -f "$d4/builddir.absent"
+printf 'image\n' >"$d4/kernelsource"; printf 'installed\n' >"$d4/headers"
 printf '[none] integrity confidentiality\n' >"$d4/lockdown"
 out4=$(DRIVER_TOOLS_CAPTURE_DIR="$d4" bash "$SLOT_TEST" 2>&1)
 echo "# --- an image with a full toolchain ---"
@@ -207,6 +213,90 @@ if grep -qE '^RESULT [^ ]+ +(PASS|FAIL)\b' <<<"$out8"; then
   grep -E '^RESULT .* (PASS|FAIL)' <<<"$out8" | sed 's/^/#   /'
 else
   ok "an unmeasured capture produced no PASS and no FAIL ($n SKIP(s), each naming what it did not measure)"
+fi
+
+# --- scenario 9: the host/image kernel distinction, which the first run got wrong
+# The real slot reported `uname -r` = 7.0.0-38-generic (the HOST's kernel,
+# because nspawn shares it) while the image's own linux was 7.2.6-arch2-1. The
+# first version of the slot-test looked for the host's build tree and reported
+# "no linux-headers" - a fact about the development machine wearing the image's
+# clothes. This scenario fixes the answer when the boot IS the image's kernel,
+# and checks the caveat is reported the other way round too.
+d9=$(scenario own-kernel); desktop_capture "$d9"
+printf '7.2.6-arch2-1\n' >"$d9/uname"
+printf 'image\n' >"$d9/kernelsource"
+printf 'installed\n' >"$d9/headers"
+printf '/usr/lib/modules/7.2.6-arch2-1/build\n' >"$d9/builddir"; rm -f "$d9/builddir.absent"
+out9=$(DRIVER_TOOLS_CAPTURE_DIR="$d9" bash "$SLOT_TEST" 2>&1)
+echo "# --- a boot that is the image's own kernel, with headers installed ---"
+grep -E 'kernel-boot-source|kernel-build-tree|kernel-headers-package' <<<"$out9" | sed 's/^/#   /'
+check "a boot on the image's own kernel says so"   "$out9" "kernel-boot-source" PASS
+if grep -E 'RESULT kernel-boot-source' <<<"$out9" | grep -q 'shares the HOST kernel'; then
+  no "an own-kernel boot is not reported as a host kernel"
+else
+  ok "an own-kernel boot is not reported as a host kernel"
+fi
+# The stale-claim line: headers present means shani-chronoa's own AGENTS.md
+# sentence is out of date, and the slot-test has to be able to say so.
+if grep -E 'RESULT kernel-headers-package' <<<"$out9" | grep -q 'STALE'; then
+  ok "an image with linux-headers reports that the claim is stale"
+else
+  no "an image with linux-headers reports that the claim is stale"
+fi
+
+# --- scenario 10: the decision itself, called directly -------------------------
+# **A mutation of the inline decision survived scenario 9 completely.** The
+# replay path reads a doctored `kernelsource` and never runs the capture code,
+# so no assertion over the RESULT lines could cover it - which is the same shape
+# as a guard nothing calls with the inputs it must handle. So the decision is
+# now a function, and it is called here with the exact pair the real slot
+# produced. Without this, "always claim the image's kernel" is a mutation the
+# self-test cannot see.
+# Extract the function body properly: source a filtered copy.
+mkfn() { # mkfn <destfile>
+  awk '/^kernel_source\(\) \{/,/^\}$/' "$SLOT_TEST" >"$1"
+}
+F="$SCEN/kernel_source.sh"
+mkfn "$F"
+if [[ -s "$F" ]]; then
+  . "$F"
+  if [[ "$(kernel_source 7.0.0-38-generic 7.2.6-arch2-1)" == "host" ]]; then
+    ok "the measured pair (host 7.0.0-38-generic vs image 7.2.6-arch2-1) reads as a HOST kernel"
+  else
+    no "the measured pair (host 7.0.0-38-generic vs image 7.2.6-arch2-1) reads as a HOST kernel"
+  fi
+  if [[ "$(kernel_source 7.2.6-arch2-1 7.2.6-arch2-1)" == "image" ]]; then
+    ok "a release matching the image's linux reads as the IMAGE's kernel"
+  else
+    no "a release matching the image's linux reads as the IMAGE's kernel"
+  fi
+  # **The pair the real run printed**, and the reason the comparison folds its
+  # separators: pacman says `7.2.6.arch2-1` and a booted kernel says
+  # `7.2.6-arch2-1`. Compared literally these do not match, so a boot running
+  # the image's own kernel would be reported as a host kernel - attaching the
+  # "this describes your dev machine" caveat to a real boot.
+  if [[ "$(kernel_source 7.2.6-arch2-1 7.2.6.arch2-1)" == "image" ]]; then
+    ok "the printed pair (running 7.2.6-arch2-1 vs pacman 7.2.6.arch2-1) reads as the IMAGE's kernel"
+  else
+    no "the printed pair (running 7.2.6-arch2-1 vs pacman 7.2.6.arch2-1) reads as the IMAGE's kernel"
+  fi
+  # An unknown image version must NOT read as a match: claiming "this is the
+  # image's kernel" with nothing to compare against is the confident wrong
+  # answer, and it is the direction the whole caveat exists to prevent.
+  if [[ "$(kernel_source 7.0.0-38-generic '')" == "host" ]]; then
+    ok "with no image version to compare, it reads as host rather than claiming a match"
+  else
+    no "with no image version to compare, it reads as host rather than claiming a match"
+  fi
+else
+  no "the kernel_source function could not be extracted from the slot-test"
+fi
+
+# And the default scenario (host kernel, no headers) must say the caveat.
+if grep -E 'RESULT kernel-boot-source' <<<"$out1" | grep -q 'shares the HOST kernel'; then
+  ok "a slot sharing the host kernel says so in its own result"
+else
+  no "a slot sharing the host kernel says so in its own result"
 fi
 
 echo "1..$((pass + fail))"

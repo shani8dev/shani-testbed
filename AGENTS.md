@@ -900,3 +900,47 @@ Not yet run on a real slot — that needs `slot-test blue chronoa-driver-tools`
 on a bootstrapped image, and the SecureBoot-efivar line is the measurement worth
 having: it settles, on a root slot, the fact a desktop user cannot read and
 `driver_status` therefore reports as UNKNOWN rather than guessing.
+
+### Run for real on `@blue` (2026-10-10): 13 pass, 0 fail, rc=0 — and it found two more of mine
+
+`slot-test blue chronoa-driver-tools` on a bootstrapped slot. The claims it
+settles come out of the image's own pacman database, not a matrix: **no
+`linux-headers` package**, no gcc/make/dkms, `kmod` present, image kernel
+`7.2.6.arch2-1`, `fusermount3` + `/dev/fuse` + one real `fusectl` mount, and
+`v4l2-ctl` exiting 0 with zero devices.
+
+**`uname -r` in a slot is the HOST's kernel, and it bit the check itself.**
+Measured: the slot ran `7.0.0-38-generic` while the image's own kernel is
+`7.2.6.arch2-1` — `systemd-nspawn` shares the host kernel, which this file
+already records for `audit-rules-loaded`. So `kernel-build-tree` was reporting
+the *development machine's* headers while claiming to report the image's: a fact
+about the wrong machine wearing the right clothes, and it read as a clean PASS.
+The check now reads the image's kernel from pacman and prints a
+`kernel-boot-source` line naming which kernel every `uname`-derived fact
+describes. **Generalises: any `uname`-derived fact in a slot test describes the
+host, and a check that does not say so is reporting the wrong machine.**
+
+**Then the printed output exposed a second one.** pacman says
+`7.2.6.arch2-1`; a booted kernel says `7.2.6-arch2-1`, because Arch's pkgver `.`
+becomes `-` in `KERNELRELEASE`. Compared literally they do not match, so a boot
+running the image's own kernel would read as a *host* kernel — attaching the
+"this is your dev machine" caveat to a real boot and hiding a real build tree.
+Both sides are compared with separators folded away, and the printed pair is
+itself a test case. **Reading what a run printed, rather than only that it
+passed, is what found this.**
+
+**A third shape worth keeping: the decision had to become a function.** The
+host-vs-image comparison was inline in the capture phase, and a mutation of it
+survived the self-test completely — the replay path reads a doctored
+`kernelsource` file and never executes the capture code, so no assertion over
+RESULT lines could ever cover it. Extracted as `kernel_source()`, the mutation
+fails 1 check, and the "unknown version must not claim a match" direction fails
+2. **30 host checks, 5 mutations confirmed to fail** (the three earlier ones plus
+these two).
+
+`/usr/lib/modules` is writable in a slot — that is the overlay, not the real
+blue/green layout — so the line reports both rather than appearing to contradict
+the read-only claim. And two SKIPs are honest and environmental: no
+`/sys/kernel/security/lockdown` and no SecureBoot efivar under nspawn. **The
+SecureBoot one is the fact worth having** and nspawn cannot settle it; it needs
+a `vmspawn`/`iso-install` boot of the image's own kernel.
