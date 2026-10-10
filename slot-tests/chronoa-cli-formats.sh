@@ -232,6 +232,50 @@ PY
       echo "$?" >"$WORK/zip-$t.rc"
     done
   fi
+  # --- rclone: a LOCAL remote, so the listing shapes are measurable -------
+  # The only rclone measurement so far was a *refusal* - `rclone about` on the
+  # image's own R2 remote exits 3 - and a skill written from a refusal is a
+  # skill that can only fail. Nothing can shape a real listing from it.
+  #
+  # A **local** backend needs no credentials and no network, so it settles the
+  # output shapes `listremotes`/`lsd`/`size`/`lsf` actually produce, which is
+  # what the routing and the reader have to match.
+  #
+  # **`--config`, not `RCLONE_CONFIG_DIR`.** The env var was ignored by this
+  # build (measured: every probe answered "Config file /root/.config/rclone/
+  # rclone.conf not found - using defaults" and `listremotes` printed nothing),
+  # so the path goes on the command line where no version can disagree about
+  # it. The *remote's* data path is on the command line too, because a `local`
+  # remote with no configured path lists the caller's own working directory.
+  if have rclone; then
+    mkdir -p "$WORK/rclone-config" "$WORK/clouddata/docs"
+    printf 'one\n' >"$WORK/clouddata/a.txt"
+    printf 'two\n' >"$WORK/clouddata/docs/b.txt"
+    RCLONE_CONF="$WORK/rclone-config/rclone.conf"
+    printf '[probe]\ntype = local\n' >"$RCLONE_CONF"
+    CLOUD="probe:$WORK/clouddata"
+    # **Tags are named, not derived.** A tag built from the command with
+    # `tr -cs 'a-zA-Z0-9' '-'` absorbs `$WORK` into the filename, so nothing
+    # downstream could find the file - and a check that cannot find its capture
+    # is a check that reports nothing at all rather than failing.
+    for tag in listremotes lsd lsd-recursive size lsf lsf-l; do
+      case $tag in
+        listremotes)     cmd="listremotes" ;;
+        lsd)             cmd="lsd $CLOUD" ;;
+        lsd-recursive)   cmd="lsd -R $CLOUD" ;;
+        size)            cmd="size $CLOUD" ;;
+        lsf)             cmd="lsf $CLOUD" ;;
+        lsf-l)           cmd="lsf -l $CLOUD" ;;
+      esac
+      timeout 25 rclone --config "$RCLONE_CONF" $cmd >"$WORK/rclone-$tag.out" 2>"$WORK/rclone-$tag.err"
+      echo "$?" >"$WORK/rclone-$tag.rc"
+    done
+    # A remote that does not exist: a typo'd or unconfigured one is a different
+    # answer from an empty one, and a reader must not merge them.
+    timeout 25 rclone --config "$RCLONE_CONF" lsd nosuchremote: >"$WORK/rclone-noremote.out" 2>"$WORK/rclone-noremote.err"
+    echo "$?" >"$WORK/rclone-noremote.rc"
+    unset RCLONE_CONF
+  fi
   # A .gz made here and read by `zcat`-family readers: `compress`/list paths
   # in `list_archive` name these and their output differs per tool.
   printf 'gz-payload\n' | gzip >"$WORK/std.gz" 2>/dev/null
@@ -976,5 +1020,33 @@ for t in zcat lzcat lzopcat unlzma xzcat bzcat; do
   rc=$(cat "$WORK/gz-$t.rc")
   res "gz-via-$t" "PASS (rc=$rc, $(wc -c <"$WORK/gz-$t.out") byte(s): $(head -c 50 "$WORK/gz-$t.out" | tr -d '\n'))"
 done
+
+# rclone's real shapes, against a **local** remote. See the capture block above
+# for what the first version of this got wrong: it nested inside the `zcat` loop
+# (six copies of each line) and recorded rc=1 as PASS when nothing had
+# configured a remote, so an environment that measured nothing reported green.
+if [[ -f "$WORK/rclone-listremotes.rc" ]]; then
+  if grep -q '^probe:' "$WORK/rclone-listremotes.out" 2>/dev/null; then
+    res "rclone-remote-configured" "PASS (listremotes: $(tr -d '\n' < "$WORK/rclone-listremotes.out"))"
+  else
+    res "rclone-remote-configured" "FAIL (listremotes printed nothing (rc=$(cat "$WORK/rclone-listremotes.rc")), so every probe below read a REFUSAL and not a listing. Nothing below is evidence about rclone's output shape.)"
+  fi
+fi
+if [[ -f "$WORK/rclone-lsd.rc" ]]; then
+  if grep -q '^probe:' "$WORK/rclone-listremotes.out" 2>/dev/null && [[ "$(cat "$WORK/rclone-lsd.rc")" == 0 ]]; then
+    res "rclone-lsd-shape" "PASS (rc=0, $(grep -c . "$WORK/rclone-lsd.out") entr(ies) incl. subdirectories: $(head -3 "$WORK/rclone-lsd.out" | tr '\n' '|' | head -c 110))"
+    head -4 "$WORK/rclone-lsd.out" | sed 's/^/  | /'
+  else
+    res "rclone-lsd-shape" "FAIL (rc=$(cat "$WORK/rclone-lsd.rc"): $(head -2 "$WORK/rclone-lsd.err" | tr '\n' '|' | head -c 100) - an ENVIRONMENT failure, not a shape)"
+  fi
+fi
+[[ -f "$WORK/rclone-size.rc" ]] && res "rclone-size-shape" "PASS (rc=$(cat "$WORK/rclone-size.rc"): $(head -2 "$WORK/rclone-size.out" | tr '\n' '|' | head -c 100))"
+[[ -f "$WORK/rclone-lsf.rc" ]] && res "rclone-lsf-shape" "PASS (rc=$(cat "$WORK/rclone-lsf.rc"): $(head -4 "$WORK/rclone-lsf.out" | tr '\n' '|' | head -c 110))"
+[[ -f "$WORK/rclone-lsf-l.rc" ]] && res "rclone-lsf-l-shape" "PASS (rc=$(cat "$WORK/rclone-lsf-l.rc"): $(head -3 "$WORK/rclone-lsf-l.out" | tr '\n' '|' | head -c 110))"
+# A typo'd or unconfigured remote is a *different* answer from an empty one,
+# and the refusal wording is what a reader keys on to tell them apart.
+if [[ -f "$WORK/rclone-noremote.rc" ]]; then
+  res "rclone-noremote-shape" "PASS (rc=$(cat "$WORK/rclone-noremote.rc"): $(head -2 "$WORK/rclone-noremote.err" | tr '\n' '|' | head -c 110))"
+fi
 
 echo "== probe done"
