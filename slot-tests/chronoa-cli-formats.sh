@@ -55,7 +55,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # Each command runs once into $WORK. A binary absent from the image is a finding,
 # not a failure: it is exactly the dependency-missing case the parsers must
 # degrade through, so which way the image goes is recorded either way.
-for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip compsize bootctl v4l2-ctl clockdiff cryptsetup iotop iostat nethogs bandwhich strace unrar cabextract lrzip lzop arj unar lsar svn hg restic rclone iperf3 socat iftop arpwatch delv host nslookup wget aria2c; do
+for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip compsize bootctl v4l2-ctl clockdiff cryptsetup iotop iostat nethogs bandwhich strace unrar cabextract lrzip lzop arj unar lsar svn hg restic rclone iperf3 socat iftop arpwatch delv host nslookup wget aria2c sensors inxi fastfetch lsof capinfos dmidecode sar logrotate iwconfig nmap ethtool vnstat playerctl grim ydotool words bc micro dialog expect pv gdisk sgdisk unzip zip 7za unace ngrep netstat ifconfig iftop btop nvtop ncdu tree; do
   if have "$b"; then res "present-$b" "PASS ($(command -v "$b"))"
   else res "present-$b" "PASS (not on this image: its skill must report UNKNOWN, never a clean result)"
   fi
@@ -90,6 +90,147 @@ PDF
       >"$WORK/arping-unused.out" 2>&1; echo "$?" >"$WORK/arping-unused.rc"; fi
   if have sane-find-scanner; then sane-find-scanner \
       >"$WORK/sane.out" 2>"$WORK/sane.err"; echo "$?" >"$WORK/sane.rc"; fi
+
+  # --- the enrichment sweep ---------------------------------------------------
+  # `temperatures` reads /sys/class/hwmon and cannot see a fan. `sensors` names
+  # each chip and each label, so it answers "is my CPU throttling because the
+  # *fan* stopped" - which /sys cannot - and that is the whole point of
+  # measuring its output rather than assuming the documented shape.
+  if have sensors; then
+    timeout 20 sensors >"$WORK/sensors.out" 2>"$WORK/sensors.err"; echo "$?" >"$WORK/sensors.rc"
+    # The one-shot machine-readable form, which is what a reader should parse:
+    # `sensors -j` exists or it does not, and that is not guessable.
+    timeout 20 sensors -j >"$WORK/sensors-json.out" 2>"$WORK/sensors-json.err"
+    echo "$?" >"$WORK/sensors-json.rc"
+    timeout 20 sensors -u >"$WORK/sensors-usage.out" 2>&1; echo "$?" >"$WORK/sensors-usage.rc"
+  fi
+  # `system_info` reads lscpu and /proc. `inxi` prints GPUs, disks and battery
+  # in one call, so its output decides whether it is worth a fallback path.
+  if have inxi; then
+    timeout 25 inxi -Fzx --no-color >"$WORK/inxi.out" 2>"$WORK/inxi.err"; echo "$?" >"$WORK/inxi.rc"
+    timeout 25 inxi -Fz --no-color >"$WORK/inxi-short.out" 2>&1; echo "$?" >"$WORK/inxi-short.rc"
+  fi
+  if have fastfetch; then
+    timeout 25 fastfetch --format json >"$WORK/fastfetch.out" 2>"$WORK/fastfetch.err"
+    echo "$?" >"$WORK/fastfetch.rc"
+  fi
+  # `port_owner` reads /proc/net/tcp, which gives a socket and an inode but no
+  # command line. `lsof` names the process - and for a *file* there is nothing
+  # else that answers "what has this open".
+  if have lsof; then
+    timeout 25 lsof -nP -iTCP -sTCP:LISTEN >"$WORK/lsof-listen.out" 2>"$WORK/lsof-listen.err"
+    echo "$?" >"$WORK/lsof-listen.rc"
+    timeout 25 lsof -nP -p 1 >"$WORK/lsof-pid1.out" 2>"$WORK/lsof-pid1.err"
+    echo "$?" >"$WORK/lsof-pid1.rc"
+    # The refusal a non-root reader gets, which is a *different* answer from
+    # "nothing is open" and must not be reported as an empty list.
+    timeout 25 lsof -nP >"$WORK/lsof-all.out" 2>"$WORK/lsof-all.err"; echo "$?" >"$WORK/lsof-all.rc"
+    # A file nothing has open, to prove an empty result is reachable.
+    : >"$WORK/lsof-nothing.txt"
+    timeout 25 lsof -nP "$WORK/lsof-nothing.txt" >"$WORK/lsof-file.out" 2>"$WORK/lsof-file.err"
+    echo "$?" >"$WORK/lsof-file.rc"
+  fi
+  # `capture_packets` writes a pcap. Nothing then *reads one back*, which is
+  # what you do the second time a capture turns out to be empty.
+  if have capinfos; then
+    if have tcpdump; then
+      timeout 25 tcpdump -i lo -c 4 -w "$WORK/probe.pcap" 2>"$WORK/probe-cap.err" || true
+      if [[ -s "$WORK/probe.pcap" ]]; then
+        timeout 25 capinfos -a -e -c -u -i "$WORK/probe.pcap" >"$WORK/capinfos.out" 2>"$WORK/capinfos.err"
+        echo "$?" >"$WORK/capinfos.rc"
+        timeout 25 capinfos -t -M -H "$WORK/probe.pcap" >"$WORK/capinfos-table.out" 2>&1
+        echo "$?" >"$WORK/capinfos-table.rc"
+        # The refusal on a file that is not a capture: measured, not assumed.
+        timeout 25 capinfos /etc/hostname >"$WORK/capinfos-notpcap.out" 2>&1
+        echo "$?" >"$WORK/capinfos-notpcap.rc"
+      else
+        echo 1 >"$WORK/capinfos.rc"
+      fi
+    fi
+  fi
+  # `disk_activity` runs iostat. `sar` answers "what was true an hour ago",
+  # which iostat cannot and a home user asks constantly.
+  if have sar; then
+    timeout 20 sar -u 1 2 >"$WORK/sar.out" 2>"$WORK/sar.err"; echo "$?" >"$WORK/sar.rc"
+    timeout 20 sar -d 1 2 >"$WORK/sar-disk.out" 2>&1; echo "$?" >"$WORK/sar-disk.rc"
+  fi
+  if have dmidecode; then
+    # Root-gated in practice; the refusal is the measurement a desktop reader
+    # will actually get, so it is captured rather than assumed.
+    timeout 20 dmidecode -t 1 >"$WORK/dmidecode.out" 2>"$WORK/dmidecode.err"
+    echo "$?" >"$WORK/dmidecode.rc"
+  fi
+  if have logrotate; then
+    timeout 20 logrotate --debug /etc/logrotate.conf >"$WORK/logrotate.out" 2>"$WORK/logrotate.err"
+    echo "$?" >"$WORK/logrotate.rc"
+  fi
+  if have vnstat; then
+    timeout 20 vnstat --oneline b >"$WORK/vnstat.out" 2>"$WORK/vnstat.err"; echo "$?" >"$WORK/vnstat.rc"
+  fi
+  if have ethtool; then
+    iface=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')
+    [[ -n "$iface" ]] && timeout 20 ethtool "$iface" >"$WORK/ethtool.out" 2>"$WORK/ethtool.err"
+    [[ -n "$iface" ]] && echo "$?" >"$WORK/ethtool.rc"
+  fi
+  if have nmap; then
+    # Localhost only: a scan of anything else is not this test's business.
+    timeout 40 nmap -n -sT -p 1,22,5201 localhost >"$WORK/nmap-local.out" 2>"$WORK/nmap-local.err"
+    echo "$?" >"$WORK/nmap-local.rc"
+  fi
+  if have wget; then
+    timeout 30 wget -q -O "$WORK/wget-probe.txt" "data:,chronoa" >"$WORK/wget.out" 2>"$WORK/wget.err"
+    echo "$?" >"$WORK/wget.rc"
+  fi
+  # A *real* socat forward: open a listener, connect through it, and echo.
+  # socat's own refusal is the other half and is measured too.
+  if have socat; then
+    ( timeout 30 socat -T 10 -u TCP-LISTEN:53199,bind=127.0.0.1,reuseaddr,fork SYSTEM:'echo socat-forward-ok' \
+        >"$WORK/socat-server.out" 2>&1 ) &
+    sleep 2
+    timeout 15 socat -T 5 -u TCP:127.0.0.1:53199 - >"$WORK/socat-client.out" 2>"$WORK/socat-client.err"
+    echo "$?" >"$WORK/socat-client.rc"
+    wait 2>/dev/null || true
+    timeout 10 socat -T 2 -u TCP:127.0.0.1:53198 - >"$WORK/socat-refused.out" 2>"$WORK/socat-refused.err"
+    echo "$?" >"$WORK/socat-refused.rc"
+  fi
+  # arj/unar/lsar: the archive family, read for real on a file each one made.
+  if have arj; then
+    mkdir -p "$WORK/arjdir"; printf 'one\n' >"$WORK/arjdir/a.txt"
+    ( cd "$WORK/arjdir" && timeout 25 arj a -r arj.arc a.txt ) >"$WORK/arj-make.out" 2>&1
+    echo "$?" >"$WORK/arj-make.rc"
+    if [[ -f "$WORK/arjdir/arj.arc" ]]; then
+      timeout 25 arj l "$WORK/arjdir/arj.arc" >"$WORK/arj-list.out" 2>"$WORK/arj-list.err"
+      echo "$?" >"$WORK/arj-list.rc"
+      timeout 25 unar -l "$WORK/arjdir/arj.arc" >"$WORK/unar-list.out" 2>"$WORK/unar-list.err"
+      echo "$?" >"$WORK/unar-list.rc"
+      timeout 25 lsar "$WORK/arjdir/arj.arc" >"$WORK/lsar.out" 2>"$WORK/lsar-list.err"
+      echo "$?" >"$WORK/lsar.rc"
+    fi
+  fi
+  # A zip made by Python's stdlib and read by every reader on the image, so
+  # `list_archive` knows which tool *actually* claims which format.
+  python3 - "$WORK/std.zip" <<'PY' 2>/dev/null
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("a.txt", "one\n"); z.writestr("dir/b.txt", "two\n")
+PY
+  if [[ -s "$WORK/std.zip" ]]; then
+    for t in unzip 7z 7za bsdtar; do
+      have "$t" || continue
+      timeout 25 "$t" -l "$WORK/std.zip" >"$WORK/zip-$t.out" 2>"$WORK/zip-$t.err"
+      echo "$?" >"$WORK/zip-$t.rc"
+    done
+  fi
+  # A .gz made here and read by `zcat`-family readers: `compress`/list paths
+  # in `list_archive` name these and their output differs per tool.
+  printf 'gz-payload\n' | gzip >"$WORK/std.gz" 2>/dev/null
+  if [[ -s "$WORK/std.gz" ]]; then
+    for t in zcat lzcat lzopcat unlzma xzcat bzcat; do
+      have "$t" || continue
+      timeout 15 "$t" "$WORK/std.gz" >"$WORK/gz-$t.out" 2>"$WORK/gz-$t.err"
+      echo "$?" >"$WORK/gz-$t.rc"
+    done
+  fi
 fi
 
 # --- assertions ---------------------------------------------------------------
@@ -710,5 +851,119 @@ if [[ -f "$WORK/delv.rc" ]]; then
 fi
 [[ -f "$WORK/host.rc" ]] && res "host-shape" "PASS (rc=$(cat "$WORK/host.rc"): $(head -1 "$WORK/host.out" | head -c 70))"
 [[ -f "$WORK/nslookup.rc" ]] && res "nslookup-shape" "PASS (rc=$(cat "$WORK/nslookup.rc"): $(grep -m1 'Server:' "$WORK/nslookup.out" | head -c 60))"
+
+# --- the enrichment sweep: shapes the existing skills would be extended from ----
+# Each prints its real output, because the alternative is a reader written
+# against a man page and shipped unverified.
+
+# `temperatures` reads /sys/class/hwmon. What it CANNOT see is a fan or a
+# throttle reason, and that is the question a hot machine raises. `sensors`
+# names chips and labels, so both the text form and `sensors -j` are captured -
+# whether `-j` exists is not something to assume.
+if [[ -f "$WORK/sensors.rc" ]]; then
+  res "sensors-shape" "PASS (rc=$(cat "$WORK/sensors.rc"): $(head -3 "$WORK/sensors.out" | tr '\n' '|' | head -c 110))"
+  head -10 "$WORK/sensors.out" | sed 's/^/  | /'
+fi
+if [[ -f "$WORK/sensors-json.rc" ]]; then
+  rc=$(cat "$WORK/sensors-json.rc")
+  # A `-j` that exits non-zero is a finding, not a failure: the machine-readable
+  # form is the one worth having and its absence changes what a reader can do.
+  res "sensors-json-shape" "PASS (rc=$rc, $(wc -c <"$WORK/sensors-json.out") bytes; $(head -c 100 "$WORK/sensors-json.out" | tr '\n' '|'))"
+  if [[ "$rc" == 0 ]]; then
+    python3 - "$WORK/sensors-json.out" <<'PY' 2>/dev/null || true
+import json, sys
+doc = json.load(open(sys.argv[1]))
+for chip, features in doc.items():
+    for name, value in list(features.items())[:2]:
+        print(f"  | json {chip}.{name} = {value}")
+PY
+  fi
+fi
+
+# `system_info` reads lscpu. inxi adds GPU, disk and battery in one call.
+if [[ -f "$WORK/inxi.rc" ]]; then
+  res "inxi-shape" "PASS (rc=$(cat "$WORK/inxi.rc"), $(wc -l <"$WORK/inxi.out") lines)"
+  head -14 "$WORK/inxi.out" | sed 's/^/  | /'
+fi
+[[ -f "$WORK/fastfetch.rc" ]] && res "fastfetch-shape" "PASS (rc=$(cat "$WORK/fastfetch.rc"): $(head -c 120 "$WORK/fastfetch.out"))"
+
+# lsof, which /proc/net/tcp cannot replace: it is the only thing here that
+# answers "what has this FILE open" rather than "what has this PORT open".
+if [[ -f "$WORK/lsof-listen.rc" ]]; then
+  res "lsof-listen-shape" "PASS (rc=$(cat "$WORK/lsof-listen.rc"), $(wc -l <"$WORK/lsof-listen.out") line(s))"
+  head -4 "$WORK/lsof-listen.out" | sed 's/^/  | /'
+fi
+if [[ -f "$WORK/lsof-all.rc" ]]; then
+  rc=$(cat "$WORK/lsof-all.rc")
+  res "lsof-all-shape" "PASS (rc=$rc, $(wc -l <"$WORK/lsof-all.out") line(s); stderr: $(head -c 80 "$WORK/lsof-all.err" | tr '\n' '|'))"
+fi
+# An empty result must be reachable, or "nothing has it open" is untested.
+if [[ -f "$WORK/lsof-file.rc" ]]; then
+  rc=$(cat "$WORK/lsof-file.rc")
+  if [[ "$rc" != 0 || -s "$WORK/lsof-file.out" ]]; then
+    res "lsof-empty-file-shape" "PASS (rc=$rc, out=$(wc -c <"$WORK/lsof-file.out") bytes, err: $(head -c 70 "$WORK/lsof-file.err" | tr '\n' '|'))"
+  else
+    res "lsof-empty-file-shape" "FAIL (rc=0 with no output at all - 'nothing has this open' must be a rc=1 with a message, or the reader cannot tell it from a working query)"
+  fi
+fi
+
+# capinfos reads a capture back: number of packets, duration, and the protocols
+# actually present. Without it, "the capture was empty" is a file-size guess.
+if [[ -f "$WORK/capinfos.rc" ]]; then
+  rc=$(cat "$WORK/capinfos.rc")
+  if [[ "$rc" == 0 ]]; then
+    res "capinfos-shape" "PASS (rc=0)"
+    head -12 "$WORK/capinfos.out" | sed 's/^/  | /'
+    [[ -f "$WORK/capinfos-table.rc" ]] && head -6 "$WORK/capinfos-table.out" | sed 's/^/  | /'
+  else
+    res "capinfos-shape" "SKIP (rc=$rc: $(head -c 90 "$WORK/capinfos.err" | tr '\n' '|') - no capture to read)"
+  fi
+fi
+[[ -f "$WORK/capinfos-notpcap.rc" ]] && res "capinfos-notpcap-shape" "PASS (rc=$(cat "$WORK/capinfos-notpcap.rc"): $(head -2 "$WORK/capinfos-notpcap.out" | tr '\n' '|' | head -c 80))"
+
+# sar answers "what was true an hour ago", which iostat structurally cannot.
+if [[ -f "$WORK/sar.rc" ]]; then
+  res "sar-shape" "PASS (rc=$(cat "$WORK/sar.rc"): $(grep -m1 'Average' "$WORK/sar.out" | head -c 90))"
+  head -8 "$WORK/sar.out" | sed 's/^/  | /'
+fi
+[[ -f "$WORK/dmidecode.rc" ]] && res "dmidecode-shape" "PASS (rc=$(cat "$WORK/dmidecode.rc"): $(head -2 "$WORK/dmidecode.err$WORK/dmidecode.out" | tr '\n' '|' | head -c 80))"
+[[ -f "$WORK/logrotate.rc" ]] && res "logrotate-shape" "PASS (rc=$(cat "$WORK/logrotate.rc"): $(head -2 "$WORK/logrotate.out" | tr '\n' '|' | head -c 80))"
+[[ -f "$WORK/vnstat.rc" ]] && res "vnstat-shape" "PASS (rc=$(cat "$WORK/vnstat.rc"): $(head -c 90 "$WORK/vnstat.out"))"
+[[ -f "$WORK/ethtool.rc" ]] && res "ethtool-shape" "PASS (rc=$(cat "$WORK/ethtool.rc"): $(grep -m1E 'Speed|Duplex|Link detected' "$WORK/ethtool.out" | head -c 80))"
+[[ -f "$WORK/wget.rc" ]] && res "wget-shape" "PASS (rc=$(cat "$WORK/wget.rc"), $(wc -c <"$WORK/wget-probe.txt") bytes fetched)"
+[[ -f "$WORK/nmap-local.rc" ]] && res "nmap-local-shape" "PASS (rc=$(cat "$WORK/nmap-local.rc"): $(grep -m1 'Nmap scan report' "$WORK/nmap-local.out" | head -c 70))"
+
+# socat: a *real* forward, so the skill's success path is measured rather than
+# only its refusal.
+if [[ -f "$WORK/socat-client.rc" ]]; then
+  rc=$(cat "$WORK/socat-client.rc")
+  res "socat-forward-shape" "PASS (rc=$rc, got: $(head -c 60 "$WORK/socat-client.out" | tr '\n' '|'))"
+  head -3 "$WORK/socat-client.out" | sed 's/^/  | /'
+fi
+[[ -f "$WORK/socat-refused.rc" ]] && res "socat-refused-shape" "PASS (rc=$(cat "$WORK/socat-refused.rc"): $(head -2 "$WORK/socat-refused.err" | tr '\n' '|' | head -c 80))"
+
+# The archive family, read on a file each tool made itself.
+[[ -f "$WORK/arj-list.rc" ]] && res "arj-list-shape" "PASS (rc=$(cat "$WORK/arj-list.rc"): $(head -3 "$WORK/arj-list.out" | tr '\n' '|' | head -c 80))"
+if [[ -f "$WORK/unar-list.rc" ]]; then
+  res "unar-list-shape" "PASS (rc=$(cat "$WORK/unar-list.rc"): $(grep -m1 'a.txt' "$WORK/unar-list.out" | head -c 80))"
+fi
+[[ -f "$WORK/lsar.rc" ]] && res "lsar-shape" "PASS (rc=$(cat "$WORK/lsar.rc"): $(grep -m1 'a.txt' "$WORK/lsar.out" | head -c 80))"
+# Which readers actually claim a zip? Each says so in its own words.
+for t in unzip 7z 7za bsdtar; do
+  [[ -f "$WORK/zip-$t.rc" ]] || continue
+  rc=$(cat "$WORK/zip-$t.rc")
+  if [[ "$rc" == 0 ]] && grep -q 'a.txt' "$WORK/zip-$t.out"; then
+    res "zip-read-by-$t" "PASS (rc=0, lists a.txt and dir/b.txt: $(grep -c 'b.txt' "$WORK/zip-$t.out") nested entr(y|ies))"
+  else
+    res "zip-read-by-$t" "FAIL (rc=$rc: $(head -2 "$WORK/zip-$t.err" | tr '\n' '|' | head -c 80) - `list_archive` must not route .zip to this)"
+  fi
+done
+# The decompressors' own bytes, since `list_archive` names several of them and
+# their stdout is the only way to tell a payload from a diagnostic.
+for t in zcat lzcat lzopcat unlzma xzcat bzcat; do
+  [[ -f "$WORK/gz-$t.rc" ]] || continue
+  rc=$(cat "$WORK/gz-$t.rc")
+  res "gz-via-$t" "PASS (rc=$rc, $(wc -c <"$WORK/gz-$t.out") byte(s): $(head -c 50 "$WORK/gz-$t.out" | tr -d '\n'))"
+done
 
 echo "== probe done"
