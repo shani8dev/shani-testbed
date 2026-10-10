@@ -945,6 +945,115 @@ the read-only claim. And two SKIPs are honest and environmental: no
 SecureBoot one is the fact worth having** and nspawn cannot settle it; it needs
 a `vmspawn`/`iso-install` boot of the image's own kernel.
 
+### `chronoa-driver-skills` on the real slot: 16 pass, 0 fail — and a product bug the first run could not see (2026-10-10, later)
+
+Same slot-test, re-run after `chronoa-driver-skills-results.sh` found that **two
+of the six original assertions could not distinguish the refusals they claimed to
+separate**, and after driving the five skills end to end on a dev box with a real
+toolchain exposed a defect the slot had no way to surface.
+
+**The defect: `verification` reads ONE `POST_CONDITION` per module**, so
+`driver_scaffold` and `driver_status` inherited `driver_dev`'s `.ko` freshness
+check. The scaffold replied *"Scaffolded the module 'probe' ... (VERIFICATION
+FAILED: no .ko file is in ...)"* about a call whose own last line is *"This is
+source, not a built module."* — a correct action reported as a failed one, on the
+one machine class where the build path actually runs. The fix is the tool name
+`verification._call` already passes to any two-argument check.
+
+`driver-scaffold-is-not-verified-as-a-build` is the new assertion, and two of my
+own bugs while writing it are worth the space because both looked like product
+failures:
+
+- **The mutation does nothing unless the scaffold call carries a `path`.** The
+  first version drove the pathless `driver_scaffold({"name": "probe"})` from the
+  clobber check; a post-condition that cannot resolve the directory answers
+  `None` => UNVERIFIED, so the assertion passed against the mutated product. Same
+  shape as the empty-capture scenario in `chronoa-driver-tools-results`: **a
+  check driven by a call the check cannot see is a check that cannot fail.**
+- **`d` was used before it was defined** when I moved the `path=` argument up,
+  which killed every RESULT line after it — 9 pass / 13 fail reading exactly like
+  thirteen broken assertions and being one Python `NameError`. Extracting the
+  heredoc body and `compile()`-ing it before the run is what told the two apart
+  in seconds, and is worth doing before any edit to a slot-test's python body.
+
+**The SKIP that was not an SKIP.** `device-i2c-denylist-is-its-own-refusal` had
+reported SKIP with *"could not grant i2c-write-enabled in this slot"* since it was
+written. The cause was **a method that does not exist**: the check called
+`cfg.set_bool(...)`, `ChronoaConfig`'s setter is `set(key, "true")`, and the bare
+`except Exception` turned the resulting `AttributeError` into a sentence about the
+environment. A SKIP whose cause is invented is worse than one that fails, because
+nothing sends you to look.
+
+Fixing it exposed the real reason the grant could not persist, and it is
+environmental rather than a product defect: **`dbus-run-session`'s private bus has
+no activatable `ca.desrt.dconf`**, so both `ChronoaConfig.set()` and the
+`gsettings set` CLI return rc=0, read back `true` **in the writing process**, and
+leave nothing on disk — a child reads `false`. That is this file's own *"gsettings
+writes silently no-op"* failure reached from the opposite direction: the parent
+sees it and the child cannot. It matters here more than anywhere else in the
+suite because **every gated skill runs in a sandboxed child**, so a grant that
+does not persist is indistinguishable from one never made — and the denylist, the
+guard that stops an EEPROM's calibration being erased, stayed unreachable through
+the skill on the one platform that matters.
+
+**`GSETTINGS_BACKEND=keyfile` is what closes it**: both writers then put the
+value in a real file, which `sandbox/executor.py:741/743` carries to the child
+along with `XDG_CONFIG_HOME`. With it the three unreachable branches run for real
+— the denylist's own refusal, the gate actually opening, and the write crossing a
+process boundary, each verified against the file on disk.
+
+**And the trap that cost two runs, worth knowing before anyone debugs with
+`gsettings`:** the two keyfile backends write **different group names into the
+same file**. `ChronoaConfig`'s explicit backend writes `[org.shani.chronoa]`; the
+default backend the CLI uses writes `[org/shani/chronoa]`. So **`gsettings get`
+reports `false` for a value the app wrote as `true`** — the switch says on, the
+skill refuses, and the CLI insists it is off. The first version of the crossing
+check used the CLI as its second process, measured "parent true, child false", and
+spent two runs on a bug that was a property of the reader. The second process has
+to read through the backend the skill uses.
+
+**24 host checks, 5 mutations confirmed to fail**, including the new control (e):
+a gate that refuses *when granted* must fail the denylist check — which (d), the
+ungating mutation, cannot cover, because it opens the gate unconditionally and
+leaves that check green. **A mutation that leaves a check green is not a control
+for it.** No control is offered for the process-crossing check and that is stated
+rather than papered over: its failure mode is environmental and `mutate` here can
+only reach `skills/`. What it has instead is the observed red, quoted in the file.
+
+On `@blue`: **19 pass, 0 fail, rc=0** — no SKIP anywhere, the denylist's own
+refusal read through the real dispatch path for the first time.
+
+### The branch nobody had run: consent ON, toolchain absent (2026-10-10, later still)
+
+`driver-build-gated` proved the key-**off** path. The branch a person who flips
+the switch in Settings takes — gate open, toolchain check reached, refusal naming
+`base-devel` and `linux-headers` — had **never executed anywhere**. It is the only
+place the missing-toolchain branch of `_run_build` runs, and it is the code that
+runs on no other distribution.
+
+Two things decided where the check could go, both of which would have made it
+assert the wrong sentence:
+
+- **It has to be after the scaffold.** `_run_build` answers *"the .c does not
+  exist"* before it ever reaches the toolchain, so a check driven in section 4
+  asserts that sentence instead of the one it is about.
+- **It cannot demand PASS on both machines.** This box has gcc, make and a kernel
+  build tree, so it builds rather than refusing. Demanding green everywhere would
+  make the assertion a rubber stamp on whichever machine ignored it, so it is
+  asserted as **machine-tracking** — red here, green on the slot where the packages
+  are genuinely absent, exactly as `driver-status-refuses-here` already is. **A
+  check that passes everywhere is not evidence of the thing it names; it is
+  evidence the check has no opinion.**
+
+Control (f) is a build gate stuck shut, which makes the check fail by *consent*
+even with the grant made — the switch silently doing nothing. (d) and (e) cannot
+reach it: **a mutation aimed at a different gate leaves a check green, which is
+the same as having no control for it.**
+
+**26 host checks, 6 mutations confirmed to fail.** On `@blue`: **20 pass, 0
+fail, rc=0**, with *"PASS (gate open: refuses naming both packages)"* — that
+branch's first-ever execution on the platform it ships to.
+
 ### Two flag traps in `iso-install --boot-only --console-exec`, both hit on the first try (2026-10-10)
 
 Running a command against the **image's own kernel** is the only way to measure
