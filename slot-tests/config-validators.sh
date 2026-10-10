@@ -149,26 +149,43 @@ else res dconf-keyfiles "SKIP (no dconf system databases)"; fi
 # real Arch tree (audit 4.x) it returns 0 for a file containing nothing but the
 # text "this is not a rule", so it is a check that cannot fail.
 #
-# The count is compared, not just non-zero: a ruleset that loads 2 of its 66
-# rules is a regression, and "some rules loaded" would report it as a pass.
-if have auditctl && have auditd; then
+# Two overrides exist so tests/config-validators-results.sh can drive this
+# section's BRANCHES on a host where neither binary is installed (see that file
+# for what is real and what is faked). They default off, so slot behaviour is
+# byte-identical:
+#   AUDIT_TEST_RULES_DIR   - where the .rules files are read from
+#   AUDIT_TEST_AUDITCTL    - the auditctl command to call
+#   AUDIT_TEST_FORCE_AUDIT - set (non-empty) to pretend both binaries exist
+if { have auditctl && have auditd; } || [ -n "${AUDIT_TEST_FORCE_AUDIT:-}" ]; then
+    RULES_DIR="${AUDIT_TEST_RULES_DIR:-/etc/audit/rules.d}"
+    AUDITCTL="${AUDIT_TEST_AUDITCTL:-auditctl}"
     # What the shipped file asks for: -a (syscall) and -w (watch) lines, the
     # two forms `auditctl -l` lists. -b/-f/-D/-e are directives and do not
     # appear in it.
     want=0
-    for f in /etc/audit/rules.d/*.rules; do
+    for f in "$RULES_DIR"/*.rules; do
         [ -f "$f" ] || continue
         want=$(( want + $(grep -cE '^[[:space:]]*-[aw]' "$f") ))
     done
-    if out=$(auditctl -l 2>&1); then
+    if out=$($AUDITCTL -l 2>&1); then
         got=$(grep -cE '^[[:space:]]*-[aw]' <<<"$out")
         if [ "$got" -eq "$want" ]; then
             res audit-rules-loaded "PASS ($got of $want rules loaded)"
         elif [ "$got" -gt 0 ]; then
             res audit-rules-loaded "FAIL ($got of $want rules loaded: the ruleset is short)"
-            printf '  | loaded keys missing from the loaded set:\n'
-            comm -13 <(grep -oE '-k [a-z_-]+' <<<"$out" | sort -u) \
-                     <(cat /etc/audit/rules.d/*.rules | grep -oE '-k [a-z_-]+' | sort -u) | head -10
+            # Which keys the file asks for that the loaded set does not carry.
+            # Often EMPTY and honestly so: this file reuses keys heavily (21 of
+            # its 66 rules are -k identity), so a ruleset short by rules whose
+            # keys survive elsewhere shows no distinct missing key. Saying that
+            # beats printing an empty diff that reads as "nothing is missing".
+            missing=$(comm -13 <(grep -oE '\-k [a-z_-]+' <<<"$out" | sort -u) \
+                               <(cat "$RULES_DIR"/*.rules | grep -oE '\-k [a-z_-]+' | sort -u))
+            if [ -n "$missing" ]; then
+                printf '  | keys the file asks for and the loaded set lacks:\n'
+                printf '  |   %s\n' $missing | head -10
+            else
+                printf '  | no distinct key is missing - the shortfall is rules whose keys survive elsewhere\n'
+            fi
         else
             res audit-rules-loaded "FAIL (0 of $want rules loaded: auditd is up but the ruleset did not load)"
         fi
@@ -186,7 +203,7 @@ if have auditctl && have auditd; then
     # "no output" is therefore a real rejection and "the EPERM wording" means it
     # was accepted - which is why this control discriminates even here.
     printf -- '-w /etc/passwd -p zzz -k identity\n' > "$T/bad-audit.rules"
-    ctl=$(auditctl -R "$T/bad-audit.rules" 2>&1)
+    ctl=$($AUDITCTL -R "$T/bad-audit.rules" 2>&1)
     if [ -z "$ctl" ]; then
         res audit-negative-control "PASS (unparseable rule rejected by userspace parser)"
     else
@@ -194,6 +211,5 @@ if have auditctl && have auditd; then
     fi
 else
     res audit-rules-loaded "SKIP (auditd/auditctl not installed)"
-    printf -- '-w /etc/passwd -p zzz -k identity\n' > "$T/bad-audit.rules"
-    [ -f "$T/bad-audit.rules" ] && res audit-negative-control "SKIP (no auditctl to run the control against)"
+    [ -n "${AUDIT_TEST_RULES_DIR:-}" ] && res audit-negative-control "SKIP (no auditctl to run the control against)"
 fi
