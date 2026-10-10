@@ -944,3 +944,40 @@ the read-only claim. And two SKIPs are honest and environmental: no
 `/sys/kernel/security/lockdown` and no SecureBoot efivar under nspawn. **The
 SecureBoot one is the fact worth having** and nspawn cannot settle it; it needs
 a `vmspawn`/`iso-install` boot of the image's own kernel.
+
+### Two flag traps in `iso-install --boot-only --console-exec`, both hit on the first try (2026-10-10)
+
+Running a command against the **image's own kernel** is the only way to measure
+anything `uname`-derived in a slot (nspawn shares the host kernel — see the
+`chronoa-driver-tools` entry above), so this is the invocation, with the two
+things that cost a run each:
+
+```bash
+cd ../shani-install-media
+SHANIOS_NO_PULL=1 ./run_in_container.sh build.sh test iso-install -p gnome \
+  --boot-only --iso=iso-latest \
+  --console-put=/opt/shani-testbed/tests/driver-boot-facts.sh:/tmp/driver-facts.sh \
+  --console-exec="bash /tmp/driver-facts.sh" --boot-timeout=900
+```
+
+- **`-p <profile>` is required even for `--boot-only`.** The first attempt left it
+  off and got the usage line and a non-zero exit. `--iso=` is still only there to
+  satisfy the parser (the fetch lives in the non-`--boot-only` branch, so
+  `--iso=iso-latest` downloads nothing) — recorded here because both flags read as
+  optional for a boot that installs nothing.
+- **`--console-put` resolves its SOURCE inside the builder container.** Its
+  `/tmp` is a `--tmpfs /tmp`, so a host path under `/tmp` does not exist in there
+  and the run died with `console-put: no /tmp/...` and **rc=95 — after the boot
+  had already succeeded**. `/opt/shani-testbed/...` is mounted read-only and is
+  the path to use. The failure mode is expensive: the guest had booted (126 s)
+  and the error names a file the caller can plainly see on the host.
+
+An installed boot reaches `login:` in **126 s** under TCG on this host, so this is
+a minutes-long measurement rather than an afternoon. `--boot-timeout=`, not
+`--timeout` — the latter is the slot-test flag.
+
+`tests/driver-boot-facts.sh` is the measurement itself, kept in the harness
+rather than a scratchpad for the reason above. It prints `DRIVERFACT key=value`
+lines so the parser matches on a **key**: pinning prose is the trap this file
+already records for the espeak argv and the hardcoded module path, and a
+measurement whose output format is a sentence cannot be asserted on safely.
