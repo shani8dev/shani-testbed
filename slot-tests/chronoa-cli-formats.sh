@@ -55,7 +55,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # Each command runs once into $WORK. A binary absent from the image is a finding,
 # not a failure: it is exactly the dependency-missing case the parsers must
 # degrade through, so which way the image goes is recorded either way.
-for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip compsize bootctl v4l2-ctl clockdiff cryptsetup; do
+for b in avahi-browse arping sane-find-scanner pdffonts smartctl fwupdmgr ip compsize bootctl v4l2-ctl clockdiff cryptsetup iotop iostat nethogs bandwhich strace unrar cabextract lrzip lzop arj unar lsar; do
   if have "$b"; then res "present-$b" "PASS ($(command -v "$b"))"
   else res "present-$b" "PASS (not on this image: its skill must report UNKNOWN, never a clean result)"
   fi
@@ -226,6 +226,38 @@ if [[ -z "${CLI_FORMATS_CAPTURE_DIR:-}" ]]; then
     luks=$(lsblk -rno NAME,FSTYPE 2>/dev/null | awk '$2=="crypto_LUKS"{print "/dev/"$1; exit}')
     cryptsetup luksDump ${luks:-/dev/null} >"$WORK/luksdump.out" 2>"$WORK/luksdump.err"; echo "$?" >"$WORK/luksdump.rc"
   fi
+  # **The whole archive family `shani-tools-extra` ships by design.** 7z was
+  # measured and wired; unrar, cabextract, lrzip, arj and unarchiver were left
+  # out even though the image installs all of them - so "extract this rar" was
+  # still refused while the tool sat in /usr/bin. Each one's *interface* is what
+  # a parser needs, and each has a different one, so all are measured.
+  mkdir -p "$WORK/arch"
+  printf 'archive family probe\n' >"$WORK/arch/probe.txt"
+  # **Every probe here is bounded by `timeout`.** Measured 2026-10-10: this
+  # run hung for 57 minutes at `bandwhich --raw`, which is a *continuous*
+  # bandwidth monitor by design - it prints forever and never exits. A probe
+  # with no bound does not fail, it hangs the whole slot-test, and the 30
+  # checks that had already passed are lost with it.
+  #
+  # `timeout` records 124 on expiry, so a hang is a distinguishable outcome
+  # rather than an absence - which is the difference between "this tool prints
+  # nothing useful here" and "this tool never returned".
+  probe() {  # probe <name> <cmd...>
+    local name="$1"; shift
+    timeout 25 "$@" >"$WORK/$name.out" 2>"$WORK/$name.err"
+    echo "$?" >"$WORK/$name.rc"
+  }
+  for tool in 7z unrar cabextract lrzip lzop arj unar lsar; do
+    if have "$tool"; then probe "arch-$tool-help" "$tool" --help; fi
+  done
+  # And the per-process I/O and network monitors shani-tools ships: "why is my
+  # disk busy" and "what is using my bandwidth" have no Chronoa answer at all.
+  if have iotop; then probe iotop iotop -b -n 1 -o; fi
+  if have iostat; then probe iostat iostat -x 1 2; fi
+  if have nethogs; then probe nethogs nethogs -t -c 1; fi
+  # `-c 1` is what makes bandwhich finite; without it this is what hung the run.
+  if have bandwhich; then probe bandwhich bandwhich --raw -c 1; fi
+  if have strace; then probe strace strace -f -e trace=openat /bin/true; fi
   # 7z: a real round-trip, so the listing's parseable shape and the extraction's
   # exit contract are both measured rather than remembered. extract_archive
   # handles tar and zip through Python's stdlib and nothing else.
@@ -383,5 +415,53 @@ if [[ -f "$WORK/luksdump.rc" ]]; then
     res "luksdump-shape" "SKIP (rc=${rc}: ${err} - no LUKS volume on this slot, or the tool refused it; both are honest causes and neither is a shape failure)"
   fi
 fi
+
+# --- the archive family shani-tools-extra ships by design ---------------------
+for tool in unrar cabextract lrzip lzop arj unar lsar; do
+  [[ -f "$WORK/arch-$tool-help.rc" ]] || continue
+  rc=$(cat "$WORK/arch-$tool-help.rc")
+  out=$(head -6 "$WORK/arch-$tool-help.out" 2>/dev/null | tr '\n' '|' | head -c 160)
+  # **rc=124 is `timeout` killing it, and it is not a PASS.** A tool whose
+  # --help never returns is a different fact from one whose help text was read,
+  # and reporting both the same way is how a hang becomes a green line.
+  if [[ "$rc" == 124 ]]; then
+    res "archive-tool-$tool" "SKIP (--help did not return within 25s on this image)"
+  else
+    res "archive-tool-$tool" "PASS (rc=${rc}, present: ${out})"
+  fi
+done
+
+# --- per-process disk I/O, and per-process network ----------------------------
+# Nothing in Chronoa answers "why is my disk busy" or "what is using my
+# bandwidth": the network sense reads /sys counters (per-interface totals) and
+# the resources sense counts zombies, swap and file descriptors. These are the
+# per-*process* answers, and shani-tools ships four tools for them.
+if [[ -f "$WORK/iostat.rc" ]]; then
+  out=$(cat "$WORK/iostat.out")
+  if grep -qE 'Device.*r\/s|avg-cpu' <<<"$out"; then
+    res "iostat-shape" "PASS ($(grep -cE '^[a-z]+[0-9]' <<<"$out") device rows, header: $(head -3 <<<"$out" | tr '\n' '|' | head -c 90))"
+    head -8 "$WORK/iostat.out" | sed 's/^/  | /'
+  else
+    res "iostat-shape" "FAIL (rc=$(cat "$WORK/iostat.rc"), no Device/avg-cpu header: $(tr -d '\n' <<<"$out" | head -c 90))"
+  fi
+fi
+
+for tool in iotop nethogs bandwhich strace; do
+  [[ -f "$WORK/$tool.rc" ]] || continue
+  rc=$(cat "$WORK/$tool.rc")
+  out=$(head -c 200 "$WORK/$tool.out" 2>/dev/null | tr '\n' '|')
+  err=$(head -c 100 "$WORK/$tool.err" 2>/dev/null | tr '\n' '|')
+  # **Three outcomes, not two.** rc=124 means `timeout` stopped it, which is
+  # neither "it printed something" nor "it printed nothing" - it is the third
+  # thing, and this is exactly where the 57-minute hang would otherwise have
+  # been reported as an empty-output SKIP naming the wrong cause.
+  if [[ "$rc" == 124 ]]; then
+    res "$tool-shape" "SKIP (did not return within 25s on this image - it is a continuous monitor; anything it printed before the bound: ${out:0:60})"
+  elif [[ -s "$WORK/$tool.out" ]]; then
+    res "$tool-shape" "PASS (rc=${rc}: ${out:0:110})"
+  else
+    res "$tool-shape" "SKIP (rc=${rc}, no output; stderr: ${err:-empty} - most of these need root or a terminal)"
+  fi
+done
 
 echo "== probe done"

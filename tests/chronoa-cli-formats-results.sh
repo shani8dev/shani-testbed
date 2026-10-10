@@ -125,6 +125,36 @@ else
   absent "no ip here: no invented pass" "$out" ip-neigh-field-order PASS
 fi
 
+# --- a hang is its own outcome, not an empty result ---------------------------
+# Measured 2026-10-10: this file hung for 57 minutes at `bandwhich --raw`, a
+# continuous monitor that never exits. 30 checks had already passed and were
+# lost with it. Every probe is now bounded by `timeout`, which records 124.
+#
+# These two checks exist so the bound cannot rot back into a comment: a run
+# that timed out must SKIP naming the bound, and must not be reported as the
+# empty-output SKIP whose cause would be wrong.
+HANG="$T/hang"; mkdir -p "$HANG"
+cp "$GOOD"/* "$HANG"/ 2>/dev/null || true
+echo 124 >"$HANG/bandwhich.rc"
+printf 'bandwhich,0,0,0,0\n' >"$HANG/bandwhich.out"
+: >"$HANG/bandwhich.err"
+out=$(CLI_FORMATS_CAPTURE_DIR="$HANG" bash "$SLOT_TEST" 2>&1)
+check "a probe that timed out still produces a verdict" "$out" bandwhich-shape SKIP
+check "the timeout SKIP names the bound" "$out" bandwhich-shape "SKIP \(did not return within"
+absent "a timeout is not reported as an empty-output SKIP" "$out" bandwhich-shape "SKIP .rc=124, no output"
+
+# --- every probe is bounded ----------------------------------------------------
+# The structural form of the same rule: an unbounded `if have X; then X ...`
+# is what hung, so the check is on the shape of the source rather than on one
+# tool's behaviour.
+if grep -nE '^\s*if have [a-z0-9_-]+; then (iotop|iostat|nethogs|bandwhich|strace|unrar|cabextract|lrzip|lzop|arj|unar|lsar|7z)\b' "$SLOT_TEST" >/dev/null 2>&1; then
+  no "no probe runs its tool without going through the bounded probe()"
+  printf '#   an unbounded probe line: %s\n' \
+    "$(grep -nE '^\s*if have [a-z0-9_-]+; then (iotop|iostat|nethogs|bandwhich|strace|unrar|cabextract|lrzip|lzop|arj|unar|lsar|7z)\b' "$SLOT_TEST" | head -1)"
+else
+  ok "no probe runs its tool without going through the bounded probe()"
+fi
+
 printf '\n1..%d\n' "$((pass + fail))"
 if (( fail )); then
   echo "# FAILED ${fail} of $((pass + fail)) — chronoa-cli-formats.sh cannot be trusted to say no"
