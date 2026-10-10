@@ -851,3 +851,52 @@ containers first.
   return the same "not installed" error, so the first string's tokens are
   trivially absent. Do not read that pass as evidence the control works; it
   only means something once tesseract is present.
+
+### `chronoa-driver-tools`: a capture that measured nothing must not print a verdict (2026-10-10)
+
+Added with the Chronoa driver-development skills, because their design rests on
+facts about this platform that had only been read out of the image *matrices*.
+**A matrix is a package list.** It cannot tell you whether
+`/sys/kernel/security/lockdown` exists or what it reads, whether the SecureBoot
+efivar is readable, what `/var` is mounted as, or who owns `/dev/i2c-*` — and
+those are exactly the facts `driver_status` turns on. The lockdown one is the
+sharpest: it reads `[none] integrity confidentiality`, the enforced mode is the
+**bracketed** token, and a parser that read the whole line called an unlocked
+machine "locked down". Measured on a dev box; asserted here on the real image.
+
+**Three states everywhere, and the third one is the lesson.** The presence
+checks were first written `present() { [[ ! -f "$WORK/have-$1.absent" ]]; }`,
+which is **true when nothing was measured at all** — so an emptied capture
+directory produced **11 PASSes**, in the file whose entire job is reporting
+what is on an image. `tests/chronoa-driver-tools-results.sh`'s empty-capture
+scenario found it, then found two more: a FAIL for "we did not look" is the same
+confident wrong verdict as a PASS for it. Every check now distinguishes
+*measured-present*, *measured-absent*, and *not measured*, and only the second
+may assert.
+
+**The self-test's own assertion was wrong twice before it was right.** It first
+demanded **zero** RESULT lines for an unmeasured capture; the honest answer is
+one SKIP per assertion, each naming what it did not measure. And its
+toolchain-present scenario re-created `have-gcc.absent` right after writing the
+presence file, so the slot-test correctly kept reporting "not on this image" and
+the fixture failed for its own reason — the shape this file already records for
+the espeak argv and the hardcoded module path, in a third place.
+
+Four of its eight scenarios are doctored captures of **the real defects and the
+real environment** this work hit: lockdown read without its bracket, an image
+that *does* have a toolchain (where `driver_status`'s refusal is the stale
+claim), kmod's `insmod` missing, and a world-writable `/dev/i2c` node. The
+toolchain scenario is the one worth keeping — it is the only thing that notices
+when the "no compiler on any desktop profile" claim in shani-chronoa's own
+AGENTS.md goes stale.
+
+**22 host checks, no slot and no docker. 3 mutations confirmed to fail:**
+`present()` back to its broken form, the bracket requirement dropped, and the
+kmod-absence FAIL neutered. Floor unaffected: `bash -n` over every
+`testbed`/`lib/*.sh`/`slot-tests/*.sh`/`tests/*.sh` file, `py_compile` clean, and
+`chronoa-cli-formats-results.sh` still 15/15.
+
+Not yet run on a real slot — that needs `slot-test blue chronoa-driver-tools`
+on a bootstrapped image, and the SecureBoot-efivar line is the measurement worth
+having: it settles, on a root slot, the fact a desktop user cannot read and
+`driver_status` therefore reports as UNKNOWN rather than guessing.

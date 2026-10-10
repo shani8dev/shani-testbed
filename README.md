@@ -359,7 +359,15 @@ copy-pasted between commands):
 `finalize-boot-entries-test.sh`, ...); every slot sees this repo read-only at
 `/mnt/testbed`, so run them as `enter blue -- /mnt/testbed/slot-tests/<name>.sh`.
 Files with a `# slot-test-mode: boot` header run inside one shared boot via
-`slot-test <slot> <name|all>`. `fresh-user` is the "what a new install gives a
+`slot-test <slot> <name|all>`. Some read their measurements from a capture
+directory variable rather than probing inline — `chronoa-driver-tools.sh` from
+`$DRIVER_TOOLS_CAPTURE_DIR`, `chronoa-cli-formats.sh` from
+`$CLI_FORMATS_CAPTURE_DIR` — which is what lets the matching
+`tests/<name>-results.sh` drive the same assertions on the host against
+doctored captures, including ones that must FAIL. A capture that measured
+nothing must produce a SKIP naming what it did not measure, never a PASS: an
+absence-shaped green is a pass that examined nothing.
+`fresh-user` is the "what a new install gives a
 new person" check: it creates a user from `/etc/skel` as the installer does, then
 checks that user's first zsh/bash/fish (no errors, fastfetch greeting, starship),
 that every tool the shipped shell/git configs call is installed, `/etc/tmux.conf`
