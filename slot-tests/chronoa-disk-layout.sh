@@ -229,12 +229,58 @@ else:
         "labels - the partitions exist and are reported, but the btrfs subvolumes "
         "are only visible in a real boot; nothing here is asserting they are absent)")
 
-# --- 6. hidden loop devices are counted, not dropped --------------------------
+# --- 6. hidden loop devices are counted, and really are hidden ---------------
+# **Two claims, checked as two things.** The count line and the absence of the
+# loop devices are separate properties, and one check cannot see both: a build
+# with the filter removed prints every loop device *and* still writes the count
+# line, so a regex for the count passes on the exact build it exists to catch.
+# That absence-shaped green was measured here - the count assertion survived the
+# filter mutation until this was written as a property of the output rather than
+# of a sentence in it.
+# **The count is compared against the machine, not just looked for.** A first
+# version PASSed whenever the phrase "not shown" appeared anywhere - and it
+# appears in the *explanatory* sentence too, so a build that still hides every
+# loop device but stopped counting them passed this check. Measured: with the
+# count suppressed the sentence survives and the claim does not. So the number
+# the skill reports is compared with the number lsblk actually has, and the
+# fallback only applies when this machine really has no hidden layers at all.
 m = re.search(r"(\d+) other block device\(s\) were not shown", on)
-res("disk-layout-hidden-count-stated",
-    f"PASS ({m.group(1)} hidden)" if m else
-    "PASS (no hidden layers on this slot, so there was nothing to count)" if "not shown" not in on
-    else "FAIL (hidden layers were dropped with nothing said)")
+try:
+    _loops_here = [b["name"] for b in json.loads(subprocess.run(
+        ["lsblk", "--json", "-o", "NAME,TYPE"], capture_output=True, text=True,
+        timeout=20).stdout)["blockdevices"] if b.get("type") == "loop"]
+except Exception:                      # noqa: BLE001
+    _loops_here = []
+reported = int(m.group(1)) if m else None
+if not _loops_here and "not shown" not in on:
+    res("disk-layout-hidden-count-stated",
+        "PASS (this machine has no hidden layers, so there was nothing to count)")
+elif reported is None:
+    res("disk-layout-hidden-count-stated",
+        f"FAIL ({len(_loops_here)} loop device(s) exist and the skill said nothing about "
+        "hiding any of them - a count that is silently dropped reads as 'there were none')")
+elif reported == len(_loops_here):
+    res("disk-layout-hidden-count-stated",
+        f"PASS ({reported} hidden, and lsblk agrees)")
+else:
+    res("disk-layout-hidden-count-stated",
+        f"FAIL (the skill says it hid {reported}, and lsblk has {len(_loops_here)})")
+
+# The control for the line above: the count is only a claim if the devices it
+# counted are genuinely absent from what was printed. Ask the real lsblk what it
+# has, and require that none of those names appears among the printed devices.
+loops = _loops_here
+leaked = [n for n in loops if re.search(rf"(?m)^\s*-?\s*{re.escape(n)}\b", on)]
+if not loops:
+    res("disk-layout-hidden-devices-absent",
+        "SKIP (this slot has no loop devices, so there is nothing that could leak)")
+elif leaked:
+    res("disk-layout-hidden-devices-absent",
+        f"FAIL ({len(leaked)} loop device(s) were counted as hidden and then printed anyway: "
+        f"{leaked[:5]})")
+else:
+    res("disk-layout-hidden-devices-absent",
+        f"PASS ({len(loops)} loop device(s) counted and none printed)")
 
 # --- 7. a GUID is never guessed, and a disagreement names both ----------------
 node = {"name": "p3", "type": "part", "size": "473.9G",

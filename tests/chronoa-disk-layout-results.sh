@@ -91,7 +91,7 @@ PY
   # Drive the probe's assertions against the mutated skill, in a subprocess that
   # shares only the file: the module is re-imported fresh every time.
   local out
-  out=$(SKILL_PATH="$SKILL" PROBE_T="$T" GSETTINGS_SCHEMA_DIR="$GSETTINGS_SCHEMA_DIR" PYTHONPATH="$PKG" python3 - "$T/probe.py" "$match" 2>&1 <<'PY'
+  out=$(PYTHONDONTWRITEBYTECODE=1 SKILL_PATH="$SKILL" PROBE_T="$T" GSETTINGS_SCHEMA_DIR="$GSETTINGS_SCHEMA_DIR" PYTHONPATH="$PKG" python3 - "$T/probe.py" "$match" 2>&1 <<'PY'
 import contextlib
 import importlib.util
 import io
@@ -197,18 +197,29 @@ run_scenario "gate-unpacks-a-bool" FAIL disk-layout-refuses-with-consent-off \
     if allowed:'
 
 echo "# scenario 2: loop devices no longer hidden"
-# Targeted at the count assertion, not at "it ran": the count is the fact the
-# skill claims about what it withheld, so a build that withholds nothing has to
-# fail the claim.
-# The hidden-count assertion itself PASSes when there is "nothing to count",
-# and it is reached only after the gate - so on a machine where consent cannot be
-# granted it cannot discriminate. This scenario therefore targets
-# `disk-layout-matches-real-lsblk`, the control that compares the skill's output
-# against the REAL lsblk: if every loop device is printed, the 32 snap loops
-# appear in the output that is supposed to name the disks, and that comparison is
-# exactly what breaks.
-run_scenario "loops-not-hidden" FAIL disk-layout-matches-real-lsblk \
+# **Retargeted twice, and it survived both times - for two different reasons,
+# both recorded because the shape recurs in this repo.**
+#   - first at `disk-layout-runs-with-consent-on`, which asserts only that
+#     *something* non-empty came back; a refusal sentence is also non-empty, so
+#     that check cannot tell a working gate from a broken one;
+#   - then at `disk-layout-matches-real-lsblk`, which asks whether the real disk
+#     NAME appears. Printing 32 loops as well does not remove the disk's name,
+#     so a build that hides nothing still passes it - it measures presence of
+#     the disk, not absence of the loops.
+# `disk-layout-hidden-count-stated` is the assertion about the filter itself, and
+# it is the only one of the three that can see this: it reports "no hidden
+# layers" as a PASS only when the count line is absent, so a build that stopped
+# withholding - or stopped counting - both fail it.
+run_scenario "loops-not-hidden" FAIL disk-layout-hidden-devices-absent \
   'if not show_hidden and (dev.get("type") or "").lower() in _HIDDEN_LAYERS:' 'if False:'
+
+echo "# scenario 2b: the hidden count dropped while the filter still hides"
+# The filter and the count are two separate claims. A build that still hides the
+# loops but stops SAYING how many is the absence-shaped green: "1 disk" and
+# "1 disk plus 32 loops I did not print" are different answers, and only the
+# second is true.
+run_scenario "hidden-count-dropped" FAIL disk-layout-hidden-count-stated \
+  'if hidden:' 'if False:'
 
 echo "# scenario 3: an unknown GPT GUID guessed"
 run_scenario "unknown-guid-guessed" FAIL disk-layout-unknown-guid-not-guessed \
