@@ -1049,4 +1049,33 @@ if [[ -f "$WORK/rclone-noremote.rc" ]]; then
   res "rclone-noremote-shape" "PASS (rc=$(cat "$WORK/rclone-noremote.rc"): $(head -2 "$WORK/rclone-noremote.err" | tr '\n' '|' | head -c 110))"
 fi
 
+# --- the KV-fit arithmetic, against a real model on a real image --------------
+# `ctxfit.kv_bytes_per_token` reads five GGUF conventions out of the header;
+# `kv_width_from_shapes` reads the K/V projection tensors' own shapes. Two
+# derivations of one number, one of which cannot inherit the other's misreading
+# of the format - which is the failure mode a test written from the same reading
+# as the module cannot see. edge0's `test_streaming_math.py` does this for a
+# streaming kernel; this is the same discipline on the one place Chronoa does
+# arithmetic on a third-party file.
+#
+# It belongs here rather than in the unit suite because the harness redirects
+# HOME and XDG_DATA_HOME, so no real model is reachable from inside the suite -
+# the unit test opts in through CHRONOA_KV_PARITY_MODEL and skips without it.
+MODEL=$(ls -t "${HOME:-/root}"/.local/share/shani-chronoa/llm/*.gguf 2>/dev/null | head -1)
+if [[ -z "$MODEL" ]]; then
+  MODEL=$(ls -t /var/lib/*/.local/share/shani-chronoa/llm/*.gguf 2>/dev/null | head -1)
+fi
+if [[ -z "$MODEL" ]]; then
+  res "kv-parity-two-routes-agree" "SKIP (no .gguf in the model directory: the check needs a real file to read, and an absent model is not a parity failure)"
+else
+  if CHRONOA_KV_PARITY_MODEL="$MODEL" PYTHONDONTWRITEBYTECODE=1 \
+      PYTHONPATH=/usr/lib/shani-chronoa python3 -m pytest \
+      tests/test_ctxfit.py::TestTheTensorRouteAgreesWithTheMetadataRoute \
+      -q --tb=line 2>&1 | grep -qE "^[0-9]+ passed"; then
+    res "kv-parity-two-routes-agree" "PASS (metadata and tensor routes agree on $MODEL)"
+  else
+    res "kv-parity-two-routes-agree" "FAIL (the two routes disagree on $MODEL - ctxfit is misreading a GGUF convention; see the pytest output above)"
+  fi
+fi
+
 echo "== probe done"
