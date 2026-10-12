@@ -183,6 +183,47 @@ else
   no "the slot-test parses"
 fi
 
+echo "# 1.7 a capture run is CLEAN - stderr free of shell errors"
+#
+# **This is the check whose absence let a real defect through every other
+# assertion above.** `VOCAB` was only assigned in the live branch, and the
+# summary prints it under `set -u`, so a capture-mode run died with
+# `VOCAB: unbound variable` - and 1.2 to 1.5 still reported PASS, because
+# `bash -n` parses without executing and the RESULT lines are printed before the
+# summary runs. Eight green checks over a broken run.
+#
+# It is a real control, not a formality: reverting the declaration puts it back.
+err="$(mktemp)"
+d5="$(mktemp -d)"
+i=0
+while IFS='|' read -r _pop _text; do
+  i=$((i + 1)); n=$(printf '%02d' "$i")
+  : > "$d5/s$n.wav"
+  printf 'something audible was said here\n' > "$d5/s$n.txt"
+  printf 'something audible was said here\n' > "$d5/s$n-prompt.txt"
+done <<'CORPUS'
+domain|Extract the archive into my downloads folder
+domain|Check the btrfs snapshots for the boot slot
+domain|Dismiss the screen reader for a moment
+domain|List the broken symbolic links in my home
+domain|Search the web for the weather in Pune
+ordinary|What is the battery level right now
+ordinary|Convert fifty euros to rupees
+ordinary|Remind me to buy milk at six
+ordinary|Lock the screen now
+ordinary|Set a timer for ten minutes
+CORPUS
+CHRONOA_WHISPER_CAPTURE_DIR="$d5" \
+CHRONOA_WHISPER_MODEL=/nonexistent \
+  bash "$SLOT_TEST" >/dev/null 2>"$err"
+if grep -qE 'unbound variable|: line [0-9]+:' "$err"; then
+  no "a capture run is free of shell errors" 
+  sed 's/^/    # /' "$err" | head -4
+else
+  ok "a capture run is free of shell errors"
+fi
+rm -rf "$d5" "$err"
+
 rm -rf "$d2" "$d3"
 printf '\n1..%d\n' "$((pass + fail))"
 printf '# passed %d, failed %d\n' "$pass" "$fail"

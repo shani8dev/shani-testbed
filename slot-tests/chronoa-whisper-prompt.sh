@@ -111,7 +111,27 @@ if ! have whisper-cli; then
   skip "a whisper model is on this machine"
   skip "the prompt changes what is transcribed"
   skip "both conditions transcribed something"
-  echo "no whisper-cli here, so there is nothing this image can settle" >&2
+  # **The skip has to carry the reason it is not worth working around.**
+  # whisper-cpp is an optdepend and *no image profile installs it*, on purpose:
+  # shani-chronoa's AGENTS.md records "no ggml-*.bin exists on any install. Do
+  # not 'fix' this by hard-depending whisper-cpp: a user without it must get a
+  # working assistant that says so, not a half-configured one whose microphone
+  # silently cannot work." So on a slot this is a SKIP by design, and the only
+  # way to change it is to change what every ShaniOS install ships.
+  cat >&2 <<'MSG'
+no whisper-cli here, so this image cannot settle the question.
+
+  This is a SKIP by design, not a missing package. `whisper-cpp` is an
+  optdepend and no image profile installs it, deliberately: shani-chronoa's
+  AGENTS.md records that a user without it must get a working assistant that
+  says so, rather than a half-configured one whose microphone silently cannot
+  work. Installing it to make this test run would change what every install
+  ships, which is a product decision and not a measurement.
+
+  The dev-box numbers in that file (29.0% against 37.0%) came from espeak-ng
+  synthetic audio and are recorded as such. A slot run would add a number for a
+  real image; it cannot be had without that decision first.
+MSG
   exit 0
 fi
 pass "whisper-cli is installed"
@@ -139,7 +159,12 @@ if [ -z "$MODEL" ] || [ ! -r "$MODEL" ]; then
     skip "a whisper model is on this machine"
     skip "the prompt changes what is transcribed"
     skip "both conditions transcribed something"
-    echo "no ggml model readable, so there is no audio to compare" >&2
+    cat >&2 <<'MSG'
+a whisper binary is present but no ggml model is readable, so there is no audio
+to compare. On a slot this follows from the same recorded boundary: no image
+profile installs whisper-cpp, deliberately. Bind a model in with
+SHANIOS_TEST_EXTRA_BINDS only if you have already decided that.
+MSG
     exit 0
   fi
 else
@@ -152,6 +177,8 @@ fi
 # nothing on a checkout rather than an install, and SKIPped the one assertion the
 # check exists to make - while still emitting its name, so the self-test read the
 # SKIP and the later FAIL as two answers to one question.
+VOCAB=""            # declared for `set -u`: capture mode never assigns it and the
+                    # summary prints it, so an undeclared reference killed the run
 PROMPT_APPLIED=0
 # In capture mode the prompt's *content* is irrelevant - the `-prompt.txt` file is
 # the condition - but the flag still has to be non-empty, or both lookups resolve
