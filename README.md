@@ -355,6 +355,18 @@ copy-pasted between commands):
 | `lib/a11y_client.py` | AT-SPI accessibility-tree client used by `app` |
 | `mcp/shani_harness_mcp.py` | MCP server exposing `app` and harness commands to AI agents |
 
+`slot-tests/backup-snapshots.sh` drives `shani-backup`'s own `btrfs.py` against a
+real filesystem inside the slot, because six claims about its snapshot code decide
+what its fix has to be: a plain directory cannot be snapshotted, a snapshot cannot
+cross a filesystem, the tool names each subvolume relative to the subvolume
+*containing* the queried path (so a path built by joining onto the mount point is
+wrong in both directions - it returned 27 subvolumes at paths that did not exist),
+and a `--readonly` snapshot is deletable after all. It prefers a throwaway
+loopback image and **falls back to a scratch subvolume on the slot's own root**,
+because the slot has no loop devices at all (`/dev/loop-control` is absent, and
+`mount -o loop` exits 32); the scratch subvolume is removed on exit and no
+existing subvolume is touched.
+
 `slot-tests/` holds the in-slot function tests (`sign-efi-binary-test.sh`,
 `finalize-boot-entries-test.sh`, ...); every slot sees this repo read-only at
 `/mnt/testbed`, so run them as `enter blue -- /mnt/testbed/slot-tests/<name>.sh`.

@@ -102,8 +102,19 @@ export GSETTINGS_BACKEND=memory NO_AT_BRIDGE=1 PYTHONDONTWRITEBYTECODE=1
 for repo in shani-cassini shani-chronoa shani-backup; do
     src=/mnt/src/$repo
     if [ ! -d "$src/tests" ]; then res "pytest-$repo" "SKIP (/mnt/src/$repo not mounted)"; continue; fi
-    # a writable copy: the suites write fixtures/caches next to themselves
-    cp -a "$src" "$T/$repo"
+    # A writable copy: the suites write fixtures/caches next to themselves.
+    #
+    # `cache/` is excluded, and that exclusion is load-bearing rather than
+    # housekeeping: shani-chronoa's checkout carries its downloaded models
+    # (cache/data-home/shani-chronoa/llm/*.gguf, piper voices, espeak data -
+    # several GiB), and this slot's /tmp is a 3.1G **tmpfs**. Copying that tree
+    # filled the tmpfs and every repo after it failed with "No space left on
+    # device" - including shani-backup's suite, which never ran at all. Measured
+    # 2026-10-14. Only the source and its tests are needed; a model file is
+    # fixture data the suites do not read, and if one ever becomes a real
+    # dependency it belongs in the image, not in a checkout's cache.
+    mkdir -p "$T/$repo"
+    (cd "$src" && tar -cf - --exclude=./cache --exclude=./.git .) | (cd "$T/$repo" && tar -xf -)
     # -v so a crash (a segfault takes the whole run down) can be pinned on the
     # test that was running; faulthandler prints the Python side of it
     out=$(cd "$T/$repo" && HOME="$T/home-$repo" timeout 1200 python3 -X faulthandler -m pytest tests/ -v -p no:cacheprovider \
