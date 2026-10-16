@@ -1,34 +1,18 @@
-#!/bin/bash
-# Put the new hook into install.img's rootfs and regenerate the initramfs, so
-# the image carries the fix rather than the pre-fix hook baked in at build time.
 set -uo pipefail
-IMG=/disk/install.img
-NEWHOOK=/src/image_profiles/shared/overlay/rootfs/usr/lib/dracut/modules.d/99shanios
-LOOP=$(losetup --show -fP "$IMG") || { echo "losetup failed"; exit 1; }
-ESP=""; ROOT=""
-for p in ${LOOP}p*; do
-  L=$(blkid -o value -s LABEL "$p" 2>/dev/null||true); T=$(blkid -o value -s TYPE "$p" 2>/dev/null||true)
-  [ "$L" = shani_boot ] && ESP="$p"; [ "$T" = btrfs ] && ROOT="$p"
-done
-echo "esp=${ESP:-NONE} root=${ROOT:-NONE}"
-M=/mnt/inject; mkdir -p $M/esp $M/blue $M/green
-mount "$ESP" $M/esp || exit 2
-for s in blue green; do mount -t btrfs -o subvol=@$s "$ROOT" $M/$s 2>/dev/null || echo "  (@$s not mounted)"; done
-echo "--- entries on the ESP:"; ls $M/esp/loader/entries 2>/dev/null | sed 's/^/      /'
-echo "--- current default:"; sed -n 's/^default[[:space:]]*//p' $M/esp/loader/loader.conf | sed 's/^/      /'
-for s in blue green; do
-  [ -d "$M/$s/usr" ] || continue
-  if [ -d "$M/$s/usr/lib/dracut/modules.d/99shanios" ]; then
-    cp "$NEWHOOK/shanios-boot-failure-hook.sh" "$M/$s/usr/lib/dracut/modules.d/99shanios/" || echo "  copy failed @$s"
-    echo "  injected into @$s"
-    if grep -q 'previous boot also failed' "$M/$s/usr/lib/dracut/modules.d/99shanios/shanios-boot-failure-hook.sh"; then
-      echo "  VERIFIED: new hook text is in @$s"
-    else
-      echo "  WARNING: new text NOT found in @$s"
-    fi
-  else
-    echo "  @$s has no 99shanios dracut module"
-  fi
-done
-sync; umount $M/blue $M/green $M/esp 2>/dev/null; losetup -d "$LOOP"
-echo "INJECT PHASE DONE"
+cd /work
+rm -rf x new.cpio new.cpio.zst; mkdir -p x
+echo "--- extracting the FULL initramfs (1338 entries)"
+( cd x && cpio -id --quiet < ../real.cpio ) 2>/dev/null
+echo "    extracted: $(find x | wc -l) paths"
+T=x/var/lib/dracut/hooks/pre-mount/90-shanios-boot-failure-hook.sh
+[ -f "$T" ] || { echo "TARGET MISSING"; exit 2; }
+echo "--- before: $(grep -c 'previous boot also failed' "$T") occurrence(s) of the fix"
+cp /src/image_profiles/shared/overlay/rootfs/usr/lib/dracut/modules.d/99shanios/shanios-boot-failure-hook.sh "$T"
+echo "--- after:  $(grep -c 'previous boot also failed' "$T") occurrence(s)"
+echo "--- repacking all of it"
+( cd x && find . -print0 | cpio --null -o --format=newc --quiet ) > new.cpio 2>/dev/null
+ls -la new.cpio | awk '{print "    new.cpio "$5" bytes"}'
+zstd -19 -q -f new.cpio -o new.cpio.zst
+ls -la new.cpio.zst | awk '{print "    new.cpio.zst "$5" bytes"}'
+echo "--- verify the repack round-trips and still has the module hook"
+echo "    entries=$(cpio -t < new.cpio 2>/dev/null | wc -l)  99shanios-hooks=$(cpio -t < new.cpio 2>/dev/null | grep -c 'shanios-boot-failure-hook')"

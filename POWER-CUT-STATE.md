@@ -112,6 +112,54 @@ Available tools in the builder for the remaining surgery: `objcopy`, `sbsign`,
 `cpio`, `bsdtar`, `zstd`. Missing: `ukify`, `lsinitrd`, `unmkinitramfs`.
 `objcopy -O binary --only-section=.initrd` is the reliable way to get it out.
 
+### The initramfs layout, solved
+
+The `.initrd` is NOT one archive and not 140 either. It is:
+
+    offset      0 .. 113528   SVR4 cpio stub — early_cpio + kernel/x86/microcode
+    offset 113528 .. 113664   zero padding (136 bytes)
+    offset 113664 .. EOF      zstd-compressed cpio — the REAL dracut initramfs
+                               (78,413,312 B uncompressed, 1338 entries)
+
+`28 b5 2f fd` at 113664 is the zstd magic. Getting there needs the trailer
+followed by a forward scan past the zero padding — 512-alignment is wrong.
+
+**Two false negatives from this, both mine, recorded so they are not repeated.**
+Grepping the initramfs for `99shanios` finds nothing, twice: the module
+directory is not shipped, only the hooks `inst_hook` bakes into it. What
+matters is:
+
+    var/lib/dracut/hooks/pre-mount/90-shanios-boot-failure-hook.sh
+    var/lib/dracut/hooks/pre-pivot/50-shanios-overlay-etc.sh
+    var/lib/dracut/hooks/pre-pivot/90-shanios-boot-success-clear.sh
+
+So `lsinitramfs` reporting zero AND `grep 99shanios` reporting zero both look
+like "the module was never included" and are both wrong. Three instruments,
+two false negatives; the one that answered correctly was asking something that
+can only be true if the hook ran.
+
+### The swap, done and verified
+
+    # 1. pull the initrd out, walk to 113664, decompress
+    objcopy -O binary --only-section=.initrd <UKI> initrd.bin
+    # 2. skip the stub + padding; the real one starts at the zstd magic
+    zstd -dc tail2.bin > real.cpio
+    # 3. extract ALL of it, replace the hook, repack, recompress
+    (cd x && cpio -id --quiet < ../real.cpio)
+    cp <new-hook> x/var/lib/dracut/hooks/pre-mount/90-shanios-boot-failure-hook.sh
+    (cd x && find . -print0 | cpio --null -o --format=newc --quiet) > new.cpio
+    zstd -19 -q -f new.cpio -o new.cpio.zst
+
+Verified: hook went from 0 to 1 occurrence of the failover, 1338 entries in and
+out. **Trap:** a partial extract-then-repack silently yields a 7 KB initramfs
+instead of 78 MB — extract everything.
+
+**Remaining:** splice `new.cpio.zst` back into the stub as a new `.initrd`,
+`objcopy` it into the UKI, and `sbsign`. The signing step needs the MOK private
+key — find where that lives before starting, and note that the repo's own notes
+say a real MOK private key is still present in the base image (a known,
+unfixed Critical issue).
+
 ## Committed so far
 
 | repo | commit | what |
