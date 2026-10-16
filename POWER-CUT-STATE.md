@@ -259,3 +259,35 @@ other side. Both point at two different locations, not at a broken hook.
    they write the marker where the hook reads it, by construction.
 3. Scenario C still needs the UKI `.cmdline` pointed at a missing subvolume;
    editing the entry's `options` does nothing, as boot 1 showed.
+
+## THE PATH QUESTION, ANSWERED — and it is one command
+
+    /data/boot_hard_failure   -rw-r--r-- 1 root root 5 Oct 16 16:12
+    data.mount:  What=LABEL=shani_root   Where=/data
+    /run/shanios-data-tmp     does not exist in the running system
+
+Two facts that change the picture:
+
+1. **The marker boot 1 wrote IS visible afterwards, at `/data`, with boot 1's
+   timestamp (16:12 UTC = 21:42 IST).** So the write is not lost.
+2. **`data.mount` mounts `LABEL=shani_root` with no `subvol=`** — that mounts
+   whatever the filesystem's DEFAULT subvolume is. The hook mounts
+   `-o subvol=@data` explicitly.
+
+**So the whole question is one line: is `@data` the default subvolume?**
+
+    btrfs subvolume get-default /
+
+If it prints `@data`, the two paths are the same and the guard's false result
+has a different cause (most likely: boot 2 started from an ESP whose marker
+state had changed, or the boot order meant the clear ran before the read).
+If it prints subvolid 5 or anything else, **the hook has been writing to a
+different subvolume than the one `/data` is**, and the marker the recovery
+system reads is not the marker the hook writes — which is a real bug, and it
+would mean `shani-auto-rollback` has never once seen a marker the hook wrote.
+
+Check that first. Everything else here is downstream of it.
+
+Note also: `/run/shanios-data-tmp` does not survive pivot, which is why the
+running system cannot be inspected for the hook's own view — the mountpoint is
+gone. Only the initramfs, at pre-mount, ever sees that path.
