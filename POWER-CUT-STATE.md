@@ -398,3 +398,49 @@ Also still true and still unfixed: the pre-pivot clear writes to
 `boot_hard_failure cleared` has never actually removed anything — boot 1 left
 it in place. **The clear and the failover disagree about where `/data` is at the
 same moment of boot**, which is the same class of bug as the read above.
+
+## `objcopy --update-section` SHRINKS a UKI and corrupts it — boots 2-4 were invalid
+
+Found while verifying the diagnostic injection, not by booting:
+
+    objcopy: shanios-blue.efi[.initrd]: file truncated
+
+**`objcopy --update-section .initrd=<smaller file>` rewrites the PE with the
+new, shorter data while the section header still describes the original
+length.** The UKI ends up with its own section table pointing past its end of
+file. The UKI shrank 53,823,024 -> 51,507,080 bytes and its `.initrd` claimed
+36,010,760 bytes it no longer contained.
+
+They still booted — the initramfs content was intact enough for the hooks to
+run — which is exactly why it was not noticed. **Boots 2, 3 and 4 were running
+an image I had malformed, so their results are not trustworthy** and anything
+concluded from them needs re-testing against a well-formed image.
+
+### The correct way, and why
+
+**Rebuild the initrd to exactly the original byte length so the PE layout is
+never disturbed.** The recompressed initramfs is smaller than the original, so
+pad:
+
+    cat stub.cpio new.cpio.zst > new_initrd.bin
+    PAD=$(( ORIG - $(stat -c %s new_initrd.bin) ))
+    dd if=/dev/zero bs=1 count="$PAD" status=none >> new_initrd.bin
+    objcopy --update-section .initrd=new_initrd.bin   # same size: no re-layout
+
+**Always verify by extracting it back out**, do not trust the write:
+
+    objcopy -O binary --only-section=.initrd patched.efi check.bin
+    [ "$(stat -c %s check.bin)" = "$ORIG" ] || echo STILL TRUNCATED
+
+Trailing zeros after a zstd frame are ignored by the decompressor, so padding
+is harmless — this was confirmed by the round-trip check passing and the hook
+then being found with its fix and diagnostics intact.
+
+**This is the general trap:** the natural instinct when patching a UKI is "just
+swap the section", and that is exactly wrong. Anyone doing this needs to know
+it, which is why it is written down rather than left as a thing that happened
+to me.
+
+Note the UKI's initrd now begins the zstd stream at **113528** rather than
+113664 — the stub and the initramfs are concatenated with no padding between
+them, since `stub.cpio` is exactly 113528 bytes.
