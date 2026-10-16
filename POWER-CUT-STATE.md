@@ -485,3 +485,52 @@ same line. Cheapest check, and it should have come first:
 **Next step:** inject into `shanios-green.efi` as well (or point the default at
 blue), then re-run scenario C from scratch. Nothing about the failover has been
 tested yet, so treat every claim about it so far as untested.
+
+## Boot 6: injected into BOTH UKIs, still no DIAG. Not converging.
+
+    green: patched OK, initrd 36010807 bytes
+    marker reset to blue
+    ...
+    [12.20] shanios-hook: boot_hard_failure written for slot '@unknown'
+    [14.79] shanios-hook: boot_hard_failure cleared - root mount succeeded
+
+Different timestamps from boot 5, so this IS a new boot of a UKI verified to
+contain `DIAG lines: 7`. The diagnostics still do not appear.
+
+**So the failure is not "wrong UKI" and not "corrupted UKI".** Something about
+the initramfs I build is not the one dracut runs, even though extracting it back
+out of the UKI finds my hook.
+
+The most likely remaining explanation is that the rebuilt initramfs differs from
+the original in some way dracut cares about — ordering, the
+`early_cpio`/`kernel` microcode members, or a cpio header field I preserved
+incorrectly on repack. It decompresses, lists 1338 entries, and my hook is in
+it; that is not the same as it being the initramfs the kernel actually booted.
+
+**This is where I stop.** Six boots, and the failover has never been observed
+to do anything. I am not going to keep spending 12-minute boots on a setup whose
+own construction I do not yet understand well enough to trust.
+
+**Honest state of the whole exercise:**
+
+- The hook is written, tested twice, mutation-verified, synced across profiles,
+  and documented.
+- It has **never** been observed to run on any machine.
+- The reported field failure (power cut mid-update → dracut emergency) is
+  **real and correctly diagnosed**: `boot_hard_failure` is written by a boot
+  that fails and acted on by a boot that succeeds, with nothing between; and
+  the `+3-0` counter demonstrably does not decrement on this systemd
+  (`triesDone: 0` after a real boot, via `bootctl`).
+- **What is NOT established:** whether the fix works. The diagnosis is solid;
+  the remedy is unproven and has so far resisted every attempt to test it.
+
+**For whoever continues:** do not trust a boot whose UKI you have not verified
+by extracting the hook back out *and* confirming the console line is unique to
+the new build. Six boots were spent partly because the one console line I was
+checking is emitted by both the old and new hook.
+
+The right next move is probably not another boot. It is to build a testbed
+image that carries the fixed hook **by construction** — through the image build,
+which already forces a rebuild on overlay changes — rather than by hand-patching
+a UKI after the fact. That removes the entire class of problem this session ran
+into: the initramfs I build is not reliably the initramfs that boots.
