@@ -332,3 +332,69 @@ into a soon-to-be-shadowed directory.
 
 **Next step:** run boot 3 with the current diagnostic hook. It now warns on
 every path, so if (1) is right the console says so directly.
+
+## THREE BOOTS, SAME RESULT — the finding is now firm
+
+Boot 3, with the diagnostic hook in place:
+
+    [12.60] dracut-pre-mount[309]: shanios-hook: boot_hard_failure written for slot '@unknown'
+    [15.25] dracut-pre-pivot[379]:  shanios-hook: boot_hard_failure cleared - root mount succeeded
+
+**No `prior failure but ...` line.** The diagnostics are in the hook (committed
+`57994ad`, re-injected) and none of them fired, so the guard
+
+    [ -s "$DATA_MNT/boot_hard_failure" ]
+
+evaluated FALSE. Reproduced on boots 2 and 3.
+
+## That is contradictory, and the contradiction is the finding
+
+Verified from the host between boots, mounting the same subvolume the hook does:
+
+    findmnt /data            -> /dev/loop33p2[/@data]
+    /data/boot_hard_failure  -> "blue"   (scenario C wrote it; boot 1's
+                                            pre-pivot "clear" did NOT remove it)
+
+And the same hook, in the same function, **writes** that file successfully at
+pre-mount on every boot.
+
+So across three boots: the marker exists on `@data`, the hook writes to
+`@data`, and the hook does not read it. The only way both hold is that the
+hook's read is not looking at the content the rest of the world sees.
+
+## Prime suspect, and it is checkable
+
+The hook resolves its device itself:
+
+    DATA_DEV=$(blkid -L "$ROOT_LABEL")          # ROOT_LABEL=shani_root
+    mount -t btrfs -o subvol=@data,rw "$DATA_DEV" "$DATA_MNT"
+
+If the initramfs sees **more than one** device labelled `shani_root` — a real
+possibility with two slots, two loops, and by-label symlinks that the hooks'
+own comment says can dangle — `blkid -L` may be resolving a different one than
+the one the running system uses, and the hook has been writing the marker to a
+subvolume nobody reads.
+
+**Check, in the initramfs during any boot:**
+
+    dracut-pre-mount$ blkid -L shani_root
+    dracut-pre-mount$ ls -la /run/shanios-data-tmp/boot_hard_failure
+
+If the `ls` says "No such file" while `/data/boot_hard_failure` exists from
+the host, that is it, and the fix is to resolve the device the way the rest of
+the system does rather than by label inside a minimal initramfs.
+
+## The three false starts, so they are not repeated
+
+1. `lsinitramfs` reporting zero `99shanios` — the module dir is not shipped,
+   only the hooks `inst_hook` bakes in.
+2. `grep 99shanios` on the decompressed image — same reason.
+3. **This one**: assuming the hook and the system agree about `/data`.
+   `findmnt` says they do at the subvolume level, and yet behaviour says
+   otherwise. Both were settled by measurement, not by reading.
+
+Also still true and still unfixed: the pre-pivot clear writes to
+`$NEWROOT/data`, which is not the `@data` mount at that stage, so
+`boot_hard_failure cleared` has never actually removed anything — boot 1 left
+it in place. **The clear and the failover disagree about where `/data` is at the
+same moment of boot**, which is the same class of bug as the read above.
