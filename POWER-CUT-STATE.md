@@ -444,3 +444,44 @@ to me.
 Note the UKI's initrd now begins the zstd stream at **113528** rather than
 113664 — the stub and the initramfs are concatenated with no padding between
 them, since `stub.cpio` is exactly 113528 bytes.
+
+## THE ACTUAL CAUSE OF BOOTS 2-5: I patched blue and booted green
+
+Every boot since the injection ran **`shanios-green.efi`**, which I never
+touched. The injection only ever modified `shanios-blue.efi`.
+
+Why: scenario C sets `default` to a copy of the **green** entry (green is the
+only non-tries entry, so it is the fallback), and that entry's `efi` line is
+`/EFI/shanios/shanios-green.efi`.
+
+So boots 2, 3, 4 and 5 ran the **original, pre-fix** green UKI:
+
+- `boot_hard_failure written for slot '@unknown'` — the ORIGINAL hook's line
+- **no failover block at all**, so the guard was never evaluated and the false
+  guard was an artefact
+- **no DIAG lines** — they were only ever injected into blue
+- the corrupted-UKI problem was blue's, which green was not subject to
+
+**Every conclusion drawn from boots 2-4 is void.** The "hook writes the marker
+but cannot read it" finding was never observed — what was observed was the
+pre-fix hook doing exactly what the pre-fix hook does.
+
+**How it went unnoticed for four boots:** the console line I kept checking for
+(`boot_hard_failure written for slot ...`) is present in BOTH the old and the
+new hook, so it read as "the hook ran" — the one signal that could not
+distinguish the two builds. The DIAG lines could have, and they were absent for
+the same reason, which I attributed to a read failure instead of to the build
+not being the one under test.
+
+## Lesson
+
+**Verify that the thing you patched is the thing that runs.** A green console
+line from a hook is not evidence the *new* hook ran when the old hook emits the
+same line. Cheapest check, and it should have come first:
+
+    # what the default entry actually loads
+    cat $ESP/loader/entries/<default-entry>.conf | grep ^efi
+
+**Next step:** inject into `shanios-green.efi` as well (or point the default at
+blue), then re-run scenario C from scratch. Nothing about the failover has been
+tested yet, so treat every claim about it so far as untested.
