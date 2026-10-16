@@ -1130,6 +1130,32 @@ package before it is published. A report, not a gate.
 
 Besides the earlier ones, `slot-tests/` now has:
 
+- `post-reset-setup` - the state a factory reset leaves behind and the one hook
+  that has to clean it up. `shani-reset` wipes `/data`, which takes the `/etc`
+  overlay upper layer with it, so **every user account goes** - `/etc/passwd`
+  only ever lived there - and so does the root password set at install time. It
+  writes `/data/user-setup-needed` on the way out, and `shani-user-setup.path`
+  watches that marker, which makes `shani-user-setup.service` the only thing
+  that runs on the next boot and has to make the system usable again. Two
+  things it now has to get right, and did not until 2026-10-16:
+  (a) the reset's own output must name `plasma-setup`, the unit that actually
+  creates the account, and not `plasma-welcome` - an in-session tips app that
+  is installed and never enabled, and which the message named until then;
+  (b) `/etc/skel` must be seeded into a home that already exists, because
+  `useradd -m` only copies skel when it *creates* a home, and after a reset the
+  home survives in `@home` while the account is created onto it. The seeding is
+  add-only: a file the user edited is never reverted, and the first-login pair
+  (`.bashrc_shani` plus the autostart entry that `mv`s it over `.bashrc`) is
+  never seeded into a home that already has a `.bashrc`, because that would
+  replace it on the next graphical login. Negative control: removing the
+  never-overwrite guard from the live script really does clobber the user's
+  file, and the script is asserted restored afterwards - without that control
+  the "is never reverted" check passes just as well when the seeding never runs
+  at all, which is what the first version of this test did. A real
+  `shani-reset` is deliberately **not** run here: it ends in `systemctl reboot`
+  and the harness session has no real PID 1 to reboot, so the messaging is
+  driven through `--dry-run --yes` (the same code path, no wipe) and the
+  behaviour through the real service reacting to the real marker;
 - `unit-verify` - `systemd-analyze verify` over every unit ShaniOS ships
   (shani-* packages and image overlays), unstubbed, plus every load-time
   complaint PID 1 logged this boot;
