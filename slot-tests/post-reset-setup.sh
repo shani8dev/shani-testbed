@@ -165,82 +165,135 @@ fi
 # `wizard-rearms-after-reset` above is weak on its own: it asserts the flag is
 # absent right now, and that the reset *message* mentions it. Neither touches
 # the mechanism. The load-bearing claim for the plasma profile — the one profile
-# where recovery is supposed to work without any shani code at all — is that
+# where recovery is supposed to work with no shani code at all — is that
 # `ConditionPathExists=!/etc/plasma-setup-done` genuinely re-arms once the reset
 # has taken the flag with the /etc overlay upper layer.
 #
-# That is a claim about what systemd decides, so it is asked of systemd:
-# `systemd-analyze condition` evaluates a unit's own conditions and prints the
-# ones that are NOT satisfied. With the flag present the PathExists condition
-# must fail; with it absent it must pass. Both directions, or the check would
-# pass against a unit whose condition is not wired to that file at all.
+# Verified by hand against upstream while writing this, because the claim is
+# load-bearing and the pin is a third-party commit: plasma-setup-git builds
+# upstream KDE's plasma-setup at 3cbe755, files/plasma-setup.service.in does
+# carry the condition, and the flag is written by
+# PlasmaSetupAuthHelper::createflagfile to PLASMA_SETUP_DONE_FLAG_PATH, which
+# config-plasma-setup.h.cmake defines as
+# ${KDE_INSTALL_FULL_SYSCONFDIR}/plasma-setup-done. So the documented claim is
+# correct — which is exactly why it needed running rather than reading.
+#
+# HOW the condition is asked about, after two wrong instruments:
+#
+#   - `systemd-analyze condition -q` reports nothing useful here. `-q` is
+#     "do not emit hints", not "only unsatisfied", and the unit fails to
+#     resolve without a manager, so "Cannot parse" goes to stderr and the
+#     stdout this measured was empty in BOTH states. A count of unsatisfied
+#     lines that is 0 either way cannot distinguish anything.
+#   - `ActiveState` cannot tell a skipped oneshot from a finished one: both are
+#     `inactive`, because RemainAfterExit is unset.
+#
+# What does work is `ConditionResult` after an explicit `systemctl start`, and
+# it was measured differing: `yes` with the flag absent, `no` with it present,
+# with `Result=success` for the skipped job (a condition-skipped start IS a
+# success — reading that as failure would be the mirror-image mistake).
+#
+# The real unit is NOT started: its ExecStart is `plasma-setup-bootutil`, which
+# sets up an autologin GUI session. The condition text is lifted out of the
+# shipped unit and applied to a probe whose ExecStart is harmless, so systemd's
+# real condition logic is evaluated against the real path with no side effects —
+# and lifting the text is what stops the probe from drifting from the unit.
 if [[ "$PROFILE" == plasma ]]; then
   PSVC=plasma-setup.service
+  _flag=/etc/plasma-setup-done
   if ! systemctl cat "$PSVC" >/dev/null 2>&1; then
     res plasma-guard-is-a-condition "FAIL ($PSVC is not installed)"
   else
     res plasma-guard-is-a-condition PASS
-    _flag=/etc/plasma-setup-done
-    rm -f "$_flag"
-    _armed=$(systemd-analyze condition -q "$PSVC" 2>/dev/null | wc -l)
-    printf 'Plasma Setup armed at %s\n' "$(date -u +%FT%TZ)" > "$_flag"
-    _blocked=$(systemd-analyze condition -q "$PSVC" 2>/dev/null | wc -l)
-    rm -f "$_flag"
-    _after=$(systemd-analyze condition -q "$PSVC" 2>/dev/null | wc -l)
 
-    if [[ "$_armed" -eq 0 ]]; then
-      res plasma-guard-arms-without-the-flag PASS
-    else
-      res plasma-guard-arms-without-the-flag \
-         "FAIL ($_armed unsatisfied condition(s) even with no flag: $(systemd-analyze condition -q "$PSVC" 2>&1 | head -2 | tr '\n' ' '))"
-    fi
-
-    if [[ "$_blocked" -gt "$_armed" ]]; then
-      res plasma-guard-disarms-with-the-flag PASS
-    else
-      res plasma-guard-disarms-with-the-flag \
-         "FAIL (writing $_flag did not make the unit's conditions worse: armed=$_armed blocked=$_blocked - the ConditionPathExists is not on this file)"
-    fi
-
-    # A reset takes /etc, so the flag goes. The unit must be back to armed
-    # afterwards — which is the whole recovery claim, checked as a transition
-    # rather than as a file's absence.
-    if [[ "$_after" -eq "$_armed" ]]; then
-      res plasma-guard-rearms-after-reset PASS
-    else
-      res plasma-guard-rearms-after-reset \
-         "FAIL (removing the flag left $_after unsatisfied, armed was $_armed)"
-    fi
-
-    # And the flag is written by the wizard itself, into /etc — not shipped in
-    # the package. A flag that were shipped would make every machine look set up
-    # from first boot and no reset could ever help.
-    #
-    # Read from the image's own pacman database, NOT `pacman -Ql`. There is no
-    # pacman binary in a booted Shanios slot (packages are baked at build time;
-    # the image is immutable), so `pacman -Ql` fails, the `if` is false, and the
-    # check reports PASS having looked at nothing. The manifest is what the
-    # package actually shipped and it is on disk either way.
-    _pdb=/var/lib/pacman/local/plasma-setup-git/files
-    if [[ ! -f "$_pdb" ]]; then
-      res plasma-setup-done-is-not-shipped "FAIL (no $_pdb — nothing was inspected)"
-    elif grep -q 'plasma-setup-done' "$_pdb"; then
-      res plasma-setup-done-is-not-shipped "FAIL (the package ships it — every machine would look already-set-up)"
-    else
-      res plasma-setup-done-is-not-shipped PASS
-    fi
-
-    # The condition must name THAT file. A unit whose ConditionPathExists points
-    # somewhere else would sail through every check above - it would be armed
-    # with no flag and stay armed when the real flag appears - and the only way
-    # to tell them apart is to read what the unit actually says.
-    if systemctl cat "$PSVC" 2>/dev/null \
-       | sed 's/^[[:space:]]*#.*$//' | grep -q 'ConditionPathExists=!.*plasma-setup-done'; then
+    COND=$(systemctl cat "$PSVC" | sed 's/^[[:space:]]*#.*$//' \
+           | grep -m1 'ConditionPathExists')
+    if [[ -n "$COND" ]]; then
       res plasma-guard-names-the-same-file PASS
     else
       res plasma-guard-names-the-same-file \
-         "FAIL (no ConditionPathExists=!*plasma-setup-done in the shipped unit)"
+         "FAIL (no ConditionPathExists in the shipped unit)"
+      COND='ConditionPathExists=!/nonexistent-plasma-probe'
     fi
+
+    PROBE=zz-plasma-guard-probe.service
+    printf '[Unit]\nDescription=plasma-setup guard probe\n%s\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n' \
+      "$COND" > "/etc/systemd/system/${PROBE}"
+    systemctl daemon-reload
+
+    # The probe must be reported on, not trusted. If the unit could not be
+    # written, reloaded or started, ConditionResult stays at its initial `no`
+    # in BOTH states - and the "disarms with the flag" check then PASSES for the
+    # wrong reason while "arms without the flag" fails. That is precisely the
+    # pattern the first run produced, so the health of the probe is now its own
+    # assertion rather than something inferred from the verdicts.
+    printf '[Unit]\nDescription=plasma-setup guard probe\n%s\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n' \
+      "$COND" > "/etc/systemd/system/${PROBE}" 2>/dev/null || true
+    if [[ -s "/etc/systemd/system/${PROBE}" ]]; then
+      res plasma-probe-unit-was-written PASS
+    else
+      res plasma-probe-unit-was-written \
+         "FAIL (could not write /etc/systemd/system/${PROBE}; everything below would pass for the wrong reason)"
+      echo "     probe unit as written:"; sed 's/^/       /' "/etc/systemd/system/${PROBE}" 2>/dev/null
+      systemctl cat "$PROBE" 2>&1 | sed 's/^/       /' | head -8
+    fi
+    if systemctl cat "$PROBE" >/dev/null 2>&1; then
+      res plasma-probe-unit-is-loaded PASS
+    else
+      res plasma-probe-unit-is-loaded "FAIL (systemd will not load the probe unit)"
+    fi
+
+    _ask() {   # $1 = flag state; prints yes|no|'' for ConditionResult
+      rm -f "$_flag"
+      [[ "$1" == present ]] && printf 'probe\n' > "$_flag"
+      systemctl reset-failed "$PROBE" >/dev/null 2>&1 || true
+      _out=$(systemctl start "$PROBE" 2>&1); _rc=$?
+      sleep 1
+      echo "     [$1] start rc=$_rc out=[${_out:0:60}] flag=$([ -e "$_flag" ] && echo present || echo absent) Result=$(systemctl show -p Result --value "$PROBE" 2>/dev/null)" >&2
+      systemctl show -p ConditionResult --value "$PROBE" 2>/dev/null
+    }
+
+    armed=$(_ask absent)
+    blocked=$(_ask present)
+    rearmed=$(_ask absent)
+
+    # Always clean up, on every path — a probe unit and a fake done-flag left in
+    # /etc would make the NEXT check of this file answer something else.
+    rm -f "$_flag" "/etc/systemd/system/${PROBE}"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+
+    if [[ "$armed" == "yes" ]]; then
+      res plasma-guard-arms-without-the-flag PASS
+    else
+      res plasma-guard-arms-without-the-flag \
+         "FAIL (flag absent but ConditionResult=$armed — the wizard would never start)"
+    fi
+
+    if [[ "$blocked" == "no" ]]; then
+      res plasma-guard-disarms-with-the-flag PASS
+    else
+      res plasma-guard-disarms-with-the-flag \
+         "FAIL (flag present but ConditionResult=$blocked — the guard does not read that file)"
+    fi
+
+    # The recovery claim itself, as a transition rather than a file's absence:
+    # a reset takes /etc, so the flag goes and the guard must come back.
+    if [[ "$rearmed" == "yes" ]]; then
+      res plasma-guard-rearms-after-reset PASS
+    else
+      res plasma-guard-rearms-after-reset \
+         "FAIL (after removing the flag ConditionResult=$rearmed, armed was $armed)"
+    fi
+
+    # Whether the flag is SHIPPED by the package is a different question, and a
+    # booted slot cannot answer it: `/var` is a volatile tmpfs on a real boot
+    # (measured — /var/lib/pacman/local does not exist), so there is no packaged
+    # file manifest to read here, and `pacman -Ql` has no binary to run. An
+    # absent flag on a machine that has never completed setup proves nothing
+    # either way, so this reports SKIP with the reason instead of a green it did
+    # not earn. Checked against the built package instead.
+    res plasma-setup-done-is-not-shipped \
+       "SKIP (/var is a volatile tmpfs on a real boot: no pacman file manifest to read)"
   fi
 fi
 
@@ -269,9 +322,27 @@ else
   res useradd-copies-skel "FAIL (.zshrc absent right after useradd -m)"
 fi
 
+# The skel file to test is CHOSEN from this profile's /etc/skel, not hardcoded.
+# `.inputrc` was, and plasma's skel does not ship one at all — so the check
+# reported "not seeded into an existing home" on a pass that worked correctly,
+# which is a FAIL pointing at the wrong subsystem entirely. The profile decides
+# what is in skel; the test has to read that.
+#
+# `.bashrc` is excluded because it is the never-overwrite case below, and
+# `.bashrc_shani` because it is half of the mv-on-login pair.
+SKEL_PROBE=""
+for _c in .inputrc .bash_profile .bash_logout .zshrc .profile .xprofile .dircolors; do
+  if [[ -e "/etc/skel/$_c" ]]; then SKEL_PROBE="$_c"; break; fi
+done
+if [[ -n "$SKEL_PROBE" ]]; then
+  echo "     skel probe file: $SKEL_PROBE (from this profile's /etc/skel)"
+else
+  echo "     WARNING: no candidate skel file found; the seeding checks cannot run"
+fi
+
 # Delete a skel file to simulate a home that never received the defaults, and
 # edit another to prove the pass is add-only.
-rm -f "$H/.inputrc"
+rm -f "$H/${SKEL_PROBE:-.nonexistent}"
 printf '# EDITED BY THE USER\n' > "$H/.bashrc"
 
 # The first-login pair must be REMOVED before the check about it means
@@ -324,10 +395,13 @@ dump_journal "$svc"
 echo "     sandbox: ProtectHome=$(systemctl show -p ProtectHome --value "$svc" 2>/dev/null)"
 echo "     sandbox: Result=$(systemctl show -p Result --value "$svc" 2>/dev/null) ExecMainStatus=$(systemctl show -p ExecMainStatus --value "$svc" 2>/dev/null)"
 
-if [[ -f "$H/.inputrc" ]]; then
+if [[ -z "$SKEL_PROBE" ]]; then
+  res missing-skel-file-is-seeded "SKIP (this profile's /etc/skel ships no candidate file)"
+elif [[ -f "$H/$SKEL_PROBE" ]]; then
   res missing-skel-file-is-seeded PASS
 else
-  res missing-skel-file-is-seeded "FAIL (.inputrc not seeded into an existing home)"
+  res missing-skel-file-is-seeded \
+     "FAIL ($SKEL_PROBE was deleted from an existing home and the seeding pass did not restore it)"
 fi
 
 if [[ "$(cat "$H/.bashrc" 2>/dev/null)" == "# EDITED BY THE USER" ]]; then
