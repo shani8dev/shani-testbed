@@ -182,3 +182,43 @@ unfixed Critical issue).
      `default`, next boot lands on the good slot
 3. **B is the control that makes C mean anything.** Without it a hook that
    rewrote `default` unconditionally would also pass C.
+
+## BOOT 1 OF SCENARIO C RAN ON REAL FIRMWARE — the failover did NOT fire
+
+The UKI injection worked and the hook demonstrably ran:
+
+    [12.09] dracut-pre-mount[303]: shanios-hook: boot_hard_failure written for slot '@unknown'
+    [14.64] dracut-pre-pivot[379]: shanios-hook: boot_hard_failure cleared — root mount succeeded
+
+But on the ESP afterwards:
+
+    default now : shanios-green-broken+3-0.conf      <- UNCHANGED
+    shanios-bak : (none - no backup was written)
+    boot_hard_failure on disk: blue                  <- still there, so the
+                                                         prior-marker test passed
+
+So the hook entered with a pre-existing marker and **did not switch the
+default**. It fails open and silently, which is the designed behaviour and is
+exactly why this had to be booted to find. Most likely: the ESP is not
+readable — or not mountable — at **pre-mount**, so `blkid -L shani_boot` or the
+`mount -t vfat` returns nothing and every branch is skipped without a word.
+
+**Next thing to do, in order:**
+
+1. Make the hook say why it did nothing. It currently has one `warn()` on
+   success and total silence on every failure path — which is how a
+   not-running branch looks identical to a working one. Log each of: no
+   ESP device, mkdir failed, mount failed, no loader.conf, no tries entry, no
+   fallback entry.
+2. Re-run boot 1. The console will then say which step failed.
+3. **Two more findings from this run, both independent of the fix:**
+   - Attempted-slot detection returned **`@unknown`**, not `blue`. `getarg
+     rootflags` did not parse on this boot, so `boot_hard_failure` records a
+     slot that `shani-auto-rollback` will refuse to act on.
+   - **Scenario C did not make the candidate unbootable.** The entry's
+     `options` line was pointed at `@no-such-slot` and the mount still
+     succeeded — because the UKI carries its own `.cmdline`
+     (`rootflags=subvol=@blue`) and that is what booted. An entry's `options`
+     does not override an embedded UKI cmdline. **Any scenario that needs a
+     genuinely unbootable slot must edit the UKI's `.cmdline`, not the
+     entry's options.**
