@@ -291,3 +291,44 @@ Check that first. Everything else here is downstream of it.
 Note also: `/run/shanios-data-tmp` does not survive pivot, which is why the
 running system cannot be inspected for the hook's own view — the mountpoint is
 gone. Only the initramfs, at pre-mount, ever sees that path.
+
+## ANSWERED: `/data` IS the `@data` subvolume — my hypothesis was wrong
+
+    findmnt /data   ->   /dev/loop33p2[/@data]
+
+**Same subvolume.** The hook's `-o subvol=@data` and the system's `/data` are
+one location, so the "two different places sharing one name" theory I was
+building toward is wrong, and is retracted here rather than left standing in the
+file above.
+
+(`btrfs subvolume get-default /` fails on a non-boot nspawn session with "not a
+btrfs filesystem" — `findmnt` is the instrument that answers it here.)
+
+So the marker plumbing is sound, and the remaining puzzle is narrow:
+
+- the marker is present at `/data` with value `blue`
+- the hook writes it at pre-mount via `@data`
+- **and yet boot 2's guard `[ -s "$DATA_MNT/boot_hard_failure" ]` read false**
+
+Given the paths are identical, the candidates are now few:
+
+1. **The initramfs's own `@data` mount failed at pre-mount**, so the hook's
+   `$DATA_MNT` was empty and it read nothing. Note the hook writes
+   `boot_hard_failure` *after* the guard, so a failed mount would ALSO explain
+   boot 1 writing it while boot 2 could not read it — if the two boots mounted
+   differently. The hook now warns on that path, so **boot 3 will say so**.
+2. Boot 1's pre-pivot "cleared the marker" wrote to `$NEWROOT/data`, which is
+   NOT yet the `@data` mount at that stage — /data is mounted by systemd
+   *after* pivot. So the clear went into a directory that was then shadowed, and
+   the marker survived. That is consistent with everything observed, and it
+   means **the clear has probably never worked either.**
+3. The ordering of my own scenario steps wiped it between the check and the
+   boot.
+
+**(2) is the more interesting one and is now the stronger hypothesis.** It
+would mean the hook's clear and its failover disagree about where `/data` is at
+the same stage of boot — one writes through a subvolume mount, the other writes
+into a soon-to-be-shadowed directory.
+
+**Next step:** run boot 3 with the current diagnostic hook. It now warns on
+every path, so if (1) is right the console says so directly.
