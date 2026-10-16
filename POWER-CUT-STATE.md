@@ -565,3 +565,36 @@ of a file collision with one already in the list.
 hook.** Worth knowing before anyone spends an hour on it: the blocker is in
 package installation, not in the boot-failover work, and the cache checker
 that exists for this class does not cover a full profile install.
+
+## Leading lead on the `conflicting files` failure
+
+Comparing file lists across the `shani-*` packages in the shared cache, every
+cross-package collision is under **`/etc/skel/`**:
+
+    /etc/skel/                          shani-settings + shani-desktop-*
+    /etc/skel/.config/                  shani-settings + shani-desktop-*
+    /etc/skel/.config/Kvantum/...       shani-settings + shani-desktop-*
+
+**Not proven to be the cause** — the sweep compared all shani packages, not the
+ones this profile installs, so it may simply be listing pairs (cosmic+plasma)
+that never co-occur. Two things make it worth checking first:
+
+1. **`shani-settings` and `shani-desktop-<profile>` both shipping `/etc/skel`
+   is a plausible genuine conflict**, and it would fire for any profile that
+   installs both. If that is it, it is a packaging bug predating this session,
+   not something the hook work caused.
+2. It is consistent with something measured earlier in this session by
+   accident: **plasma's `/etc/skel` had no `.inputrc` while gnome's did**, so
+   skel content genuinely differs between profiles — which means two packages
+   writing the same tree is exactly the shape of thing that drifts into a
+   collision.
+
+**Next command, in the builder, against the gnome profile's own resolved
+package set** (not every shani package), listing files from each and finding
+the first path two DIFFERENT packages both provide. Do not repeat the sweep
+above as written — it compares across profiles and across versions and cannot
+distinguish a real conflict from cache residue.
+
+Note for whoever runs it: old versions of the same package coexisting in the
+cache (shani-settings 39/41/42/44/45, shani-desktop-gnome 25/26/27/28) are
+NOT conflicts — pacman installs one version. Only cross-NAME collisions count.
