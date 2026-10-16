@@ -598,3 +598,32 @@ distinguish a real conflict from cache residue.
 Note for whoever runs it: old versions of the same package coexisting in the
 cache (shani-settings 39/41/42/44/45, shani-desktop-gnome 25/26/27/28) are
 NOT conflicts — pacman installs one version. Only cross-NAME collisions count.
+
+## `/etc/skel` lead: DISPROVEN. No two shani packages conflict on any real file.
+
+Swept the gnome profile's OWN resolved shani package set (not every shani
+package, not across profiles), against the newest cached build of each, and kept
+only **regular files** — a tar entry ending in `/` is a directory, and every
+package lists `/usr`, `/etc`, `/usr/bin`, so directories swamp the result and
+are not conflicts. Two earlier sweeps were polluted exactly that way.
+
+Result: **zero paths claimed by two different shani packages.** The only
+remaining "duplicates" are `.INSTALL`, `.MTREE`, `.PKGINFO` — per-package archive
+metadata that pacman never installs into the root.
+
+**So the `/etc/skel` theory above is wrong and should not be pursued.** It came
+from comparing every shani package including desktop profiles that never
+co-occur (cosmic + plasma), and from counting directories as files.
+
+**Where that leaves the `conflicting files` failure:** the collision is not
+between two `shani-*` packages. It is either
+
+- between a `shani-*` package and a **distro** package (nothing in this sweep
+  looks outside the shani set), or
+- somewhere in the other ~1300 packages in the profile.
+
+**The next check, then:** repeat this sweep over the profile's **full** resolved
+package list, not just the shani prefix, using the same regular-files-only rule
+and the newest-cached-build-per-name rule. That is the check that would have
+been right the first time; the shani-only version was a guess about where to
+look, and it was wrong.
