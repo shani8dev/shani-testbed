@@ -124,6 +124,14 @@ fi
 # home; after a reset the home survives in @home and the account is created
 # onto it, so without this pass the user lands on an empty-looking home.
 echo "== skel seeding through the real marker"
+# Diagnostic first. seed_skel() returns immediately when /etc/skel is absent,
+# and without this the two checks below would both fail for a reason that has
+# nothing to do with the code under test.
+if [[ -d /etc/skel ]] && [[ -n "$(ls -A /etc/skel 2>/dev/null)" ]]; then
+    res skel-dir-is-populated PASS
+else
+    res skel-dir-is-populated "FAIL (/etc/skel missing or empty - seed_skel cannot run)"
+fi
 U=skelprobe
 userdel -rf "$U" 2>/dev/null
 useradd -m -s /bin/zsh "$U" 2>&1 | head -2
@@ -141,9 +149,24 @@ fi
 rm -f "$H/.inputrc"
 printf '# EDITED BY THE USER\n' > "$H/.bashrc"
 
+# The first-login pair must be REMOVED before the check about it means
+# anything. `useradd -m` already copied it out of /etc/skel, so on a freshly
+# created home the pair is present from the start, and asserting "the pair is
+# absent" then tests only the fact that skel contains it — which is why the
+# first run of this file reported a failure for a file it had never removed.
+# The condition under test is "a home that already has a .bashrc and no
+# pending first-login pair", which only exists once the pair is taken away.
+rm -f "$H/.bashrc_shani" "$H/.config/autostart/bashrc-setup.desktop"
+
 before=$(systemctl show -p ExecMainStartTimestampMonotonic --value "$svc")
 touch /data/user-setup-needed
-sleep 2; settle
+# Wait for the marker to be CONSUMED, not for a fixed interval. The service
+# does real work per user (skel walk, runuser for the flatpak remote, subuid
+# ranges) and ExecStartPost is what removes the marker, so a fixed sleep can
+# sample before that work is done - which is how the first run reported
+# "marker still present" for a service that simply had not finished.
+for ((i = 0; i < 90 && [[ -e /data/user-setup-needed ]]; i++)); do sleep 1; done
+settle
 after=$(systemctl show -p ExecMainStartTimestampMonotonic --value "$svc")
 
 if [[ "$after" != "$before" ]]; then
@@ -235,13 +258,22 @@ mkdir -p "$STRAY_HOME/.config"
 chown -R "$STRAY_UID:$STRAY_UID" "$STRAY_HOME"
 
 # Write a real first-run flag plus an unrelated setting that MUST survive.
+# This runs as ROOT with HOME pointed at the stray home, NOT via `setpriv` to
+# the stray uid. That is not a style choice: dbus-daemon resolves its own uid
+# with getpwuid() while starting and aborts when there is no entry, and this
+# home's owner deliberately has none. Doing it the obvious way produced, on
+# the first run of this file:
+#   dbus[1440]: Could not get password database information for UID of current
+#   process: Looking up user ID 3999: not found
+#   dbus[1440]: Failed to start message bus
+# and every assertion downstream then compared that error text instead of a
+# dconf answer. The product script hit exactly the same wall; both are fixed
+# the same way.
 as_stray() {
-    local rt; rt=$(mktemp -d /run/strayrt.XXXXXX)
-    chown "$STRAY_UID:$STRAY_UID" "$rt"; chmod 700 "$rt"
-    setpriv --reuid="$STRAY_UID" --regid="$STRAY_UID" --clear-groups \
-        env HOME="$STRAY_HOME" XDG_RUNTIME_DIR="$rt" \
-        dbus-run-session -- dconf "$@" 2>&1 | grep -vE 'dbus-daemon|dconf-WARNING'
-    rm -rf "$rt"
+    HOME="$STRAY_HOME" XDG_CONFIG_HOME="$STRAY_HOME/.config" \
+    XDG_CACHE_HOME="$STRAY_HOME/.cache" \
+        dbus-run-session -- dconf "$@" 2>&1 \
+        | grep -vE 'dbus\[|dbus-run-session|dconf-WARNING'
 }
 as_stray write /org/gnome/desktop/firstuse/gnome-initial-setup true
 as_stray write /org/gnome/desktop/interface/color-scheme "'prefer-dark'"
