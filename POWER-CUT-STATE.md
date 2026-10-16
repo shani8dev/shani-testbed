@@ -627,3 +627,65 @@ package list, not just the shani prefix, using the same regular-files-only rule
 and the newest-cached-build-per-name rule. That is the check that would have
 been right the first time; the shani-only version was a guess about where to
 look, and it was wrong.
+
+## SOLVED: the `conflicting files` build failure was in the log the whole time
+
+    checking for file conflicts...
+    error: failed to commit transaction (conflicting files)
+    .../shanios_base/etc/nut/nut.conf  exists in both 'shani-settings' and 'nut'
+    .../shanios_base/etc/nut/ups.conf  exists in both 'shani-settings' and 'nut'
+    .../shanios_base/etc/nut/upsd.conf exists in both 'shani-settings' and 'nut'
+    .../shanios_base/etc/nut/upsmon.conf exists in both 'shani-settings' and 'nut'
+
+**`shani-settings` shipped `/etc/nut/{nut,ups,upsd,upsmon}.conf`, which `nut` owns.**
+`shani-peripherals` depends on `nut`, so every profile installed both and pacman
+refused the transaction. No image of any desktop could be built.
+
+Those four lines were **four lines below the error I had been grepping for**. I
+searched the log for `conflict`, read to the end of the `error:` line, and never
+looked at what followed. Then I spent three separate container sweeps trying to
+re-derive from package file lists what pacman had already stated plainly. The
+answer was in the artifact I was already reading, adjacent to the string I
+searched on.
+
+### The two leads I chased first were both wrong
+
+- `/etc/skel` (recorded in `ac5ef1a`): **disproven in `68b29b7`** — no two shani
+  packages collide on any regular file. It came from comparing every shani
+  package, including desktop profiles that never co-occur, and from counting
+  shared *directories* as files.
+- Even that "clean negative" was only clean because the sweep was restricted to
+  `shani-*`. `nut` is not a shani package, so no sweep of shani packages could
+  ever have seen this. Two of those sweeps also ran `bsdtar` on the host, where
+  it **is not installed** — the file listings came back empty and "no conflicts"
+  was an artifact of the tool being absent, not a result.
+
+### The fix (stop shipping; the hook writes them)
+
+`usr/share/shani/nut/` holds the four files as templates — a path that cannot
+collide with anything — and `install_nut_baseline()` in `shani-settings.install`
+writes them into `/etc/nut`. No pacman primitive exists for taking over *some*
+files of another package: `replaces=(nut)` also removes `upsd` and `upsmon`.
+Ownership stays with `nut`.
+
+Taking over is not owning, so the hook records what it wrote to
+`/var/lib/shani-settings/nut-baseline.sha256` and decides per file: already ours
+-> no-op; ours from last install -> refresh (so a **corrected** baseline reaches
+existing installs); absent -> restore; anything else -> the admin's, left alone
+and reported. `pacman -Qkk` lists *absent* files too, so the check matches
+`(Modification detected)` specifically rather than mere presence in the output.
+
+- `shani-settings` `b3c53be` (local; not pushed)
+- `shani-pkgbuilds`: `shani-settings.install` + `PKGBUILD` pkgrel 51->52, pin
+  `b3c53be`, and `tests/test-nut-baseline.sh` (14 assertions)
+- 14/14 pass; all mutants killed (clobbering admin edits, non-idempotent
+  reinstall, not restoring a deleted file, reading "No such file or directory" as
+  a modification, never reading the manifest)
+
+### What this cost, stated plainly
+
+The boot-failover hook was blocked for the whole of that by a packaging bug
+that had nothing to do with it, which was sitting four lines below a log line I
+had already read. I now have four separate retractions in this file, and three
+of them are the same mistake: treating an absence, a filtered grep, or a missing
+tool as a finding.
