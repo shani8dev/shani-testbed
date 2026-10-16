@@ -84,11 +84,33 @@ commit (`f8adca4`) claimed a bug here; retracted in `794da2c`.
 ## Why the scenario tests are blocked
 
 The hook lives in the **initramfs**, which is embedded in the **UKI** on the ESP
-(`EFI/shanios/shanios-blue.efi`) — there is no standalone `initramfs-linux.img`.
-So the image cannot test the fix until the hook is injected into the UKI,
-repacked and re-signed. `powercut-inject-hook.sh` currently copies into
+(`EFI/shanios/shanios-blue.efi`, 53,823,024 bytes) — there is no standalone
+`initramfs-linux.img`. `powercut-inject-hook.sh` currently copies into
 `/usr/lib/dracut/` and regenerates an initramfs, which does **not** affect the
-UKI — it needs rewriting.
+UKI.
+
+UKI structure, measured:
+
+    .sdmagic .osrel .cmdline .splash .sbat .linux .initrd   (no .pcrs, no .pcrsig)
+    .initrd  = 36,010,760 bytes
+    .cmdline = "quiet splash systemd.volatile=state ro lsm=... rootfstype=btrfs
+                rootflags=subvol=@blue,ro,... root=UUID=3d8f7025-... "
+
+Two things settled here:
+
+- **`root=UUID=` with no `rd.luks.*` — this install is unencrypted.** That
+  definitively rules out the TPM2/seal theory, and is why `--tpm=no` is the
+  right vmspawn flag for it.
+- **The `.initrd` is a chain of 140 concatenated SVR4 cpio archives**
+  (`070701` magic at offsets 0, 112, 240, 360, …), not a single one.
+  `bsdtar -tf` stops at the first and reports 6 entries; `unmkinitramfs` and
+  `lsinitrd` are **not installed in the builder image**, only `cpio`, `bsdtar`
+  and `objcopy`. So extracting the real dracut initramfs means walking that
+  chain rather than unpacking one archive.
+
+Available tools in the builder for the remaining surgery: `objcopy`, `sbsign`,
+`cpio`, `bsdtar`, `zstd`. Missing: `ukify`, `lsinitrd`, `unmkinitramfs`.
+`objcopy -O binary --only-section=.initrd` is the reliable way to get it out.
 
 ## Committed so far
 
