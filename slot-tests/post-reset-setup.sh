@@ -83,13 +83,35 @@ DRY=$(shani-reset --dry-run --yes 2>&1)
 # enables plasmalogin.service and plasma-setup.service; plasma-welcome is an
 # in-session tips app and is referenced nowhere else in the workspace. Naming
 # it sent the reader looking for a wizard that never runs.
+# The message is profile-aware, so the assertion has to be too. Checking only
+# for 'plasma-setup' made this check pass on plasma and fail on gnome - where
+# naming the KDE wizard would have been the actual bug. The right wizard per
+# profile is the one shani-reset.sh itself resolves.
+case "$PROFILE" in
+  plasma)  WANT_WIZARD='plasma-setup' ;;
+  cosmic)  WANT_WIZARD='cosmic-initial-setup' ;;
+  *)       WANT_WIZARD='gnome-initial-setup' ;;
+esac
 if printf '%s' "$DRY" | grep -q 'plasma-welcome'; then
   res reset-names-no-wrong-wizard "FAIL (output still names plasma-welcome)"
-elif printf '%s' "$DRY" | grep -q 'plasma-setup'; then
+elif printf '%s' "$DRY" | grep -q "$WANT_WIZARD"; then
   res reset-names-no-wrong-wizard PASS
 else
-  res reset-names-no-wrong-wizard "FAIL (names neither wizard; profile=$PROFILE)"
+  res reset-names-no-wrong-wizard "FAIL (names neither wizard; profile=$PROFILE want=$WANT_WIZARD)"
 fi
+
+# And the sharpest form of it: name a wizard belonging to ANOTHER profile and
+# the message is wrong, however plausible it reads. plasma-welcome above is
+# one instance of this; the cross-profile case is the general one.
+for OTHER in plasma-setup cosmic-initial-setup gnome-initial-setup; do
+  if [[ "$OTHER" == "$WANT_WIZARD" ]]; then continue; fi
+  if printf '%s' "$DRY" | grep -q "$OTHER"; then
+    res "reset-names-only-this-profiles-wizard" \
+       "FAIL (profile=$PROFILE also names $OTHER)"
+  else
+    res "reset-names-only-this-profiles-wizard" PASS
+  fi
+done
 
 # The account is gone from /etc, and so is the root password, because both
 # lived in the same overlay. Saying only "users must be re-created" is what
@@ -171,6 +193,12 @@ printf '# EDITED BY THE USER\n' > "$H/.bashrc"
 # pending first-login pair", which only exists once the pair is taken away.
 rm -f "$H/.bashrc_shani" "$H/.config/autostart/bashrc-setup.desktop"
 
+# Settle FIRST. `useradd` above changes /etc/passwd, which is itself one of
+# this unit's triggers, so the service was already running when the timestamp
+# was sampled and the comparison below was racing a run in flight - it read the
+# same timestamp both times and called a real trigger a failure.
+rm -f /data/user-setup-needed
+settle
 before=$(systemctl show -p ExecMainStartTimestampMonotonic --value "$svc")
 touch /data/user-setup-needed
 # Wait for the marker to be CONSUMED, not for a fixed interval. The service
@@ -289,7 +317,16 @@ echo "== stranding repair (shani-first-boot)"
 # The precondition is therefore established explicitly rather than assumed, and
 # asserted: if an account survives here, the whole section is invalid and says
 # so instead of quietly producing wrong verdicts.
-userdel -r skelprobe 2>/dev/null || userdel skelprobe 2>/dev/null || true
+# userdel refuses while anything is running as the account, and the service
+# above has just been `runuser`-ing into it. `|| true` hid that: the entry
+# survived, the stranding section below then found a "healthy" machine, and
+# three checks reported the healthy path as the stranded one.
+loginctl terminate-user skelprobe 2>/dev/null || true
+pkill -u "$(id -u skelprobe 2>/dev/null || echo 0)" 2>/dev/null || true
+sleep 1
+userdel -r skelprobe 2>/dev/null || userdel skelprobe 2>/dev/null \
+    || echo "     note: userdel could not remove skelprobe ($?)"
+rm -rf "/home/skelprobe" 2>/dev/null || true
 regular_accounts=$(getent passwd | awk -F: '$3>=1000 && $3<60000 && $7 !~ /(nologin|false|sync|halt|shutdown)$/{print $1}')
 if [[ -z "$regular_accounts" ]]; then
     res stranded-precondition-no-account PASS
