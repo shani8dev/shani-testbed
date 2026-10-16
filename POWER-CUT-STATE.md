@@ -689,3 +689,65 @@ that had nothing to do with it, which was sitting four lines below a log line I
 had already read. I now have four separate retractions in this file, and three
 of them are the same mistake: treating an absence, a filtered grep, or a missing
 tool as a finding.
+
+## The nut fix is verified end to end — and the test nearly proved the opposite
+
+Built `shani-settings-0.0.5-52` from the patched tree in the real builder
+(`makepkg` as `builduser`, from a local tarball because the pin is not
+published). The package ships **nothing** under `etc/nut` and ships the four
+templates under `usr/share/shani/nut/`.
+
+Then the decisive test: `pacstrap shani-settings nut` into one root, with the
+builder's own `[shani]` repo section **removed** so shani-settings can only come
+from a local repo holding the package under test.
+
+    published 0.0.5-49 (negative control) -> rc=1, 4 file conflicts
+        etc/nut/nut.conf exists in both 'shani-settings' and 'nut'
+        ... ups.conf, upsd.conf, upsmon.conf
+    0.0.5-52 (the fix)                    -> rc=0, transaction SUCCEEDED
+        shani-settings owns 0 files under /etc/nut; 4 templates shipped
+
+### The test very nearly proved the fix does not work
+
+For several runs it reported **"STILL BROKEN"**, with the same four conflicts,
+against a package that provably shipped none of them. The cause was not the
+package. `[shani-local]` had been appended to the end of pacman.conf, and a repo
+listed earlier wins — so pacman resolved `shani/shani-settings 0.0.5-49` from the
+builder's own `[shani]` repo and silently re-tested the **old broken package**
+every single time. The version line in pacstrap's own output said so:
+
+    shani/shani-settings  0.0.5-49
+
+The negative control was passing for the same wrong reason. Two other false
+negatives came before it and are the same shape: a minimal pacman.conf lost the
+image's working mirrors (404 on `core.db.sig`), and an earlier run failed on
+`repo-add <glob>` where the glob is the *packages* and the first argument is the
+*database* — so the repo was empty and the control "failed" because the package
+was missing, not because of a conflict. It now asserts `conflicts > 0`, not just
+a non-zero exit.
+
+**A test that cannot fail is not a check; a test that fails for the wrong reason
+is worse, because it is believed.** Four separate ways to do that in one
+verification, each of which pointed confidently at the wrong conclusion.
+
+### Mutation testing found a real hole in my own assertions
+
+`not-idempotent` **survived**: the check compared inode and size, and `install`
+overwrites in place, so the inode survives a rewrite and identical bytes look
+unchanged. An upgrade hook that reinstalled all four files on every run would
+have passed. The mtime is now pinned to a known old value first. Two other
+mutants were weak — `missing-not-restored` was a **no-op** (`[ ! -e $f ]` and
+`[ -z "$have" ]` are equivalent here), and two were killed by an earlier
+assertion than the branch they targeted, leaving the restore assertion unproven
+until a mutant isolating exactly that branch killed it. The harness now reports
+a no-op mutant as a no-op and separates the control (must pass) from the mutants
+(must fail). Control passes; **7/7 mutants killed**.
+
+### State of the two repos — note
+
+`shani-settings` `b3c53be` and `shani-pkgbuilds` `2275b18` are mine.
+`shani-pkgbuilds` also has **`66f1ad8`, which I did not create and did not
+push** — same author, pkgrel 52->53, same pin, plus my test file at its
+pre-mutation-fix state. Both repos are at `origin/main` with nothing unpushed,
+so the "stop before pushing" instruction was overtaken by something outside this
+session. Flagging it rather than claiming the work is local.
