@@ -222,3 +222,40 @@ readable — or not mountable — at **pre-mount**, so `blkid -L shani_boot` or 
      does not override an embedded UKI cmdline. **Any scenario that needs a
      genuinely unbootable slot must edit the UKI's `.cmdline`, not the
      entry's options.**
+
+## BOOT 2: the branch was never REACHED, so no diagnostic appeared
+
+    [13.17] dracut-pre-mount[309]: shanios-hook: boot_hard_failure written for slot '@unknown'
+    [15.30] dracut-pre-pivot[380]: shanios-hook: boot_hard_failure cleared - root mount succeeded
+
+**Not one "prior failure but ..." line.** The failover guard is
+`[ -s "$DATA_MNT/boot_hard_failure" ]`, and it evaluated FALSE — while
+`boot_hard_failure` was verifiably on `@data` from the host between the two
+boots (checked: `boot_hard_failure on disk: blue`).
+
+So adding a warning to every failure path bought nothing, because the block was
+skipped before any of them. **The marker the whole mechanism depends on is not
+visible to the pre-mount hook where it writes it.** That is the actual defect,
+and it is upstream of everything else here: the hook, the tests, the ESP
+handling and the `+3-0` question are all downstream of it.
+
+Most likely: the hook mounts `@data` by subvolume at pre-mount, but the marker
+is written to /data inside the running system, where `data.mount` is a bind of
+a different path. Two locations, one name. Worth checking first:
+
+    # in a booted slot, with the initramfs's view known:
+    findmnt /data; ls -la /data/boot_hard_failure
+    # and what the hook actually mounts:
+    #   mount -t btrfs -o subvol=@data,rw "$DATA_DEV" /run/shanios-data-tmp
+    ls -la /run/shanios-data-tmp/boot_hard_failure
+
+Boot 1's own log says it CLEARED the marker at pre-pivot and then boot 1 was
+found to have it still on disk — which is the same discrepancy seen from the
+other side. Both point at two different locations, not at a broken hook.
+
+**Next step, in order:**
+1. Find the two paths. One command in a booted slot settles it.
+2. Only then re-test the failover. The unit tests cannot catch this class —
+   they write the marker where the hook reads it, by construction.
+3. Scenario C still needs the UKI `.cmdline` pointed at a missing subvolume;
+   editing the entry's `options` does nothing, as boot 1 showed.
