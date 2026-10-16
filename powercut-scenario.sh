@@ -27,8 +27,20 @@ echo "--- entries:";  ls "$MNT/esp/loader/entries" | sed 's/^/      /'
 echo "--- default:  $(sed -n 's/^default[[:space:]]*//p' "$MNT/esp/loader/loader.conf")"
 echo "--- marker:   $(cat "$MNT/data/boot_hard_failure" 2>/dev/null || echo '(none)')"
 
-set_default() { sed -i "s|^default[[:space:]].*|default $1|" "$MNT/esp/loader/loader.conf"
-                echo "    default -> $(sed -n 's/^default[[:space:]]*//p' "$MNT/esp/loader/loader.conf")"; }
+set_default() {
+    # Refuse to write a default that names no entry. `default` matching nothing
+    # is NOT a harmless no-op: systemd-boot silently falls back to its own
+    # ordering, so the machine boots something other than the slot under test
+    # and every result afterwards is about the wrong image. This exact trap
+    # shipped `shanios-green-broken+3-0.conf.conf`.
+    if [[ ! -f "$MNT/esp/loader/entries/$1" ]]; then
+        echo "SCENARIO ABORT: default '$1' names no entry; entries are:" >&2
+        ls "$MNT/esp/loader/entries" >&2
+        exit 2
+    fi
+    sed -i "s|^default[[:space:]].*|default $1|" "$MNT/esp/loader/loader.conf"
+    echo "    default -> $(sed -n 's/^default[[:space:]]*//p' "$MNT/esp/loader/loader.conf")"
+}
 GOOD=$(ls "$MNT/esp/loader/entries" | grep -v '+' | sed 's/\.conf$//' | head -1)
 [ -n "$GOOD" ] || { echo "SCENARIO ABORT: no plain (known-good) entry to fall back to"; exit 2; }
 
@@ -44,13 +56,13 @@ B) # post-flip, HEALTHY candidate. The control the fix must not break.
 C) # The reported failure. The candidate must genuinely fail to mount, so its
    # options line is pointed at a subvolume that does not exist - otherwise the
    # entry boots fine and the scenario tests nothing.
-   BAD="${GOOD}-broken"
-   cp "$MNT/esp/loader/entries/${GOOD}.conf" "$MNT/esp/loader/entries/${BAD}+3-0.conf"
-   sed -i 's|subvol=@[^, ]*|subvol=@no-such-slot|' "$MNT/esp/loader/entries/${BAD}+3-0.conf"
-   set_default "${BAD}+3-0"
+   BAD="${GOOD}-broken+3-0"          # base name only; ".conf" is added below
+   cp "$MNT/esp/loader/entries/${GOOD}.conf" "$MNT/esp/loader/entries/${BAD}.conf"
+   sed -i 's|subvol=@[^, ]*|subvol=@no-such-slot|' "$MNT/esp/loader/entries/${BAD}.conf"
+   set_default "${BAD}.conf"
    printf 'blue\n' > "$MNT/data/boot_hard_failure"
    echo "SCENARIO C applied (post-flip, unbootable candidate, prior failure recorded)"
-   grep -o 'subvol=@[^, ]*' "$MNT/esp/loader/entries/${BAD}+3-0.conf" | sed 's/^/    candidate will mount: /' ;;
+   grep -o 'subvol=@[^, ]*' "$MNT/esp/loader/entries/${BAD}.conf" | sed 's/^/    candidate will mount: /' ;;
 *) echo "unknown scenario"; exit 2 ;;
 esac
 sync; echo "SCENARIO $SC READY"
