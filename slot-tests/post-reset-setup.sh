@@ -160,6 +160,90 @@ else
   res wizard-rearms-after-reset "SKIP (profile=$PROFILE)"
 fi
 
+# ══ 2b. The Plasma guard, evaluated by systemd rather than grepped ════════
+#
+# `wizard-rearms-after-reset` above is weak on its own: it asserts the flag is
+# absent right now, and that the reset *message* mentions it. Neither touches
+# the mechanism. The load-bearing claim for the plasma profile — the one profile
+# where recovery is supposed to work without any shani code at all — is that
+# `ConditionPathExists=!/etc/plasma-setup-done` genuinely re-arms once the reset
+# has taken the flag with the /etc overlay upper layer.
+#
+# That is a claim about what systemd decides, so it is asked of systemd:
+# `systemd-analyze condition` evaluates a unit's own conditions and prints the
+# ones that are NOT satisfied. With the flag present the PathExists condition
+# must fail; with it absent it must pass. Both directions, or the check would
+# pass against a unit whose condition is not wired to that file at all.
+if [[ "$PROFILE" == plasma ]]; then
+  PSVC=plasma-setup.service
+  if ! systemctl cat "$PSVC" >/dev/null 2>&1; then
+    res plasma-guard-is-a-condition "FAIL ($PSVC is not installed)"
+  else
+    res plasma-guard-is-a-condition PASS
+    _flag=/etc/plasma-setup-done
+    rm -f "$_flag"
+    _armed=$(systemd-analyze condition -q "$PSVC" 2>/dev/null | wc -l)
+    printf 'Plasma Setup armed at %s\n' "$(date -u +%FT%TZ)" > "$_flag"
+    _blocked=$(systemd-analyze condition -q "$PSVC" 2>/dev/null | wc -l)
+    rm -f "$_flag"
+    _after=$(systemd-analyze condition -q "$PSVC" 2>/dev/null | wc -l)
+
+    if [[ "$_armed" -eq 0 ]]; then
+      res plasma-guard-arms-without-the-flag PASS
+    else
+      res plasma-guard-arms-without-the-flag \
+         "FAIL ($_armed unsatisfied condition(s) even with no flag: $(systemd-analyze condition -q "$PSVC" 2>&1 | head -2 | tr '\n' ' '))"
+    fi
+
+    if [[ "$_blocked" -gt "$_armed" ]]; then
+      res plasma-guard-disarms-with-the-flag PASS
+    else
+      res plasma-guard-disarms-with-the-flag \
+         "FAIL (writing $_flag did not make the unit's conditions worse: armed=$_armed blocked=$_blocked - the ConditionPathExists is not on this file)"
+    fi
+
+    # A reset takes /etc, so the flag goes. The unit must be back to armed
+    # afterwards — which is the whole recovery claim, checked as a transition
+    # rather than as a file's absence.
+    if [[ "$_after" -eq "$_armed" ]]; then
+      res plasma-guard-rearms-after-reset PASS
+    else
+      res plasma-guard-rearms-after-reset \
+         "FAIL (removing the flag left $_after unsatisfied, armed was $_armed)"
+    fi
+
+    # And the flag is written by the wizard itself, into /etc — not shipped in
+    # the package. A flag that were shipped would make every machine look set up
+    # from first boot and no reset could ever help.
+    #
+    # Read from the image's own pacman database, NOT `pacman -Ql`. There is no
+    # pacman binary in a booted Shanios slot (packages are baked at build time;
+    # the image is immutable), so `pacman -Ql` fails, the `if` is false, and the
+    # check reports PASS having looked at nothing. The manifest is what the
+    # package actually shipped and it is on disk either way.
+    _pdb=/var/lib/pacman/local/plasma-setup-git/files
+    if [[ ! -f "$_pdb" ]]; then
+      res plasma-setup-done-is-not-shipped "FAIL (no $_pdb — nothing was inspected)"
+    elif grep -q 'plasma-setup-done' "$_pdb"; then
+      res plasma-setup-done-is-not-shipped "FAIL (the package ships it — every machine would look already-set-up)"
+    else
+      res plasma-setup-done-is-not-shipped PASS
+    fi
+
+    # The condition must name THAT file. A unit whose ConditionPathExists points
+    # somewhere else would sail through every check above - it would be armed
+    # with no flag and stay armed when the real flag appears - and the only way
+    # to tell them apart is to read what the unit actually says.
+    if systemctl cat "$PSVC" 2>/dev/null \
+       | sed 's/^[[:space:]]*#.*$//' | grep -q 'ConditionPathExists=!.*plasma-setup-done'; then
+      res plasma-guard-names-the-same-file PASS
+    else
+      res plasma-guard-names-the-same-file \
+         "FAIL (no ConditionPathExists=!*plasma-setup-done in the shipped unit)"
+    fi
+  fi
+fi
+
 # ══ 3. shani-user-setup seeds skel into an EXISTING home ═══════════════════
 # This is the whole point. useradd -m only copies /etc/skel when it CREATES a
 # home; after a reset the home survives in @home and the account is created
