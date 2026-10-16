@@ -534,3 +534,34 @@ image that carries the fixed hook **by construction** — through the image buil
 which already forces a rebuild on overlay changes — rather than by hand-patching
 a UKI after the fact. That removes the entire class of problem this session ran
 into: the initramfs I build is not reliably the initramfs that boots.
+
+## The image build — the recommended next step — FAILED on its own
+
+    [INFO] Building base image for profile: gnome
+    Packages (1368) ...
+    error: failed to commit transaction (conflicting files)
+    ==> ERROR: Failed to install packages to new root
+    [INFO] Cleanup: detaching /dev/loop35
+    rc=1
+
+The overlay hash DID force a genuine rebuild (it went straight to pacstrap,
+not "package list unchanged"), which is the mechanism working as documented.
+It then failed in the transaction, not in anything to do with the hook.
+
+`scripts/check-pacman-cache.sh -p gnome` reports **OK: all 32 cached packages
+match their repo SHA256** — but it only checks the **32** extra packages, not
+the 1368 the profile actually installs. So it cannot see this. That matches
+the documented caveat on that script: it is advisory and covers the requested
+slice, not the whole profile.
+
+`conflicting files` is pacman's duplicate-path error rather than the truncated-
+frame signature the same AGENTS.md entry describes for the 2026-10-06 failure,
+so this is probably NOT that bug and needs its own diagnosis: the package list
+now includes the freshly published `shani-cassini-0.1.0-23` and
+`shani-chronoa-0.1.0-56`, and a newly published package is a plausible source
+of a file collision with one already in the list.
+
+**So the recommended path is itself blocked, by something unrelated to the
+hook.** Worth knowing before anyone spends an hour on it: the blocker is in
+package installation, not in the boot-failover work, and the cache checker
+that exists for this class does not cover a full profile install.
