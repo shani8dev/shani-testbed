@@ -46,6 +46,19 @@ PROFILE=$(cat /etc/shani-profile 2>/dev/null || echo unknown)
 
 # Wait for the service (and anything it re-triggered) to finish. Fixed sleeps
 # were too short once several users each took seconds.
+# When a check fails here, the reason is almost always in the unit's journal
+# and nowhere else. Both of this file's real defects were found by reading it,
+# and the first version had no way to read it at all - so three failures came
+# back as bare verdicts with no cause attached, which is the worst possible
+# form of a failing test. Unconditional: journal lines are cheap next to the
+# multi-minute boot they came from.
+dump_journal() {
+  local unit="$1"
+  echo "  -- journal: $unit --"
+  journalctl -u "$unit" -n 40 --no-pager 2>/dev/null | sed 's/^/     /'
+  echo "  -- result: $unit Result=$(systemctl show -p Result --value "$unit" 2>/dev/null)"
+}
+
 settle() {
   local i quiet=0
   for (( i=0; i<120 && quiet<4; i++ )); do
@@ -165,7 +178,11 @@ touch /data/user-setup-needed
 # ranges) and ExecStartPost is what removes the marker, so a fixed sleep can
 # sample before that work is done - which is how the first run reported
 # "marker still present" for a service that simply had not finished.
-for ((i = 0; i < 90 && [[ -e /data/user-setup-needed ]]; i++)); do sleep 1; done
+_waited=0
+while [[ -e /data/user-setup-needed ]] && (( _waited < 90 )); do
+  sleep 1
+  _waited=$(( _waited + 1 ))
+done
 settle
 after=$(systemctl show -p ExecMainStartTimestampMonotonic --value "$svc")
 
@@ -178,8 +195,16 @@ fi
 if [[ ! -e /data/user-setup-needed ]]; then
   res marker-is-consumed PASS
 else
-  res marker-is-consumed "FAIL (marker still present)"
+  res marker-is-consumed "FAIL (marker still present after ${_waited}s)"
 fi
+dump_journal "$svc"
+# Reported, not asserted. This unit writes into user homes (the stamp, the
+# skel pass, the flatpak remote) and ProtectHome=yes makes /home read-only for
+# it, which would make every one of those writes fail while the unit still
+# exited 0 - each failure being a `|| warn`. That is exactly the shape of the
+# three failures below, so the setting is printed where the symptom is.
+echo "     sandbox: ProtectHome=$(systemctl show -p ProtectHome --value "$svc" 2>/dev/null)"
+echo "     sandbox: Result=$(systemctl show -p Result --value "$svc" 2>/dev/null) ExecMainStatus=$(systemctl show -p ExecMainStatus --value "$svc" 2>/dev/null)"
 
 if [[ -f "$H/.inputrc" ]]; then
   res missing-skel-file-is-seeded PASS
@@ -251,6 +276,27 @@ fi
 # fixture would be declared corrupt and moved aside, which would make the test
 # pass for the wrong reason — that was the first version of this check).
 echo "== stranding repair (shani-first-boot)"
+
+# Section 3 above creates a regular account (`skelprobe`) to test skel seeding,
+# and it is still in /etc/passwd here. shani-first-boot's very first act is to
+# look for a regular account and exit if it finds one - so the stray home below
+# was repaired by a script that correctly decided the machine was NOT stranded.
+# Every check in this section then reported the healthy-machine behaviour as if
+# it were the stranded-machine behaviour, and the one that mattered most
+# (`firstuse-guard-is-cleared`) failed for a reason that had nothing to do with
+# the repair.
+#
+# The precondition is therefore established explicitly rather than assumed, and
+# asserted: if an account survives here, the whole section is invalid and says
+# so instead of quietly producing wrong verdicts.
+userdel -r skelprobe 2>/dev/null || userdel skelprobe 2>/dev/null || true
+regular_accounts=$(getent passwd | awk -F: '$3>=1000 && $3<60000 && $7 !~ /(nologin|false|sync|halt|shutdown)$/{print $1}')
+if [[ -z "$regular_accounts" ]]; then
+    res stranded-precondition-no-account PASS
+else
+    res stranded-precondition-no-account "FAIL (accounts present: $regular_accounts - this section cannot test stranding)"
+fi
+
 STRAY_UID=3999
 STRAY_HOME=/home/stranded
 rm -rf "$STRAY_HOME"
@@ -290,8 +336,9 @@ fi
 if /usr/local/bin/shani-first-boot >/tmp/firstboot.log 2>&1; then
     res first-boot-runs-cleanly PASS
 else
-    res first-boot-runs-cleanly "FAIL (rc=$?; log: $(tail -3 /tmp/firstboot.log | tr '\n' ' '))"
+    res first-boot-runs-cleanly "FAIL (log: $(tail -5 /tmp/firstboot.log | tr '\n' ' '))"
 fi
+echo "     log: $(tail -6 /tmp/firstboot.log 2>/dev/null | tr '\n' '|')"
 
 post_flag=$(as_stray read /org/gnome/desktop/firstuse/gnome-initial-setup)
 post_scheme=$(as_stray read /org/gnome/desktop/interface/color-scheme)
@@ -311,13 +358,19 @@ fi
 # And the healthy-system path: with a real account present the script must do
 # nothing at all. Its own unit test covers the gate; here it is checked against
 # this slot's real /etc/passwd, where an account does exist.
-if getent passwd | awk -F: '$3>=1000 && $3<60000 && $7 !~ /(nologin|false|sync|halt|shutdown)$/{f=1} END{exit f?0:1}'; then
+# The account is created here rather than inherited, because the section above
+# now has to delete every account to be valid - so this half needs one back,
+# and asking a leftover to provide it couples two unrelated checks.
+useradd -m -s /bin/bash healthyprobe 2>/dev/null
+if getent passwd healthyprobe >/dev/null; then
+    res healthy-precondition-account-exists PASS
     out=$(/usr/local/bin/shani-first-boot 2>&1)
     if printf '%s' "$out" | grep -q "an account exists"; then
         res healthy-system-is-left-alone PASS
     else
         res healthy-system-is-left-alone "FAIL (a real account exists but the script said: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-120))"
     fi
+    userdel -r healthyprobe 2>/dev/null || true
 else
     skip "healthy-system-is-left-alone" "this slot has no regular account to be healthy about"
 fi
