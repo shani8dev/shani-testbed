@@ -317,21 +317,50 @@ echo "== stranding repair (shani-first-boot)"
 # The precondition is therefore established explicitly rather than assumed, and
 # asserted: if an account survives here, the whole section is invalid and says
 # so instead of quietly producing wrong verdicts.
-# userdel refuses while anything is running as the account, and the service
-# above has just been `runuser`-ing into it. `|| true` hid that: the entry
-# survived, the stranding section below then found a "healthy" machine, and
-# three checks reported the healthy path as the stranded one.
-loginctl terminate-user skelprobe 2>/dev/null || true
-pkill -u "$(id -u skelprobe 2>/dev/null || echo 0)" 2>/dev/null || true
-sleep 1
-userdel -r skelprobe 2>/dev/null || userdel skelprobe 2>/dev/null \
-    || echo "     note: userdel could not remove skelprobe ($?)"
+# userdel refuses while anything runs as the account, and the service above has
+# just been `runuser`-ing into it. `|| true` hid that: the entry survived, the
+# stranding section below then found a "healthy" machine, and three checks
+# reported the healthy path as the stranded one.
+#
+# SIGKILL plus a real wait, because SIGTERM to a process the service spawned
+# seconds earlier is a race, and a lost race here costs a whole 12-minute boot.
+# userdel's own stderr is kept and reported: the previous version discarded it,
+# so `userdel could not remove skelprobe (8)` was the entire evidence available
+# and 8 is not a self-explanatory code.
+#
+# Never a `|| echo 0` fallback on the uid. `pkill -u 0` means "every process
+# owned by root" - it would kill the harness, the slot shell, and this script,
+# turning a bookkeeping bug into a mysterious truncated run.
+probe_uid=$(id -u skelprobe 2>/dev/null || echo "")
+if [[ -n "$probe_uid" ]]; then
+    loginctl terminate-user skelprobe 2>/dev/null || true
+    pkill -KILL -u "$probe_uid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+        getent passwd skelprobe >/dev/null || break
+        ps -o pid= -u "$probe_uid" >/dev/null 2>&1 || break
+        pkill -KILL -u "$probe_uid" 2>/dev/null || true
+        sleep 1
+    done
+    userdel -r skelprobe 2>/tmp/opencode-userdel.err || \
+        userdel skelprobe 2>>/tmp/opencode-userdel.err
+fi
 rm -rf "/home/skelprobe" 2>/dev/null || true
+
 regular_accounts=$(getent passwd | awk -F: '$3>=1000 && $3<60000 && $7 !~ /(nologin|false|sync|halt|shutdown)$/{print $1}')
 if [[ -z "$regular_accounts" ]]; then
     res stranded-precondition-no-account PASS
 else
-    res stranded-precondition-no-account "FAIL (accounts present: $regular_accounts - this section cannot test stranding)"
+    survivors=""
+    if [[ -n "$probe_uid" ]]; then
+        survivors=$(ps -o pid=,comm= -u "$probe_uid" 2>/dev/null | tr '\n' ' ')
+    fi
+    # Also whether the home is a mountpoint. On this OS homes can be Btrfs
+    # subvolumes, and `userdel -r` refuses to remove an account whose home it
+    # cannot delete - which presents as the same refusal a busy process causes.
+    hm="no"
+    mountpoint -q /home/skelprobe 2>/dev/null && hm="YES (a mountpoint)"
+    res stranded-precondition-no-account \
+       "FAIL (accounts present: $regular_accounts; home is a mountpoint: $hm; uid $probe_uid processes: ${survivors:-none}; userdel said: $(tr '\n' ' ' </tmp/opencode-userdel.err 2>/dev/null))"
 fi
 
 STRAY_UID=3999
