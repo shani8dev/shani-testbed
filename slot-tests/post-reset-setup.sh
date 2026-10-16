@@ -103,15 +103,21 @@ fi
 # And the sharpest form of it: name a wizard belonging to ANOTHER profile and
 # the message is wrong, however plausible it reads. plasma-welcome above is
 # one instance of this; the cross-profile case is the general one.
+foreign=""
 for OTHER in plasma-setup cosmic-initial-setup gnome-initial-setup; do
-  if [[ "$OTHER" == "$WANT_WIZARD" ]]; then continue; fi
-  if printf '%s' "$DRY" | grep -q "$OTHER"; then
-    res "reset-names-only-this-profiles-wizard" \
-       "FAIL (profile=$PROFILE also names $OTHER)"
-  else
-    res "reset-names-only-this-profiles-wizard" PASS
-  fi
+  [[ "$OTHER" == "$WANT_WIZARD" ]] && continue
+  if printf '%s' "$DRY" | grep -q "$OTHER"; then foreign="$foreign $OTHER"; fi
 done
+# One result, not one per wizard examined. The loop above emitted three rows
+# sharing a name, so a run where one foreign wizard was named and another was
+# not produced two identically-labelled rows with different verdicts - and a
+# summary that cannot tell them apart is worse than no check.
+if [[ -n "$foreign" ]]; then
+  res reset-names-only-this-profiles-wizard \
+     "FAIL (profile=$PROFILE wants $WANT_WIZARD, but also names:$foreign)"
+else
+  res reset-names-only-this-profiles-wizard PASS
+fi
 
 # The account is gone from /etc, and so is the root password, because both
 # lived in the same overlay. Saying only "users must be re-created" is what
