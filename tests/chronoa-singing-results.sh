@@ -169,6 +169,17 @@ write_sox_stub() {  # <path> <apply|passthrough|silent>
 #!/usr/bin/env python3
 import cmath, math, os, struct, sys
 print("sox " + " ".join(sys.argv[1:]), file=open(os.environ["STUB_LOG"], "a"))
+# sox's null output. \`sox IN -n EFFECT\` analyses without producing a file
+# (\`stat\` prints to stderr) and is how the product measures a take - the stub
+# saw real calls like:
+#     sox /tmp/.../speech.wav -n stat
+# Taking argv[2] as the output path regardless made the "output" a file literally
+# named \`-n\`, which so wrote into the current working directory on every run -
+# a 70 KB WAV dropped in the repo root. Benign for the assertions and still a
+# defect, because the stub's whole job is to be faithful: a stub that writes
+# where sox would not is a check that can report a pass for the wrong reason.
+if "-n" in sys.argv:
+    sys.exit(0)
 mode = "$2"
 src, dst = sys.argv[1], sys.argv[2]
 def read(p):
