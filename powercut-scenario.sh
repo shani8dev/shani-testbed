@@ -101,10 +101,59 @@ C) # The reported failure. The candidate must genuinely fail to mount.
    # building a UKI with that cmdline (gen-efi/dracut), not patching one after
    # the fact. Hand-patching a UKI is where the earlier six boots went, so
    # refuse rather than pretend.
+   # The good slot needs a PLAIN entry, or the hook's fallback resolves to the
+   # broken candidate and the "recovery" boots the same broken binary.
+   #
+   # After a real post-flip deploy finalize_boot_entries() has written
+   # <good>.conf for the good slot and <cand>.conf + <cand>+3-0.conf for the
+   # candidate, so the good slot always has a plain entry and sorts first. Left
+   # over from earlier scenario runs the ESP had blue as +3-0 ONLY, which is not a
+   # state a deploy produces - and it made this scenario look like it recovered:
+   # the hook switched shanios-green-broken+3-0 -> shanios-green, which are
+   # different NAMES loading the same EFI binary. The hook compares entry names
+   # and cannot see that, so the guard below is the only thing that can.
+   if [[ ! -f "$ESPMNT/loader/entries/shanios-blue.conf" ]]; then
+       for f in "$ESPMNT/loader/entries"/shanios-blue+*.conf; do
+           [ -f "$f" ] || continue
+           cp "$f" "$ESPMNT/loader/entries/shanios-blue.conf"
+           echo "    restored the good slot's plain entry: shanios-blue.conf"
+           break
+       done
+   fi
+
    BAD="${GOOD}-broken+3-0"          # base name only; ".conf" is added below
    cp "$ESPMNT/loader/entries/${GOOD}.conf" "$ESPMNT/loader/entries/${BAD}.conf"
    set_default "${BAD}.conf"
    printf 'blue\n' > "$DATAMNT/boot_hard_failure"
+
+   # Verify the fallback is a DIFFERENT BINARY, not merely a different name.
+   # The hook's selection is reproduced here exactly - shell glob order over
+   # *.conf, skipping any name containing +N-N - because a scenario that cannot
+   # distinguish "switched to the good slot" from "switched to the same broken
+   # UKI by another name" reports a recovery that never happened.
+   HOOK_FALLBACK=""
+   for E in "$ESPMNT/loader/entries"/*.conf; do
+       [ -f "$E" ] || continue
+       N=$(basename "$E" .conf)
+       case "$N" in *+*-*) continue ;; esac
+       HOOK_FALLBACK="$N"; break
+   done
+   efi_of() { sed -n 's/^efi[[:space:]]*//p' "$ESPMNT/loader/entries/$1.conf" 2>/dev/null | head -1; }
+   echo "    hook would fall back to: ${HOOK_FALLBACK:-<none>}"
+   if [[ -z "$HOOK_FALLBACK" ]]; then
+       echo "SCENARIO C ABORT: no plain entry for the hook to fall back to." >&2
+       echo "  Without one the hook refuses to act and there is nothing to test." >&2
+       exit 2
+   fi
+   if [[ "$(efi_of "$HOOK_FALLBACK")" == "$(efi_of "${BAD}")" ]]; then
+       echo "SCENARIO C ABORT: the fallback '${HOOK_FALLBACK}' loads the SAME efi as the" >&2
+       echo "  default '${BAD}' ($(efi_of "$HOOK_FALLBACK")). The hook would switch the" >&2
+       echo "  default to a different NAME for the same broken binary, and every" >&2
+       echo "  observation below would be of a boot that failed for the same reason." >&2
+       echo "  This is a state no real deploy produces - see the comment above." >&2
+       exit 2
+   fi
+   echo "    fallback loads a different binary: OK"
    # Verify the thing this scenario actually depends on, rather than assuming
    # it: the UKI this entry loads must really carry the bad subvolume in its
    # own .cmdline. objcopy --only-section is the reliable extractor here -
