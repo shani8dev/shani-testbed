@@ -25,7 +25,20 @@
 # for users.
 #
 # Usage (from `build.sh test enter <slot> --`):
-#     regen-uki.sh <slot> [<slot>]
+#     regen-uki.sh [--break-root] <slot> [<slot>]
+#
+#   --break-root   rebuild the UKI with its root subvol pointed at a subvolume
+#                  that does not exist (`subvol=@no-such-slot`), so the candidate
+#                  GENUINELY fails to mount its root. That is the difference
+#                  between a hook that fires and a recovery that works: the
+#                  failing boot cannot act on its own marker, so the whole loop
+#                  is only testable if boot 1 really fails.
+#                  Built by construction, not by patching a UKI afterwards - a
+#                  patched UKI differs from a real one in ways the boot path
+#                  cares about. Refuses rather than silently doing nothing if the
+#                  cmdline carries no `subvol=` to replace, and reads the new
+#                  cmdline back out of the signed UKI to confirm the change is
+#                  in the thing that will actually be booted.
 #
 # Prerequisites, and they are not all obvious:
 #   * the corrected module files must ALREADY be in the slot at
@@ -40,7 +53,15 @@
 #   * the ESP must be mounted (the slot mounts it at /boot/efi)
 set -uo pipefail
 
-slots=("$@")
+break_root=0
+slots=()
+for a in "$@"; do
+  case "$a" in
+    --break-root) break_root=1 ;;
+    -*) echo "regen-uki: unknown option $a" >&2; exit 2 ;;
+    *)  slots+=("$a") ;;
+  esac
+done
 [[ ${#slots[@]} -gt 0 ]] || slots=(green)
 
 for SLOT in "${slots[@]}"; do
@@ -74,6 +95,23 @@ for SLOT in "${slots[@]}"; do
     [[ -n $CMD ]] || { echo "  empty cmdline - refusing"; continue; }
     echo "  cmdline: ${CMD:0:90}..."
 
+    if (( break_root )); then
+        # Refuse rather than silently regenerate a bootable UKI: a substitution
+        # that does not apply produces a UKI that boots perfectly, which is the
+        # exact shape of a run that reports success and tests nothing.
+        if ! grep -q 'subvol=@' <<<"$CMD"; then
+            echo "  --break-root: the cmdline has no 'subvol=@' to replace:"
+            echo "      $CMD"
+            echo "  Refusing - a UKI rebuilt from this would boot normally, so the"
+            echo "  recovery path would never be reached. Nothing was changed."
+            continue
+        fi
+        CMD=$(sed -E 's/subvol=@[^[:space:]]+/subvol=@no-such-slot/' <<<"$CMD")
+        grep -q 'subvol=@no-such-slot' <<<"$CMD" || { echo "  --break-root: substitution did not apply"; continue; }
+        echo "  --break-root: cmdline is now ${CMD:0:90}..."
+        echo "  the root subvol does not exist, so this boot MUST fail to mount"
+    fi
+
     before=$(stat -c %s "$UKI")
     if ! dracut --force --uefi --kver "$KV" --kernel-cmdline "$CMD" "${UKI}.tmp"; then
         echo "  dracut FAILED - the original UKI is untouched"; continue
@@ -86,5 +124,31 @@ for SLOT in "${slots[@]}"; do
     mv -f "${UKI}.tmp.signed" "$UKI"; rm -f "${UKI}.tmp"
     after=$(stat -c %s "$UKI")
     echo "  regenerated: ${before} -> ${after} bytes (delta $((after - before)))"
+
+    # Read the cmdline back OUT OF THE SIGNED UKI. Everything above proves the
+    # dracut call was given the right string; this proves the string is in the
+    # artifact that will be booted. The gap between those two is where a silent
+    # no-op lives, and it is the same shape as the copy that failed earlier and
+    # regenerated a UKI from the old module while reporting success.
+    t2=$(mktemp) || { echo "  mktemp failed"; continue; }
+    if objcopy -O binary --only-section=.cmdline "$UKI" "$t2" 2>/dev/null && [[ -s $t2 ]]; then
+        GOT=$(tr -d '\0' < "$t2")
+        if (( break_root )); then
+            if grep -q 'subvol=@no-such-slot' <<<"$GOT"; then
+                echo "  VERIFIED: the signed UKI really carries subvol=@no-such-slot"
+            else
+                echo "  VERIFY FAILED: the signed UKI's cmdline is:"
+                echo "      $GOT"
+                echo "  It does not name the missing subvol, so this UKI would boot"
+                echo "  normally and the recovery path would never be reached."
+            fi
+        else
+            [[ "$GOT" == "$CMD" ]] && echo "  VERIFIED: cmdline unchanged in the signed UKI" \
+                                   || echo "  VERIFY FAILED: signed UKI carries a different cmdline than the one given to dracut"
+        fi
+    else
+        echo "  could not read .cmdline back out of the signed UKI (not verified)"
+    fi
+    rm -f "$t2"
     echo "  NOTE: this is a test-only in-place rebuild; the image still carries the old module."
 done
