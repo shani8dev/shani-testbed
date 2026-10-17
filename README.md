@@ -579,6 +579,25 @@ written to it and no new files appear in `disk/` apart from the console log.
 It is the tool for what nspawn can't show: boot-entry selection and the
 `+3-0` hard-failure fallback, TPM2 enrollment/unlock, and booting a rebuilt ISO.
 
+#### `--commit`: keep the guest's writes (opt-in)
+
+The qcow2 overlay is **discarded on exit by default**, so the guest's writes
+never reach the image. That's the right default — a boot must not scribble on
+`install.img` — but it silently makes an entire class of question unanswerable:
+anything where the boot is *supposed* to change the disk.
+
+```bash
+../shani-testbed/testbed vmspawn --commit              # commit the guest's writes into install.img
+```
+
+Those tests don't fail; they read the pre-boot state, which is indistinguishable
+from the boot having done nothing. The give-away is a guest that **deletes** a
+file, reboots, and finds the file still there. Use `--commit` for anything that
+asserts a boot *changed* something — a dracut hook rewriting `loader.conf`, a
+service clearing a marker, a deploy flipping a slot. It mutates the image, hence
+opt-in. `tests/vmspawn-args.sh` covers the flag, and every run logs which way it
+went.
+
 ## The local mirror
 
 `shani-deploy.sh` hardcodes `R2_BASE_URL="https://downloads.shani.dev"` with
