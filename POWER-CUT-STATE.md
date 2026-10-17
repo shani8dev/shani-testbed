@@ -810,3 +810,53 @@ not landed. Re-fetched, it serves `-53`.)
 
 So the image build is unblocked and running: it got past `checking package
 integrity`, which is exactly where the `conflicting files` abort used to land.
+
+## `inst_multiple` omitted the binaries the hooks call — the likely reason the
+## failover has never been observed
+
+`99shanios/module-setup.sh` declared `blkid mount umount mountpoint mkdir rmdir
+rm printf sed`. The hooks also run **`cat`, `cp`, `ls`, `readlink`, `tr`,
+`head`, `basename`** — and two are load-bearing:
+
+    cat   reads the previous boot_hard_failure into PRIOR_FAILURE
+    cp    backs up and rewrites loader.conf  <- the failover itself
+
+A binary missing from that list is not a build error and not a boot error. It
+matches the console exactly:
+
+| console line                          | needs        | installed |
+|---------------------------------------|--------------|-----------|
+| `boot_hard_failure written for slot`  | `printf`     | **yes**   |
+| the DIAG lines                        | ls readlink tr | no     |
+| `boot default switched X -> Y`        | `cp`         | no        |
+
+Six boots produced the first line and neither of the others, which from a
+console is indistinguishable from a hook that never ran — which is how it was
+read for a whole session. The DIAG lines were added precisely to separate
+"branch ran and succeeded" from "branch never ran", and they were themselves
+built from command substitutions over binaries that were never installed.
+
+**Not proven end to end.** The builder image ships no dracut and no kernel, and
+an ad-hoc dracut install would not even list the module, so "the binaries are
+absent from a real initramfs" was not demonstrated. Two of those attempts
+printed `NO` for every binary in both directions because dracut produced no
+initramfs at all — an all-red result made purely of absence. Fixed on its own
+terms: **a hook that shells out must declare what it shells out to.**
+
+## The harness had two more bugs that would each have produced a false result
+
+1. **Scenario C's subvol edit matched nothing** (entries carry only `title` and
+   `efi`; the subvol lives in each UKI's `.cmdline`). It reported success while
+   booting a healthy system — the positive test could not fail.
+2. **The `set_default` guard rejected every valid default.** It required the
+   entry file to exist, but systemd-boot reports `shanios-blue+3-0.conf`'s ID
+   as `shanios-blue.conf`, so scenario A's plain default would have aborted it.
+   Resolving it correctly took three attempts, each caught only by running it:
+   `basename` was called with `.conf` stripped and compared against a default
+   that includes it; then stripping the tries suffix off the end ate the `.conf`
+   too, since the suffix is in the middle. Verified across three entry names in
+   six directions.
+
+**Standing rule for this harness, from six instances of it: a substitution
+whose effect is not verified is not a step, and a guard is not a check until it
+has been shown to fail.**
