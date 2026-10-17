@@ -1547,3 +1547,45 @@ by scenario scripts layered on each other, and the titles are already duplicated
 (`shanios-green (Active)` on two entries), which is not a state any deploy
 produces. Settle it on a clean ESP from a real `configure`, with the two entries a
 post-flip deploy actually writes, and read back which one systemd-boot boots.
+
+## The console CAN say which entry was selected — I was wrong that it could not
+
+I wrote above that `console-mode max` draws the menu with cursor positioning so
+"a grep cannot distinguish the selection", and left the question open on that
+basis. That was giving up on evidence that was sitting in the log. The selection
+is plain in the byte stream: it is **inverse video**.
+
+    shanios-blue   …<ESC>[029;093H<ESC>[1m<ESC>[37m<ESC>[40m…  shanios-blue (Active)
+    shanios-green  …<ESC>[027;093H<ESC>[1m<ESC>[30m<ESC>[47m…  shanios-green (Active) (shanios-green.conf)
+
+`[30m[47m` is black-on-white — the highlighted row. `[37m[40m` is ordinary
+white-on-black. So systemd-boot **selected `shanios-green`** and booted the broken
+UKI, with `loader.conf` saying `default shanios-blue` and the entries verified
+correct. The menu order it printed is also visible and is neither alphabetical
+nor by type ascending:
+
+    row 27  shanios-green (Active)              <- selected, inverse video
+    row 28  shanios-green (Active) (shanios-green-broken.conf)
+    row 29  shanios-blue (Active)
+
+**So the hook's rewrite of `default` is being ignored by systemd-boot.** That is
+the finding, and it is now measured rather than inferred.
+
+Two things that follow, both worth acting on:
+
+1. **The hook should not trust a bare entry name.** It writes
+   `default <basename-without-.conf>`. If systemd-boot does not resolve that to an
+   entry it silently boots something else — which is precisely what is happening,
+   and it fails *open*, to a boot that is broken. Whatever the fix is, a
+   `default` that does not resolve must not be written blind.
+2. **Every entry on this ESP came from scenario scripts.** The titles are already
+   duplicated (`shanios-green (Active)` on two entries), which no deploy produces.
+   That is a real confound and it is the first thing to eliminate.
+
+Still not established: *why* the name fails to resolve. Reading systemd-boot's
+source for its `default` matching rule (id, then type, then version) is the next
+step, and it is a source read rather than another ten-minute boot.
+
+**Reusable, and the more valuable half of this:** to see what a firmware boot
+menu selected, decode SGR colour, not grep text. `[30m[47m` on a row is the
+selection. Everything else in the menu is white-on-black and says nothing.
