@@ -92,6 +92,15 @@ cmd_suite() {
 
   # ...and that the BOOT CONFIGURATION names the slot it just rolled back to.
   #
+  # Verified green on a real run (2026-10-17, suite 10/10): "loader.conf default
+  # is [shanios-blue.conf], expected shanios-blue.conf" after a real upgrade
+  # (144s, "Deployment successful!") and a real rollback. Four defects were
+  # found by running this rather than reading it - an ID compared without its
+  # `shanios-` prefix, an unclosed `if`, an unquoted glob in the comparison, and
+  # a mount that raced the harness's own ESP mountpoint. None of them was
+  # visible to `bash -n`, and the first two would each have made the check fail
+  # on a CORRECT rollback or pass on a broken one.
+  #
   # `rollback:restored` above reads @data/current-slot and both slots' versions.
   # None of that is what the firmware boots: systemd-boot reads loader.conf's
   # `default` and, ahead of it, four EFI variables. So a rollback that restored
