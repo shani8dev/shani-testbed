@@ -2,6 +2,28 @@
 #
 #   vmspawn [--image=PATH | --iso=PATH] [--timeout=SECS] [--until=REGEX]
 #           [--fail=REGEX] [--tpm=yes|no] [--secure-boot=no|yes] [--force]
+#           [--commit]
+#
+# THE GUEST'S WRITES ARE DISCARDED UNLESS YOU PASS --commit.
+#
+# The guest boots a qcow2 overlay backed by the image, so a boot cannot
+# scribble on install.img - a sound default, since almost every question asked
+# of this command is answered without persisting anything.
+#
+# But it makes an entire class of question unanswerable *by omission rather
+# than by design*: anything where the boot is supposed to CHANGE the disk. A
+# hook that rewrites loader.conf, a service that clears a marker, a deploy that
+# flips a slot. Those tests do not fail. They read the pre-boot state, which is
+# indistinguishable from the boot having done nothing.
+#
+# This cost a long stretch of a boot-hook investigation, which concluded - from
+# three independent guest writes all missing from disk - that the hook's write
+# was being lost. The hook was fine; the harness was throwing the result away.
+# The symptom that gives it away: a guest that *deletes* a file and is then
+# rebooted still finds the file.
+#
+# --commit writes the overlay back into the image. Opt-in, because it mutates
+# the image.
 #
 # nspawn (enter/probe/verify-boot/app) can't exercise firmware, systemd-boot
 # entry selection, the UKI or a TPM; qemu/iso/gui can, but are slow and
@@ -28,7 +50,7 @@ cmd_vmspawn() {
     echo "  test-env/test.sh vmspawn [--image=PATH|--iso=PATH] [--timeout=SECS]" >&2
     exit 2
   fi
-  local image="" iso="" timeout=1200 tpm=yes secure_boot=no force=0 arg
+  local image="" iso="" timeout=1200 tpm=yes secure_boot=no force=0 commit=0 arg
   local until_re='login:|Reached target .*(Multi-User|Graphical)'
   local fail_re='Kernel panic|You are in emergency mode|Entering emergency mode|dracut-initqueue.*timeout|Failed to mount /sysroot'
   for arg in "$@"; do
@@ -41,7 +63,8 @@ cmd_vmspawn() {
       --tpm=*)         tpm="${arg#--tpm=}" ;;
       --secure-boot=*) secure_boot="${arg#--secure-boot=}" ;;
       --force)         force=1 ;;
-      *) _vmspawn_die "usage: vmspawn [--image=PATH|--iso=PATH] [--timeout=SECS] [--until=REGEX] [--fail=REGEX] [--tpm=yes|no] [--secure-boot=no|yes] [--force]" ;;
+      --commit)         commit=1 ;;
+      *) _vmspawn_die "usage: vmspawn [--image=PATH|--iso=PATH] [--timeout=SECS] [--until=REGEX] [--fail=REGEX] [--tpm=yes|no] [--secure-boot=no|yes] [--force] [--commit]" ;;
     esac
   done
   [[ -n "$image" && -n "$iso" ]] && _vmspawn_die "--image and --iso are mutually exclusive"
@@ -108,6 +131,30 @@ cmd_vmspawn() {
   local elapsed=$(( $(date +%s) - start ))
   docker exec "$VMSPAWN_CONTAINER" pkill -f qemu-system >/dev/null 2>&1 || true
   kill "$vm_pid" 2>/dev/null || true
+
+  # The guest booted a qcow2 OVERLAY backed by the image, and everything it
+  # wrote went there. By default that overlay is thrown away, which is the
+  # right default: a boot must not be able to scribble on install.img, and
+  # almost every question asked of this command ("does it boot", "what did the
+  # console say") is answered without persisting anything.
+  #
+  # But it makes a whole class of question unanswerable by omission rather
+  # than by design: anything where the boot is supposed to CHANGE the disk -
+  # a hook that rewrites loader.conf, a service that writes a marker, a deploy
+  # that flips a slot. Those tests do not fail; they silently read the
+  # pre-boot state, which looks exactly like the boot having done nothing.
+  #
+  # --commit opts into writing the overlay back into the image. It is opt-in
+  # for that reason: it mutates the image.
+  if (( commit )); then
+    if docker exec "$VMSPAWN_CONTAINER" qemu-img commit -r -f "$overlay" >/dev/null 2>&1; then
+      log "committed the guest's writes into $(basename "$src") (--commit)"
+    else
+      _vmspawn_die "--commit: qemu-img commit failed; the image is unchanged"
+    fi
+  else
+    log "guest writes discarded (qcow2 overlay not committed) - use --commit to keep them"
+  fi
   log "vmspawn ${result} (${elapsed}s)"
   sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$log_file" \
     | grep -aE 'Linux version|systemd-boot|Welcome to|tpm0|Trusted Platform|Reached target|login:|emergency|panic' \
