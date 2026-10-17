@@ -117,6 +117,21 @@ for UKI in "$@"; do
         bad "initramfs is MISSING binaries the hooks call:$missing"
     fi
 
+    # Kernel modules, same class as the binaries above: a hook that mounts a
+    # filesystem whose module was never shipped does not fail, it silently
+    # does nothing, because `mount`'s stderr is redirected away. vfat is what
+    # lets the failover reach the ESP at all; overlay is what the pre-pivot
+    # hook needs for /etc.
+    missing_mods=""
+    for m in vfat overlay; do
+        find "$TREE" -name "$m.ko*" -print -quit 2>/dev/null | grep -q . || missing_mods="$missing_mods $m"
+    done
+    if [ -z "$missing_mods" ]; then
+        ok "kernel modules the hooks mount with are present (vfat, overlay)"
+    else
+        bad "initramfs is MISSING kernel modules the hooks need:$missing_mods"
+    fi
+
     if [ "${SHANI_EXPECT_FAILOVER:-0}" = 1 ]; then
         if [ -f "$H" ] && grep -q 'previous boot also failed' "$H"; then
             ok "failover logic present in the shipped hook"

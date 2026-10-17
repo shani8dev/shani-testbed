@@ -20,7 +20,12 @@ trap 'rm -rf "$W"' EXIT
 mkinitrd() { # $1=dir  $2=omit-binary (optional)
     local omit="${2:-}"
     mkdir -p "$1"/var/lib/dracut/hooks/pre-mount "$1"/var/lib/dracut/hooks/pre-pivot \
-             "$1"/usr/lib/dracut/modules.d/99shanios "$1"/usr/bin
+             "$1"/usr/lib/dracut/modules.d/99shanios "$1"/usr/bin "$1"/usr/lib/modules
+    # kernel modules, as the real initramfs carries them
+    for m in vfat overlay; do
+        [ "$m" = "${3:-}" ] && continue
+        printf 'kernel module\n' >"$1"/usr/lib/modules/"$m".ko.xz
+    done
     printf '#!/bin/sh\nwarn "previous boot also failed"\n' \
         >"$1"/var/lib/dracut/hooks/pre-mount/90-shanios-boot-failure-hook.sh
     printf '#!/bin/sh\ntrue\n' \
@@ -56,7 +61,7 @@ out=$(SHANI_EXPECT_FAILOVER=1 bash "$CHECK" "$W/good.efi" 2>&1)
 #    loader.conf rewrite, and a hook that calls an uninstalled binary does not
 #    fail - it silently does nothing. A checker that cannot see that is worse
 #    than no checker.
-mkinitrd "$W/nocp" cp; mkuki "$W/nocp.efi" "$W/nocp"
+mkinitrd "$W/nocp" cp ""; mkuki "$W/nocp.efi" "$W/nocp"
 out=$(bash "$CHECK" "$W/nocp.efi" 2>&1); rc=$?
 if [ $rc -ne 0 ] && grep -q 'MISSING binaries' <<<"$out"; then
     pass "missing cp is caught (the failover's own binary)"
@@ -65,7 +70,7 @@ else
 fi
 
 # 3. failover text absent, while everything else is fine
-mkinitrd "$W/nofail"
+mkinitrd "$W/nofail" "" ""
 printf '#!/bin/sh\nwarn "writes marker"\n' \
     >"$W/nofail/var/lib/dracut/hooks/pre-mount/90-shanios-boot-failure-hook.sh"
 mkuki "$W/nofail.efi" "$W/nofail"
@@ -73,12 +78,23 @@ out=$(SHANI_EXPECT_FAILOVER=1 bash "$CHECK" "$W/nofail.efi" 2>&1); rc=$?
 [ $rc -ne 0 ] && pass "absent failover logic is caught" || fail "checker missed an absent failover: $out"
 
 # 4. the hooks entirely absent
-mkinitrd "$W/nohook"
+mkinitrd "$W/nohook" "" ""
 rm -f "$W/nohook"/var/lib/dracut/hooks/pre-mount/*.sh "$W/nohook"/var/lib/dracut/hooks/pre-pivot/*.sh
 mkuki "$W/nohook.efi" "$W/nohook"
 out=$(bash "$CHECK" "$W/nohook.efi" 2>&1); rc=$?
 [ $rc -ne 0 ] && grep -q 'hook MISSING' <<<"$out" \
     && pass "absent hooks are caught" || fail "checker missed absent hooks: $out"
+
+# 4b. THE SECOND NEGATIVE CONTROL: same UKI, vfat missing. This is the one
+#     that actually stopped the failover on a real boot - mount -t vfat fails
+#     silently because the hook discards mount's stderr.
+mkinitrd "$W/novfat" "" vfat; mkuki "$W/novfat.efi" "$W/novfat"
+out=$(bash "$CHECK" "$W/novfat.efi" 2>&1); rc=$?
+if [ $rc -ne 0 ] && grep -q 'MISSING kernel modules' <<<"$out"; then
+    pass "missing vfat module is caught (the failover's mount fails)"
+else
+    fail "checker missed a UKI with no vfat: $out"
+fi
 
 # 5. not a UKI at all - must fail cleanly, not report an empty archive as fine
 out=$(bash "$CHECK" "$W/base.efi" 2>&1); rc=$?
