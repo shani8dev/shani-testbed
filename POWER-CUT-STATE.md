@@ -1636,3 +1636,69 @@ What would settle it, now unblocked: read `/sys/firmware/efi/efivars/Loader*`
 from inside a real firmware boot. `lib/qemu.sh`/`iso-install` could not do that
 before — the builder image had no qemu, edk2-ovmf or swtpm (see
 `shani-install-media/AGENTS.md`) — and it can now.
+
+# CLOSED: the recovery works, end to end, on a genuinely unbootable candidate
+
+Two boots, a real firmware boot each, `--commit` between them so the first boot's
+writes reach the next.
+
+**Boot 1** — default `shanios-green+3-0.conf`, candidate root `subvol=@no-such-slot`:
+
+    vmspawn FAIL: Entering emergency mode (46s)
+    hook: previous boot also failed (@blue); boot default switched
+          shanios-green+3-0.conf -> shanios-blue.conf
+    hook: boot_hard_failure written for slot '@unknown'
+
+**Boot 2** — nothing selected, no menu, no operator:
+
+    hook: prior failure (@unknown) but default 'shanios-blue.conf' carries no
+          tries counter - not an unproven candidate, leaving it
+    hook: boot_hard_failure written for slot '@blue'
+    hook: boot_hard_failure cleared — root mount succeeded
+    shanios login:
+
+and on disk afterwards: `loader.conf  default shanios-blue.conf`.
+
+**A machine whose default points at a slot that cannot mount now boots the good
+slot on the next power cycle, with no menu navigation and no operator.** That is
+the whole point of the feature and it had never once been demonstrated.
+
+## What it actually took, and what each layer was hiding
+
+The fix was one line — `FALLBACK="${N}.conf"` — and finding it took:
+
+1. **systemd-boot's entry ID is the FILENAME, `.conf` included.** `boot.c`:
+   `boot_entry_parse_tries(entry, path, file, ".conf")` strips a `+N-M` boot
+   counter but leaves the suffix, then `entry->id = xstrdup16(file)`. The default
+   is matched with `efi_fnmatch(pattern, entry->id)`, so the stem matches
+   nothing and systemd-boot falls through to "the first suitable entry" — which
+   on a post-flip disk is the broken candidate. The rewrite landed on disk,
+   looked right, and changed nothing.
+
+2. **The contract test was not testing the hook.** Its `decide()` was a hand copy
+   of the decision, commented "lifted verbatim so the test cannot pass against
+   logic the hook does not have" — and the copy carried the same bug. It is now
+   extracted from the hook at run time and driven against a real loader.conf tree.
+   Reverting the hook to the stem turns 2 of its 12 assertions red.
+
+3. **`enter` writes the nspawn overlay, and the overlay shadowed the fix.**
+   `nspawn-overlay-green/upper/.../99shanios/` still held the pre-fix module, so
+   `regen-uki.sh` inside `enter green` regenerated green's UKI from it — visible
+   only as green's UKI *shrinking* by 1536 bytes while blue's grew by 78384.
+   This is the third time this session that a command wrote somewhere other than
+   where the test looks and reported success.
+
+4. **`sync` was never in the initramfs** (`sync: command not found`, visible in
+   the console the whole time), so the hook's flush before it unmounts never ran.
+   Now in `inst_multiple`, with `tests/dracut-hook-deps.py` covering the class.
+
+## The reusable half
+
+- To see what a firmware boot menu **selected**, decode SGR colour: `[30m[47m` on
+  a row is the selection, `[37m[40m` is everything else. Grepping menu text reads
+  order, not choice.
+- Reading a harness's own source is often cheaper than another ten-minute boot —
+  `config_select_default_entry()` answered the precedence question in one fetch.
+- Before regenerating anything into a slot through `enter`, check whether the
+  overlay has a copy of it, and compare UKI sizes before and after: a regeneration
+  that made the artifact *smaller* had taken its input from somewhere else.
