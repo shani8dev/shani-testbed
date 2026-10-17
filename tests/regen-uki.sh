@@ -25,8 +25,20 @@
 # for users.
 #
 # Usage (from `build.sh test enter <slot> --`):
-#     regen-uki.sh [--break-root] <slot> [<slot>]
+#     regen-uki.sh [--break-root] [--expect-in-initrd=TEXT] <slot> [<slot>]
 #
+#   --expect-in-initrd=TEXT
+#                  assert TEXT is present in the initramfs inside the UKI that was
+#                  just produced, and FAIL if it is not. This exists because a
+#                  regeneration can take its input from somewhere other than the
+#                  working tree and report success: `enter` boots the nspawn
+#                  overlay, and a stale copy of the module there shadowed a fix
+#                  that had been written into the slot's real subvolume. The only
+#                  symptom was an artifact that came out SMALLER than the one it
+#                  replaced. lsinitramfs is not usable here - it reports zero
+#                  99shanios entries on a UKI that demonstrably has them - so the
+#                  check goes to the archive directly: objcopy the .initrd out,
+#                  decompress, and look at the cpio listing.
 #   --break-root   rebuild the UKI with its root subvol pointed at a subvolume
 #                  that does not exist (`subvol=@no-such-slot`), so the candidate
 #                  GENUINELY fails to mount its root. That is the difference
@@ -54,10 +66,12 @@
 set -uo pipefail
 
 break_root=0
+expect=""
 slots=()
 for a in "$@"; do
   case "$a" in
     --break-root) break_root=1 ;;
+    --expect-in-initrd=*) expect="${a#--expect-in-initrd=}" ;;
     -*) echo "regen-uki: unknown option $a" >&2; exit 2 ;;
     *)  slots+=("$a") ;;
   esac
@@ -150,5 +164,59 @@ for SLOT in "${slots[@]}"; do
         echo "  could not read .cmdline back out of the signed UKI (not verified)"
     fi
     rm -f "$t2"
+
+    # Assert the caller's expected text really is inside the initramfs of the
+    # artifact that will boot. Everything above proves what dracut was TOLD; this
+    # proves what the UKI CONTAINS.
+    if [[ -n $expect ]]; then
+        found=no
+        if objcopy -O binary --only-section=.initrd "$UKI" "$t2" 2>/dev/null && [[ -s $t2 ]]; then
+            # The section does NOT begin with the initramfs. It opens with a cpio
+            # stub (early_cpio/microcode); the real zstd stream starts at the first
+            # zstd magic SOMEWHERE inside it. Assuming offset 0 - which the first
+            # version of this did - finds a cpio stub, lists 7 entries, and reports
+            # a module that is demonstrably present as missing. Same technique as
+            # tests/check-uki-initrd.sh, for the same reason.
+            # Two things this must get right, and both were wrong in the first
+            # version - found by running it against a real UKI:
+            #   1. the section does not BEGIN with the initramfs. It opens with a
+            #      cpio stub (early_cpio/microcode); the zstd stream starts at the
+            #      first zstd magic SOMEWHERE inside. Assuming offset 0 lists 7
+            #      entries of stub.
+            #   2. a module is installed into the initramfs as its HOOKS, under
+            #      var/lib/dracut/hooks/<stage>/, not as modules.d/99shanios/.
+            #      And `cpio -itv` prints NAMES, so grepping the listing can never
+            #      find text - the files have to be extracted and searched.
+            off=$(python3 -c "
+import sys
+d=open(sys.argv[1],'rb').read()
+i=d.find(b'\x28\xb5\x2f\xfd')
+print(i if i>=0 else -1)" "$t2" 2>/dev/null || echo -1)
+            if [[ "$off" -ge 0 ]]; then
+                python3 -c "
+import sys
+d=open(sys.argv[1],'rb').read()
+open(sys.argv[2],'wb').write(d[int(sys.argv[3]):])" "$t2" "$t2.zst" "$off" 2>/dev/null
+                if zstd -d -f -q "$t2.zst" -o "$t2.cpio" 2>/dev/null && [[ -s "$t2.cpio" ]]; then
+                    mkdir -p "$t2.tree"
+                    ( cd "$t2.tree" && cpio -id --quiet < "$t2.cpio" ) 2>/dev/null
+                    if grep -rqF "$expect" "$t2.tree" 2>/dev/null; then
+                        found=yes
+                    fi
+                fi
+            fi
+            rm -rf "$t2.zst" "$t2.cpio" "$t2.tree"
+            fi
+        if [[ $found == yes ]]; then
+            echo "  VERIFIED: the initramfs really contains '$expect'"
+        else
+            echo "  VERIFY FAILED: '$expect' is NOT in this UKI's initramfs."
+            echo "    The rebuild took its input from somewhere else - most often the"
+            echo "    nspawn overlay, which \`enter\` boots and which can still hold an"
+            echo "    older copy of the module than the slot's real subvolume."
+            echo "    Check that before trusting anything this run reported."
+        fi
+        rm -f "$t2"
+    fi
     echo "  NOTE: this is a test-only in-place rebuild; the image still carries the old module."
 done
