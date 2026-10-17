@@ -1428,3 +1428,78 @@ implied.
 
 Everything else is now closed: the hook fires, it selects the right fallback, its
 write lands, and the writes land.
+
+## The field loop, run for real — and a new problem it exposed
+
+### The candidate is genuinely unbootable now
+
+`regen-uki.sh --break-root` rebuilds the UKI with `rootflags=subvol=@no-such-slot`,
+and **verifies it by reading `.cmdline` back out of the signed UKI**:
+
+    VERIFIED: the signed UKI really carries subvol=@no-such-slot
+    @blue EXISTS (22 entries)   @green EXISTS   @no-such-slot MISSING
+
+That last line is the premise the whole scenario rests on, and it had never been
+checked before: "blue is the healthy slot" was assumed. It is now measured.
+
+### Boot 1 fails, and the switch persists
+
+    vmspawn FAIL: Entering emergency mode (42s)
+    hook: previous boot also failed (@blue); default switched
+          shanios-green-broken+3-0.conf -> shanios-blue
+    (from disk, after clean)  loader.conf default: shanios-blue
+
+### Blue boots fine
+
+With the broken entries removed and `default shanios-blue`, the boot reached the
+login banner and the hook logged `root mount succeeded`. So the fallback slot is
+healthy and the emergency in boot 1 was the candidate's doing.
+
+### But the machine did NOT land on blue
+
+Boot 2, in exactly that state — all four entries present, `loader.conf default:
+shanios-blue` — **failed to mount /sysroot again**. And the hook line it printed
+was:
+
+    prior failure (@unknown) but default 'shanios-blue' carries no tries counter
+
+That message only exists in the **regenerated** module, which only the *green*
+UKI carries (blue's UKI is the original, from the image). So boot 2 ran green's
+initramfs: **systemd-boot booted the broken UKI even though `loader.conf` said
+`default shanios-blue`.**
+
+**This is unresolved and it is the most important thing in this file.** The
+rewrite demonstrably lands on disk and demonstrably does not demonstrably move
+the boot. Possible causes, none established:
+
+- the `+3-0` entry for blue (`shanios-blue+3-0.conf`, left over from an earlier
+  scenario) shares systemd-boot's *type* with `shanios-blue.conf`, and the higher
+  version wins; if that tries entry is treated as exhausted, systemd-boot skips
+  it and falls through to the next entry in sort order — which is green;
+- `default` matching resolves by type rather than by ID, so it is ambiguous here
+  in a way it is not on a two-slot deploy;
+- something else entirely.
+
+Note what this is NOT: it is not the hook failing to write (proven), and not the
+fallback slot being broken (proven). It is a question about **which entry
+systemd-boot actually loads**, which no part of this investigation had asked
+before, because until now the only thing under test was whether the hook fires.
+
+A real deploy does not leave a stale `shanios-blue+3-0.conf` around, so the most
+likely explanation is an artefact of accumulated scenario state. **That is a
+hypothesis, not a finding** — and the way to settle it is to rebuild the ESP from
+a clean `configure` rather than from four scenario runs layered on each other.
+
+## `sync` was never in the initramfs
+
+The initramfs printed, in plain sight in a console that was being grepped for
+other things:
+
+    90-shanios-boot-failure-hook.sh: line 157: sync: command not found
+
+`sync` is not in `inst_multiple`, so the hook's flush before it unmounts and gives
+up **never ran**. That is the exact difference between the rewrite reaching the
+disk and not — the question this whole investigation turned on — and it was not
+happening. Fixed, and `tests/dracut-hook-deps.py` now diffs every external command
+the hooks run against the declared list, with three mutations confirmed red
+including the original `cat`/`cp` omission.
