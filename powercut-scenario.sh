@@ -11,21 +11,35 @@ cleanup() { sync; umount "${MNT[@]:-}" 2>/dev/null; losetup -d "$LOOP" 2>/dev/nu
 trap cleanup EXIT
 
 partprobe "$LOOP" 2>/dev/null; udevadm settle --timeout=10 2>/dev/null
+# Create the partition nodes from sysfs rather than trusting udev to have done
+# it. In a container udev is not running, so ${LOOP}p* can be empty even though
+# the partitions exist, and "partitions not identified" reads like a missing
+# disk rather than a missing device node. Same reason the loop node itself has
+# to be created on this host: its loop devices are exhausted and `losetup -f`
+# names a /dev/loopNN that does not exist.
+for _d in /sys/block/$(basename "$LOOP")/$(basename "$LOOP")p*/dev; do
+    _n="/dev/$(basename "$(dirname "$_d")")"
+    [ -e "$_n" ] && continue
+    mknod "$_n" b "$(cut -d: -f1 <"$_d")" "$(cut -d: -f2 <"$_d")" 2>/dev/null || true
+done
 ESP=""; ROOT=""
 for p in ${LOOP}p*; do
   L=$(blkid -o value -s LABEL "$p" 2>/dev/null||true); T=$(blkid -o value -s TYPE "$p" 2>/dev/null||true)
   [ "$L" = shani_boot ] && ESP="$p"; [ "$T" = btrfs ] && ROOT="$p"
 done
 [ -n "$ESP" ] && [ -n "$ROOT" ] || { echo "SCENARIO ABORT: partitions not identified"; exit 2; }
-MNT=/mnt/scen
-mkdir -p "$MNT/esp" "$MNT/data"
-mount "$ESP" "$MNT/esp" || exit 2
-mount -t btrfs -o subvol=@data,rw "$ROOT" "$MNT/data" || exit 2
-MNT=("$MNT/esp" "$MNT/data")
+BASE=/mnt/scen
+ESPMNT="$BASE/esp"
+DATAMNT="$BASE/data"
+mkdir -p "$ESPMNT" "$DATAMNT"
+mount "$ESP" "$ESPMNT" || exit 2
+mount -t btrfs -o subvol=@data,rw "$ROOT" "$DATAMNT" || exit 2
+# MNT is the list cleanup unmounts; the paths above are what the rest uses.
+MNT=("$ESPMNT" "$DATAMNT")
 
-echo "--- entries:";  ls "$MNT/esp/loader/entries" | sed 's/^/      /'
-echo "--- default:  $(sed -n 's/^default[[:space:]]*//p' "$MNT/esp/loader/loader.conf")"
-echo "--- marker:   $(cat "$MNT/data/boot_hard_failure" 2>/dev/null || echo '(none)')"
+echo "--- entries:";  ls "$ESPMNT/loader/entries" | sed 's/^/      /'
+echo "--- default:  $(sed -n 's/^default[[:space:]]*//p' "$ESPMNT/loader/loader.conf")"
+echo "--- marker:   $(cat "$DATAMNT/boot_hard_failure" 2>/dev/null || echo '(none)')"
 
 set_default() {
     # Refuse to write a default that names no entry. `default` matching nothing
@@ -41,7 +55,7 @@ set_default() {
     # either the file is literally there, or its tries suffix strips away to
     # the requested id.
     local resolved=no f2 id2
-    for f2 in "$MNT/esp/loader/entries"/*.conf; do
+    for f2 in "$ESPMNT/loader/entries"/*.conf; do
         [[ -f $f2 ]] || continue
         # Two forms of this entry's ID. loader.conf's default INCLUDES
         # ".conf" ("default shanios-blue.conf"), and the tries suffix sits in
@@ -54,23 +68,23 @@ set_default() {
     done
     if [[ $resolved != yes ]]; then
         echo "SCENARIO ABORT: default '$1' resolves to no entry; entries are:" >&2
-        ls "$MNT/esp/loader/entries" >&2
+        ls "$ESPMNT/loader/entries" >&2
         exit 2
     fi
-    sed -i "s|^default[[:space:]].*|default $1|" "$MNT/esp/loader/loader.conf"
-    echo "    default -> $(sed -n 's/^default[[:space:]]*//p' "$MNT/esp/loader/loader.conf")"
+    sed -i "s|^default[[:space:]].*|default $1|" "$ESPMNT/loader/loader.conf"
+    echo "    default -> $(sed -n 's/^default[[:space:]]*//p' "$ESPMNT/loader/loader.conf")"
 }
-GOOD=$(ls "$MNT/esp/loader/entries" | grep -v '+' | sed 's/\.conf$//' | head -1)
+GOOD=$(ls "$ESPMNT/loader/entries" | grep -v '+' | sed 's/\.conf$//' | head -1)   # base name, no .conf
 [ -n "$GOOD" ] || { echo "SCENARIO ABORT: no plain (known-good) entry to fall back to"; exit 2; }
 
 case "$SC" in
 A) # cut during extract, BEFORE the flip: the default was never changed.
-   rm -f "$MNT/data/boot_hard_failure"; set_default "$GOOD"
+   rm -f "$DATAMNT/boot_hard_failure"; set_default "${GOOD}.conf"
    echo "SCENARIO A applied (pre-flip; nothing should move)" ;;
 B) # post-flip, HEALTHY candidate. The control the fix must not break.
-   rm -f "$MNT/data/boot_hard_failure"
-   cp "$MNT/esp/loader/entries/${GOOD}.conf" "$MNT/esp/loader/entries/${GOOD}+3-0.conf"
-   set_default "${GOOD}+3-0"
+   rm -f "$DATAMNT/boot_hard_failure"
+   cp "$ESPMNT/loader/entries/${GOOD}.conf" "$ESPMNT/loader/entries/${GOOD}+3-0.conf"
+   set_default "${GOOD}+3-0.conf"
    echo "SCENARIO B applied (post-flip, healthy; the hook must NOT act)" ;;
 C) # The reported failure. The candidate must genuinely fail to mount.
    #
@@ -88,15 +102,15 @@ C) # The reported failure. The candidate must genuinely fail to mount.
    # the fact. Hand-patching a UKI is where the earlier six boots went, so
    # refuse rather than pretend.
    BAD="${GOOD}-broken+3-0"          # base name only; ".conf" is added below
-   cp "$MNT/esp/loader/entries/${GOOD}.conf" "$MNT/esp/loader/entries/${BAD}.conf"
+   cp "$ESPMNT/loader/entries/${GOOD}.conf" "$ESPMNT/loader/entries/${BAD}.conf"
    set_default "${BAD}.conf"
-   printf 'blue\n' > "$MNT/data/boot_hard_failure"
+   printf 'blue\n' > "$DATAMNT/boot_hard_failure"
    # Verify the thing this scenario actually depends on, rather than assuming
    # it: the UKI this entry loads must really carry the bad subvolume in its
    # own .cmdline. objcopy --only-section is the reliable extractor here -
    # lsinitrd / unmkinitramfs / ukify are not in the builder image.
-   EFI_REL=$(sed -n 's/^efi[[:space:]]*//p' "$MNT/esp/loader/entries/${BAD}.conf" | head -1)
-   EFI_ABS="$MNT/esp${EFI_REL}"
+   EFI_REL=$(sed -n 's/^efi[[:space:]]*//p' "$ESPMNT/loader/entries/${BAD}.conf" | head -1)
+   EFI_ABS="${ESPMNT}${EFI_REL}"
    if [[ ! -f $EFI_ABS ]]; then
        echo "SCENARIO C ABORT: ${BAD}.conf loads ${EFI_REL}, which is not on the ESP" >&2
        exit 2
@@ -115,7 +129,17 @@ C) # The reported failure. The candidate must genuinely fail to mount.
    rm -f "$CMD_BIN"
    echo "    candidate UKI      : ${EFI_REL}"
    echo "    candidate subvolume: @${UKI_CMDLINE:-<none in .cmdline>}"
-   if [[ "$UKI_CMDLINE" != "no-such-slot" ]]; then
+   if [[ "${SHANIOS_HOOK_ONLY:-0}" == 1 ]]; then
+       # Hook-only mode. The hook's decision does not depend on the candidate
+       # failing: it reads a pre-existing marker and a tries-counted default,
+       # and acts on those. So the switch can be observed on a boot that
+       # succeeds. What this does NOT prove is the whole field loop - that a
+       # genuinely unbootable candidate leaves a marker, and that the next boot
+       # then lands on the good slot. Said here so a green run is not read as
+       # more than it is.
+       echo "    *** HOOK-ONLY: candidate is NOT unbootable; this proves the hook"
+       echo "        fires, NOT that an unbootable candidate recovers. ***"
+   elif [[ "$UKI_CMDLINE" != "no-such-slot" ]]; then
        {
          echo "SCENARIO C ABORT: the candidate UKI mounts @${UKI_CMDLINE:-<nothing>}, not @no-such-slot."
          echo
@@ -134,4 +158,17 @@ C) # The reported failure. The candidate must genuinely fail to mount.
    echo "SCENARIO C applied (post-flip, unbootable candidate, prior failure recorded)" ;;
 *) echo "unknown scenario"; exit 2 ;;
 esac
-sync; echo "SCENARIO $SC READY"
+sync
+cat <<EOF
+SCENARIO $SC READY
+
+  Boot it with:
+    cd ../shani-install-media && ./test-env/test.sh vmspawn --commit --timeout=900
+
+  --commit is REQUIRED here, not a convenience. vmspawn boots a qcow2 overlay and
+  discards it on exit, so without it nothing the guest wrote reaches install.img
+  and you will read the pre-boot state - which is byte-identical to what a boot
+  that changed nothing leaves behind. For a scenario whose entire point is a boot
+  that writes, that is a green run proving nothing. See README.md,
+  "vmspawn: UEFI + TPM boots without KVM", and tests/vmspawn-args.sh.
+EOF
