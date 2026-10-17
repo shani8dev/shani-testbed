@@ -97,7 +97,14 @@ echo "== the PRIVATE key lives in exactly one directory"
 # A bare `MOK.key` match is the variable ASSIGNMENT (MOK_KEY=.../MOK.key), not
 # a path, and dirname of that is "." - which the earlier version read as a
 # second key directory. Filtered out by name below.
-keydirs=$(printf '%s' "$code" | grep -oE '[A-Za-z0-9_./{}$-]*MOK\.(key|crt)' \
+# Here-strings, not `printf ... | grep`: `grep -q` exits the moment it matches,
+# the writer takes SIGPIPE, and under `set -o pipefail` the PIPELINE then
+# reports failure - so an assertion on an 80 KB input can fail purely because
+# the match was found early enough. That is not hypothetical: this file was
+# green, then the rebase grew gen-efi.sh by a few lines and the same assertion
+# went red with nothing changed. A pipe whose reader may exit early cannot be
+# used as a boolean here.
+keydirs=$(grep -oE '[A-Za-z0-9_./{}$-]*MOK\.(key|crt)' <<<"$code" \
           | grep -v 'EFI' \
           | grep -vE '^MOK\.(key|crt)$' \
           | xargs -r -n1 dirname | sort -u)
@@ -113,14 +120,14 @@ else
 fi
 # The public cert on the ESP is load-bearing: MokManager reads it to present a
 # pending enrollment when the next reboot happens without a network/user.
-printf '%s' "$code" | grep -qE 'EFI/BOOT/MOK\.der' \
+grep -qE <<<"$code" 'EFI/BOOT/MOK\.der' \
   && ok "MOK.der is staged on the ESP for the MokManager fallback" \
   || no "MOK.der is staged on the ESP" "the manual-enrollment fallback is gone"
 
 echo
 echo "== a signing key must never be written outside it"
 # cp/mv/install of a MOK.key anywhere else is a copy of a private key.
-stray=$(printf '%s' "$code" | grep -nE '(cp|mv|install)[^|]*MOK\.key' | grep -v '/etc/secureboot/keys' || true)
+stray=$(grep -nE '(cp|mv|install)[^|]*MOK\.key' <<<"$code" | grep -v '/etc/secureboot/keys' || true)
 if [ -z "$stray" ]; then
   ok "MOK.key is never copied or moved out of /etc/secureboot/keys"
 else
