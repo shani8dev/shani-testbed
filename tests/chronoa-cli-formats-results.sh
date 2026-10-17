@@ -49,7 +49,7 @@ trap 'rm -rf "$T"' EXIT
 
 # A good capture set: real pdffonts output shape, a service-type token, an
 # arping that answered without privilege, and the sane banner.
-GOOD="$T/good"; mkdir -p "$GOOD"
+GOOD="$T/good"; mkdir -p "$GOOD" "$T/home"
 cat >"$GOOD/pdffonts.out" <<'EOF'
 name                                 type              encoding         emb sub uni object ID
 ------------------------------------ ----------------- ---------------- --- --- --- ---------
@@ -66,7 +66,21 @@ echo 1 >"$GOOD/arping-unused.rc"
 printf '\n  # No SCSI scanners found.\n' >"$GOOD/sane.out"
 echo 0 >"$GOOD/sane.rc"
 
-out=$(CLI_FORMATS_CAPTURE_DIR="$GOOD" bash "$SLOT_TEST" 2>&1)
+# HOME redirected to the scratch dir, so the slot-test cannot reach a real
+# model. It resolves kv-parity's .gguf from ${HOME}/.local/share/..., and on a
+# developer machine that path exists: the check then ran pytest against a real
+# GGUF on this box and reported
+#
+#   RESULT kv-parity-two-routes-agree FAIL (the two routes disagree ... ctxfit
+#   is misreading a GGUF convention)
+#
+# which made "good captures: no assertion fails" fail for a reason that has
+# nothing to do with capture shapes - the fixture's verdict depended on whatever
+# model the machine running the test happened to have downloaded. The slot-test
+# SKIPs when no model is present, by its own design and comment; the harness
+# redirects HOME so that is the normal case, and this self-test was the one
+# caller that did not.
+out=$(HOME="$T/home" CLI_FORMATS_CAPTURE_DIR="$GOOD" bash "$SLOT_TEST" 2>&1)
 check "good captures: table shape passes" "$out" pdffonts-table-shape PASS
 if grep -qE "RESULT [a-z0-9-]+ +FAIL" <<<"$out"; then no "good captures: no assertion fails"; else ok "good captures: no assertion fails"; fi
 
@@ -117,7 +131,21 @@ check "a failing avahi SKIPs" "$out" avahi-browse-shape SKIP
 # `present-*` and `ip neigh` run the real binaries; a host without them must
 # say so rather than passing. That is the same rule the slot-test applies to an
 # image missing a dependency.
-out=$(CLI_FORMATS_CAPTURE_DIR="$GOOD" bash "$SLOT_TEST" 2>&1)
+# HOME redirected to the scratch dir, so the slot-test cannot reach a real
+# model. It resolves kv-parity's .gguf from ${HOME}/.local/share/..., and on a
+# developer machine that path exists: the check then ran pytest against a real
+# GGUF on this box and reported
+#
+#   RESULT kv-parity-two-routes-agree FAIL (the two routes disagree ... ctxfit
+#   is misreading a GGUF convention)
+#
+# which made "good captures: no assertion fails" fail for a reason that has
+# nothing to do with capture shapes - the fixture's verdict depended on whatever
+# model the machine running the test happened to have downloaded. The slot-test
+# SKIPs when no model is present, by its own design and comment; the harness
+# redirects HOME so that is the normal case, and this self-test was the one
+# caller that did not.
+out=$(HOME="$T/home" CLI_FORMATS_CAPTURE_DIR="$GOOD" bash "$SLOT_TEST" 2>&1)
 if command -v ip >/dev/null 2>&1; then
   check "ip present: the field order is asserted live" "$out" ip-neigh-field-order PASS
 else
