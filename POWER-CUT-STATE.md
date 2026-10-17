@@ -1194,3 +1194,40 @@ its menu, so a boot loop does happen.
 
 **Until that run exists, "the hook's write is lost" is not a finding — it is one
 of two explanations, and the cheaper one has not been excluded.**
+
+## The decisive test, and the one thing blocking it
+
+The test is settled: **let the guest reboot itself once, so boot 2 reads boot
+1's write.** Both explanations fit the current evidence —
+
+- the hook's write never leaves the initramfs, versus
+- it reaches the guest's block layer and the guest is SIGTERM-ed before it
+  reaches the virtual disk —
+
+and only a second boot can tell them apart. If boot 2's hook sees a plain
+`shanios-green` default, the write landed and the mechanism works. If it still
+sees `shanios-green-broken+3-0`, it was lost.
+
+Getting there needs a `reboot` triggered from inside the booted slot, guarded by
+a one-shot marker **on the ESP** so the loop is exactly one reboot. (A marker in
+`/var` would not do: `/var` is an empty tmpfs on every real boot.)
+
+**Blocked on:** `@green` is a read-only subvolume and the slot cannot be written
+from a container. `btrfs property set -f -ts <mnt> ro false` fails with
+`Could not set subvolume flags: Read-only file system`, because **subvolume
+flags live in the parent** — so top-level `subvolid=5` has to be mounted writable
+first, which is the order `shani-deploy` itself uses. That attempt then failed
+to mount `subvolid=5` at all (`fsconfig() failed`), i.e. the loop's partition
+device node was not resolvable inside that container.
+
+Note the first attempt went somewhere that *looked* right and was not:
+`build.sh test enter green` wrote the unit and `systemctl enable` reported
+`enabled` — into the **nspawn overlay**, which `vmspawn` does not use. A green
+answer from a command that wrote somewhere other than where the test looks is
+the same shape as everything else this session, so it is worth stating as a
+rule: *`enter` writes the overlay; only something that writes the subvolume
+changes what `vmspawn` boots.*
+
+**So the remaining work is one line of plumbing, not more diagnosis.** Everything
+needed to run it is in place — the scenario, the UKI carrying the hook with
+`vfat`, the reboot-once unit, and the read-back procedure.
