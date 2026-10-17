@@ -1370,3 +1370,61 @@ reading the first's write), does `loader.conf` carry `shanios-green` (plain, no
 tries)? If so the failover mechanism works and `+3-0` is not needed. If it still
 reads `shanios-green-broken+3-0`, the write is genuinely lost and the hook is at
 fault after all.
+
+## RESOLVED: the hook's write lands. It was the harness, and `--commit` proves it.
+
+Run `vmspawn --commit`, `clean` to detach every loop device, then read the image
+from the host:
+
+    loader/loader.conf   ->  default shanios-green      <- plain, no tries counter
+    loader/loader.conf.shanios-bak
+                        ->  default shanios-green-broken+3-0.conf   (pre-switch)
+    @data/boot_hard_failure -> ABSENT
+
+**The hook rewrote the default, and the rewrite is on the disk.** The backup it
+took on the way is there too. And the marker boot 1 explicitly *cleared* is
+absent — the same guest, the same boot, the same run.
+
+Those are the exact two facts that previously read as "the hook's write is lost"
+and "the guest's writes never survive". Both now land. The only difference
+between the two runs is `--commit`. So:
+
+- **The dracut boot-failover hook works.** It reads the prior marker, mounts the
+  ESP, picks the plain entry, rewrites `default`, backs up what it replaced, and
+  the result survives to the disk.
+- **The `+3-0` counter is irrelevant to this failure mode** and never decrements
+  on this systemd (upstream #40405), which is why the failover hook is needed at
+  all rather than being belt-and-braces.
+- Both earlier observations are now consistent with one explanation: without
+  `--commit` boot 2 saw the old value because the overlay was thrown away; with
+  it, the write is on disk.
+
+## Two more ways to read a wrong answer out of a good run
+
+Worth recording, because both produced confident conclusions here.
+
+**A duplicated log is not a second boot.** This run's console log contains two
+`DIAG root_label` blocks — byte-identical regions, same kernel timestamp
+(`62.508531`), same PID (`dracut-pre-mount[576]`). That is systemd replaying the
+journal after `initrd-switch-root`, not a second boot. The discriminator is
+cheap and was sitting in the log the whole time: `Rebooting` appeared **zero**
+times and `login:` once. An earlier reading of "boots: 2" from a `grep -c` on the
+DIAG line would have reported a second boot that never happened.
+
+**The reboot-once unit failed silently and the run still looked fine.** It does
+`touch /boot/efi/.shani-test-reboot-once-done`, and `/boot/efi` is not writable
+there, so it `exit 1`ed and never rebooted — which is also why the marker was
+absent from the ESP afterwards. A guard file on the ESP is the wrong place for a
+one-shot marker on a real boot. It cost the second boot, but not the finding:
+what the first boot wrote was on the disk to be read.
+
+## What is left
+
+The **full field loop** — a genuinely unbootable candidate (built through
+`gen-efi --kernel-cmdline` with `subvol=@no-such-slot`) leaving a marker, and the
+next boot landing on the good slot. Scenario C's `--until`/hook-only mode cannot
+show it, and `SHANIOS_HOOK_ONLY=1` exists so that limit is stated rather than
+implied.
+
+Everything else is now closed: the hook fires, it selects the right fallback, its
+write lands, and the writes land.
