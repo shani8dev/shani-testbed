@@ -33,8 +33,27 @@ set_default() {
     # ordering, so the machine boots something other than the slot under test
     # and every result afterwards is about the wrong image. This exact trap
     # shipped `shanios-green-broken+3-0.conf.conf`.
-    if [[ ! -f "$MNT/esp/loader/entries/$1" ]]; then
-        echo "SCENARIO ABORT: default '$1' names no entry; entries are:" >&2
+    # systemd-boot reports the entry ID of shanios-blue+3-0.conf as
+    # shanios-blue.conf, so a default naming the BASE id resolves even when no
+    # such file exists - bootctl list showed exactly that, isDefault: true.
+    # Requiring the literal file would abort a legitimate default, which is
+    # its own kind of wrong. So accept the name if ANY entry resolves to it:
+    # either the file is literally there, or its tries suffix strips away to
+    # the requested id.
+    local resolved=no f2 id2
+    for f2 in "$MNT/esp/loader/entries"/*.conf; do
+        [[ -f $f2 ]] || continue
+        # Two forms of this entry's ID. loader.conf's default INCLUDES
+        # ".conf" ("default shanios-blue.conf"), and the tries suffix sits in
+        # the middle, so it cannot just be stripped off the end - doing that
+        # eats the .conf too and nothing ever matches. Strip the suffix off the
+        # stem, then put .conf back.
+        id2=$(basename "$f2")
+        alt="${id2%.conf}"; alt="${alt%%+[0-9]*-[0-9]*}.conf"
+        if [[ "$id2" == "$1" || "$alt" == "$1" ]]; then resolved=yes; break; fi
+    done
+    if [[ $resolved != yes ]]; then
+        echo "SCENARIO ABORT: default '$1' resolves to no entry; entries are:" >&2
         ls "$MNT/esp/loader/entries" >&2
         exit 2
     fi
