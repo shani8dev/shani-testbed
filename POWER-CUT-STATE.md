@@ -1589,3 +1589,50 @@ step, and it is a source read rather than another ten-minute boot.
 **Reusable, and the more valuable half of this:** to see what a firmware boot
 menu selected, decode SGR colour, not grep text. `[30m[47m` on a row is the
 selection. Everything else in the menu is white-on-black and says nothing.
+
+## systemd-boot reads loader.conf's `default` LAST — from its own source (v262)
+
+Read, not guessed. `config_select_default_entry()` in `src/boot/boot.c` tries, in
+order, and returns on the first match:
+
+| # | source | stored in | cleared each boot? |
+|---|---|---|---|
+| 1 | `LoaderEntrySysFail` | EFI var | no |
+| 2 | `LoaderEntryOneShot` | EFI var | **yes** (read at 1655, unset at 1658) |
+| 3 | `LoaderEntryPreferred` | EFI var | no |
+| 4 | `preferred` in loader.conf | file | n/a |
+| 5 | `LoaderEntryLastBooted` (when `default` is `@saved`) | EFI var | no |
+| 6 | `LoaderEntryDefault` | EFI var | no |
+| 7 | **`default` in loader.conf** | file | n/a |
+| 8 | *fall back to the first suitable entry* | — | — |
+
+Matching is `efi_fnmatch(pattern, entry->id)` — by **id**, case-folded. So
+`default shanios-blue` should match `shanios-blue.conf` exactly.
+
+And after leaving the menu systemd-boot **persists** the EFI vars (969-979): it
+writes `LoaderEntryDefault`/`LoaderEntryPreferred` when set and *unsets* them when
+not. Anything that ever sets one — an operator pressing `d` in the menu,
+`bootctl set-default` — makes that variable outrank every deploy's loader.conf
+**forever after**.
+
+**So there is a real design gap, independent of this testbed:** the hook's only
+lever is loader.conf, which is the weakest of the seven. If any of
+`LoaderEntryDefault` / `LoaderEntryPreferred` / `LoaderEntrySysFail` is set on a
+real machine, the failover rewrite is silently ignored and the machine boots
+whatever that variable names — **failing open, to a boot that is broken**. A real
+fix has to clear those variables from the initramfs (they are readable and
+deletable at `/sys/firmware/efi/efivars/LoaderEntry*`) as well as rewrite the
+file, and should fail *closed* if it cannot.
+
+**This is not, however, proven to be what happened here.** `LoaderEntryOneShot` is
+unset on read so it cannot persist; and `lib/vmspawn.sh` passes no `--nvram`, so
+`systemd-vmspawn` should be using a fresh temporary one — which would leave the
+EFI vars unset and leave loader.conf as the deciding source. If that is true then
+the precedence table above is a genuine finding that is *not* the cause here, and
+the cause is still unknown. **Both halves of that sentence matter, and the second
+is the one I have not proved.**
+
+What would settle it, now unblocked: read `/sys/firmware/efi/efivars/Loader*`
+from inside a real firmware boot. `lib/qemu.sh`/`iso-install` could not do that
+before — the builder image had no qemu, edk2-ovmf or swtpm (see
+`shani-install-media/AGENTS.md`) — and it can now.
