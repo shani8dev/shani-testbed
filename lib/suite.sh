@@ -88,42 +88,57 @@ cmd_suite() {
     _suite_check rollback:restored \
       '[[ $(_current_slot) == "$cur0" && $(_suite_ver "$cur0") == "$ver0" && $(_suite_ver "$cur1") == "$ver1" ]]' \
       "current @$(_current_slot); @${cur0} v$(_suite_ver "$cur0") (was v${ver0}); @${cur1} v$(_suite_ver "$cur1") (was v${ver1})"
+  fi
+
   # ...and that the BOOT CONFIGURATION names the slot it just rolled back to.
   #
   # `rollback:restored` above reads @data/current-slot and both slots' versions.
   # None of that is what the firmware boots: systemd-boot reads loader.conf's
-  # `default` and then, ahead of it, four EFI variables. So a rollback that
-  # restored every subvolume correctly and left the ESP pointing at the failed
-  # candidate passed this suite - and the machine then booted the slot the user
-  # had just rolled away from, having been told it succeeded.
+  # `default` and, ahead of it, four EFI variables. So a rollback that restored
+  # every subvolume correctly and left the ESP pointing at the failed candidate
+  # passed this suite - and the machine then booted the slot the user had just
+  # rolled away from, having been told it succeeded.
   #
-  # That is not hypothetical: finalize_boot_entries set only LoaderEntryDefault
-  # (FIFTH in systemd-boot's order) and never cleared LoaderEntrySysFail, so
-  # with a stale SysFail present the correct new default lost. See
+  # Not hypothetical: finalize_boot_entries set only LoaderEntryDefault (FIFTH
+  # in systemd-boot's order) and never cleared LoaderEntrySysFail. See
   # shani-deploy's AGENTS.md and tests/finalize-boot-efivars.sh.
   #
   # Reads the ESP rather than trusting the command's exit status or its log,
   # because both said the right thing while the configuration was wrong.
+  #
+  # The ID is `shanios-<slot>.conf` - finalize_boot_entries builds
+  # `loader_default="${OS_NAME}-${active_slot}.conf"` - so comparing against
+  # `<slot>.conf` would fail on a CORRECT rollback, which is worse than not
+  # checking at all.
   if (( ! failed )); then
-    local _esp_mnt="${DATA_DIR}/suite-esp-check.$$" _esp_def=""
-    mkdir -p "$_esp_mnt"
-    if mountpoint -q "$_esp_mnt" || ! mount -o ro /dev/disk/by-label/shani_boot "$_esp_mnt" 2>/dev/null; then
-      _suite_check rollback:esp-default-names-the-target \
-        'true' "could not mount the ESP read-only - not checked (a mount gap, not a pass)"
-      names+=("rollback:esp-default-names-the-target(SKIP-mount)"); rcs+=(0); secs+=(0)
-    else
+    local _esp_mnt="${DATA_DIR}/suite-esp-check.$$"
+    local _esp_def=""
+    mkdir -p "$_esp_mnt" 2>/dev/null
+    if mount -o ro /dev/disk/by-label/shani_boot "$_esp_mnt" 2>/dev/null; then
       _esp_def=$(sed -n 's/^default[[:space:]]*//p' "$_esp_mnt/loader/loader.conf" 2>/dev/null | head -1)
       _suite_check rollback:esp-default-names-the-target \
-        "[[ -n \"\$_esp_def\" && \"\$_esp_def\" == ${cur0}.conf ]]" \
-        "loader.conf default is [${_esp_def:-<none>}], expected ${cur0}.conf (the slot rolled back to)"
-      names+=("rollback:esp-entry-exists"); \
-      rcs+=("$( [[ -f "$_esp_mnt/loader/entries/${_esp_def:-none}" ]] && echo 0 || echo 1 )"); secs+=(0)
-      (( ${rcs[-1]} == 0 )) || failed=1
+        "[[ -n \"\$_esp_def\" && \"\$_esp_def\" == \"shanios-${cur0}.conf\" ]]" \
+        "loader.conf default is [${_esp_def:-<none>}], expected shanios-${cur0}.conf (the slot rolled back to)"
+      # A default naming an entry that is not on the ESP is the same failure in
+      # a different costume: systemd-boot matches no entry and boots "the first
+      # suitable entry" instead, which on a post-flip disk is the wrong one.
+      if [[ -n "$_esp_def" && ! -f "$_esp_mnt/loader/entries/${_esp_def}" ]]; then
+        _suite_check rollback:esp-entry-exists \
+          'false' "loader.conf defaults to [${_esp_def}], which is not a file on the ESP"
+      else
+        _suite_check rollback:esp-entry-exists \
+          '[[ -n "$_esp_def" ]]' "[${_esp_def:-<none>}] is present on the ESP"
+      fi
       umount "$_esp_mnt" 2>/dev/null
+    else
+      # A mount gap is NOT a pass. Its own step, so the summary cannot be read
+      # as all-green when one thing was never attempted.
+      _suite_check rollback:esp-readable \
+        'false' "could not mount /dev/disk/by-label/shani_boot read-only, so the boot configuration after rollback was NOT verified"
     fi
     rmdir "$_esp_mnt" 2>/dev/null
   fi
-  fi
+
   if (( keep )); then log "suite: --keep, leaving mounts/loops attached"
   else _suite_step clean cmd_clean || true; fi
 
