@@ -1160,3 +1160,37 @@ In all three the file looks wrong in a way that reads as a finding and is not.
 `test clean` has run, and treat its output ("Detaching loop device ... / Clean
 complete") as the precondition rather than the afterthought.** Every wrong
 conclusion in this stretch came from reading before that point.
+
+## The harness never gives the guest a clean shutdown, and that matters here
+
+The boot completes — both boots reached `shanios login:` — and then the console
+sits idle well past `--timeout`, until:
+
+    shanios login: qemu-system-x86_64: terminating on signal 15 from pid 558
+
+So `vmspawn` enforces its timeout by **signalling QEMU**, not by asking the
+guest to power off. The guest therefore never runs its shutdown path, and never
+flushes anything the kernel was still holding.
+
+**That is precisely the property under test.** The hook's whole job is to leave
+a changed `loader.conf` on the ESP; whether that change survives depends on the
+write reaching the virtual disk, and a guest that is SIGTERM'd is the worst
+possible way to find out. I made this mistake by hand earlier in this stretch
+too — killing a VM mid-write — and the harness now does it automatically on
+every timed run.
+
+So the current evidence cannot distinguish:
+
+- the hook's write never leaves the initramfs, and
+- the hook's write reaches the guest's block layer fine but the guest is killed
+  before it reaches the virtual disk.
+
+Both fit everything observed. **Distinguishing them needs a guest that shuts
+itself down** — poweroff from inside the booted slot, or a run long enough that
+the guest reboots on its own and the *second* boot reads the first boot's
+write. The second-boot route is the better one: it needs no changes to the
+harness, and the earlier console already shows systemd-boot coming back up with
+its menu, so a boot loop does happen.
+
+**Until that run exists, "the hook's write is lost" is not a finding — it is one
+of two explanations, and the cheaper one has not been excluded.**
