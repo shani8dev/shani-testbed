@@ -64,6 +64,7 @@
 #     tested nothing.
 #   * the ESP must be mounted (the slot mounts it at /boot/efi)
 set -uo pipefail
+_regen_failed=0
 
 break_root=0
 expect=""
@@ -127,6 +128,12 @@ for SLOT in "${slots[@]}"; do
     fi
 
     before=$(stat -c %s "$UKI")
+    # Keep the original until the rebuilt artifact has been VERIFIED below. It
+    # used to be moved into place first and verified afterwards, so a rebuild
+    # that produced the wrong cmdline left that UKI on the ESP with a FAIL line
+    # printed above it and a zero exit status - an artifact in place and wrong,
+    # which is what a power-cut boot through it would then measure.
+    cp -f "$UKI" "${UKI}.shanios-regen.orig" 2>/dev/null || true
     if ! dracut --force --uefi --kver "$KV" --kernel-cmdline "$CMD" "${UKI}.tmp"; then
         echo "  dracut FAILED - the original UKI is untouched"; continue
     fi
@@ -155,14 +162,26 @@ for SLOT in "${slots[@]}"; do
                 echo "      $GOT"
                 echo "  It does not name the missing subvol, so this UKI would boot"
                 echo "  normally and the recovery path would never be reached."
+                _regen_verify_failed=1
             fi
         else
-            [[ "$GOT" == "$CMD" ]] && echo "  VERIFIED: cmdline unchanged in the signed UKI" \
-                                   || echo "  VERIFY FAILED: signed UKI carries a different cmdline than the one given to dracut"
+            if [[ "$GOT" == "$CMD" ]]; then
+                echo "  VERIFIED: cmdline unchanged in the signed UKI"
+            else
+                echo "  VERIFY FAILED: signed UKI carries a different cmdline than the one given to dracut"
+                echo "      expected: $CMD"
+                echo "      got:      $GOT"
+                _regen_verify_failed=1
+            fi
         fi
     else
         echo "  could not read .cmdline back out of the signed UKI (not verified)"
+        _regen_verify_failed=1
     fi
+    # Only record the verdict HERE. Restoring the original has to wait until
+    # after --expect-in-initrd has read the rebuilt UKI, or that check inspects
+    # the artifact it is meant to be judging and reports about the wrong file.
+    [[ -n ${_regen_verify_failed:-} ]] && _regen_failed=1
     rm -f "$t2"
 
     # Assert the caller's expected text really is inside the initramfs of the
@@ -219,4 +238,20 @@ open(sys.argv[2],'wb').write(d[int(sys.argv[3]):])" "$t2" "$t2.zst" "$off" 2>/de
         rm -f "$t2"
     fi
     echo "  NOTE: this is a test-only in-place rebuild; the image still carries the old module."
+
+    # Everything that had to look at the rebuilt UKI has now looked. If its
+    # cmdline did not verify, put the original back and stop: the artifact on
+    # the ESP is not the one it claims to be, and a power-cut boot through it
+    # would measure nothing while logging as though it had.
+    if [[ -n ${_regen_verify_failed:-} ]]; then
+        if [[ -f "${UKI}.shanios-regen.orig" ]]; then
+            mv -f "${UKI}.shanios-regen.orig" "$UKI"
+            echo "  RESTORED the original UKI - the rebuilt one did not verify, so it is not installed"
+        fi
+    fi
 done
+
+# A non-zero exit is the load-bearing half. The FAIL lines were already being
+# printed; what was missing was anything a caller could test.
+[[ -n ${_regen_failed:-} ]] && exit 1
+exit 0
