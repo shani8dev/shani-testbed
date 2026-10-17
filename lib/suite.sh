@@ -111,10 +111,20 @@ cmd_suite() {
   # `<slot>.conf` would fail on a CORRECT rollback, which is worse than not
   # checking at all.
   if (( ! failed )); then
-    local _esp_mnt="${DATA_DIR}/suite-esp-check.$$"
-    local _esp_def=""
-    mkdir -p "$_esp_mnt" 2>/dev/null
-    if mount -o ro /dev/disk/by-label/shani_boot "$_esp_mnt" 2>/dev/null; then
+    # The harness already owns an ESP mountpoint ($ESP_MNT, /opt/shanios-esp),
+    # and a second mount of the same partition is REFUSED while the first is
+    # still attached - "Can't mount, would change RO state" - so mounting my
+    # own copy cannot work. Reuse the harness's, mounting it only if nothing
+    # has it yet.
+    local _esp_mnt="${ESP_MNT:-/opt/shaniios-esp}"
+    local _esp_def="" _esp_own=0
+    if ! mountpoint -q "$_esp_mnt" 2>/dev/null; then
+      mkdir -p "$_esp_mnt" 2>/dev/null
+      if mount -o ro /dev/disk/by-label/shani_boot "$_esp_mnt" 2>/dev/null; then
+        _esp_own=1
+      fi
+    fi
+    if mountpoint -q "$_esp_mnt" 2>/dev/null; then
       _esp_def=$(sed -n 's/^default[[:space:]]*//p' "$_esp_mnt/loader/loader.conf" 2>/dev/null | head -1)
       _suite_check rollback:esp-default-names-the-target \
         "[[ -n \"\$_esp_def\" && \"\$_esp_def\" == \"shanios-${cur0}.conf\" ]]" \
@@ -129,14 +139,15 @@ cmd_suite() {
         _suite_check rollback:esp-entry-exists \
           '[[ -n "$_esp_def" ]]' "[${_esp_def:-<none>}] is present on the ESP"
       fi
-      umount "$_esp_mnt" 2>/dev/null
+      (( _esp_own )) && umount "$_esp_mnt" 2>/dev/null
     else
       # A mount gap is NOT a pass. Its own step, so the summary cannot be read
       # as all-green when one thing was never attempted.
       _suite_check rollback:esp-readable \
         'false' "could not mount /dev/disk/by-label/shani_boot read-only, so the boot configuration after rollback was NOT verified"
     fi
-    rmdir "$_esp_mnt" 2>/dev/null
+    (( _esp_own )) && rmdir "$_esp_mnt" 2>/dev/null
+    true
   fi
 
   if (( keep )); then log "suite: --keep, leaving mounts/loops attached"
