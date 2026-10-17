@@ -1702,3 +1702,37 @@ The fix was one line — `FALLBACK="${N}.conf"` — and finding it took:
 - Before regenerating anything into a slot through `enter`, check whether the
   overlay has a copy of it, and compare UKI sizes before and after: a regeneration
   that made the artifact *smaller* had taken its input from somewhere else.
+
+## Re-run through the harness alone — the throwaway is gone
+
+The proof above used a one-off script to build the disk state, which the repo's
+rules do not allow to outlive a session. `powercut-scenario.sh` now takes
+`SHANIOS_CANDIDATE` and derives the sibling slot, so the whole loop is three
+harness commands and nothing else:
+
+    SHANIOS_CANDIDATE=green bash powercut-scenario.sh C
+    ./test-env/test.sh vmspawn --tpm=no --commit --timeout=200    # must FAIL
+    ./test-env/test.sh vmspawn --tpm=no --commit --timeout=880    # must recover
+
+Result, from a clean application of the scenario:
+
+    boot 1  vmspawn FAIL: Entering emergency mode (46s)
+            hook: previous boot also failed (@blue); boot default switched
+                  shanios-green+3-0.conf -> shanios-blue.conf
+            hook: boot_hard_failure written for slot '@unknown'
+
+    boot 2  hook: prior failure (@unknown) but default 'shanios-blue.conf' carries
+                  no tries counter - not an unproven candidate, leaving it
+            hook: boot_hard_failure written for slot '@blue'
+            hook: boot_hard_failure cleared - root mount succeeded
+            shanios login:
+
+Boot 2 reading `default shanios-blue.conf` is itself part of the proof: that text
+was written by boot 1, committed to `install.img`, and read back through a
+*fresh* qcow2 overlay. So the chain is complete — a failed candidate is detected,
+the default is moved, the move survives, and the next boot lands on the good slot
+with nothing selected and no operator.
+
+**The scenario refuses to guess which slot is the candidate.** That is the whole
+point of `SHANIOS_CANDIDATE`: guessing is what produced a "recovery" that booted
+the same broken binary under another entry name and reported itself a pass.
