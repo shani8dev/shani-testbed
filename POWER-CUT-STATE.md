@@ -1320,3 +1320,53 @@ read, so for a while the last several tool results in this session were
 attributing observations to a run that never happened. The harness already
 refuses concurrent disk-touching runs; what it does not do is make a *refused*
 launch look different from a *slow* one.
+
+## `--commit` failed on its first real use, twice — and the test had enforced one of them
+
+The first run with the flag reported:
+
+    [vmspawn][ERROR] --commit: qemu-img commit failed; the image is unchanged
+
+Both causes are now **measured** in the builder image, not reasoned about:
+
+| what I wrote | what it actually is | measured result |
+|---|---|---|
+| `qemu-img commit -r -f "$ov"` | `-r` is `--rate-limit`; `-f` then parsed as its argument | exit 1, `Invalid rate limit specified: '-f'` |
+| `-v "<dir>:/src:ro"` | commit writes into the **backing file**; the kernel refuses `:ro` | exit 1, guest's write absent from the base |
+| (considered) `commit -U` | bypasses image *locks*, not filesystem permissions | exit 1 — does not help |
+
+Committing into the backing file needs **no flag at all**; that is what `commit`
+is for. The bind becomes `rw` under `--commit` and stays `ro` otherwise, and the
+test asserts both directions — so "always mount rw" fails too.
+
+**The test had been enforcing the bug.** `tests/vmspawn-args.sh` asserted
+`commit -r` was *present*, written before the semantics were known. It is now
+asserted *absent*. Seven mutations confirmed to go red.
+
+## The measurement itself went wrong four times, and every time it read as a finding
+
+Recording these because each produced a confident, specific, wrong statement:
+
+1. `write -f FILE` — `-f` is a boolean modifier; the source file is `-s`. The
+   payload path was consumed as the **offset**, so nothing was written anywhere.
+2. Grepping the overlay for `GUEST-WROTE-THIS` — `qemu-io`'s `read -v` renders
+   `-` as `.`, so the grep searched for a string the output cannot contain. The
+   write had worked; the premise check said it had not.
+3. A probe labelled **"the :ro case"** that never created a read-only mount. It
+   used `-U` against an ordinary writable directory and reported the result as
+   being about read-only backing. A mislabelled check is worse than none.
+4. Every probe sharing one base file, so the control's successful write was
+   visible in every later reading — the failed read-only commits looked like they
+   had worked.
+
+The fix for (1)–(4) is the same each time and it is not clever: **establish the
+premise before drawing the conclusion from it**, and reset state between cases.
+The one line that would have caught (2) is asserting the write reached the
+overlay *before* asking whether commit moved it.
+
+**Still outstanding:** the run itself. With `--commit` actually able to work, the
+open question is unchanged and finally answerable — after two boots (the second
+reading the first's write), does `loader.conf` carry `shanios-green` (plain, no
+tries)? If so the failover mechanism works and `+3-0` is not needed. If it still
+reads `shanios-green-broken+3-0`, the write is genuinely lost and the hook is at
+fault after all.
