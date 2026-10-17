@@ -165,8 +165,20 @@ for SLOT in "${slots[@]}"; do
                 _regen_verify_failed=1
             fi
         else
-            if [[ "$GOT" == "$CMD" ]]; then
-                echo "  VERIFIED: cmdline unchanged in the signed UKI"
+            # Compare with runs of whitespace collapsed. dracut/ukify emits the
+            # SAME cmdline with two extra space characters (measured: byte length
+            # 324 in, 326 out, and a word-diff showing two empty tokens added at
+            # positions 3 and 15 - nothing else changed), so a strict string
+            # compare fails on an artifact that is byte-for-byte correct in
+            # content. It failed here for exactly that reason and read as
+            # "the rebuilt UKI has no root= argument at all", which was wrong -
+            # the root= was present, and the report had been truncated by the
+            # `cut` in the log inspection rather than absent from the file.
+            _norm() { tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'; }
+            _norm_got="$(_norm <<<"$GOT")"
+            _norm_cmd="$(_norm <<<"$CMD")"
+            if [[ "$_norm_got" == "$_norm_cmd" ]]; then
+                echo "  VERIFIED: cmdline unchanged in the signed UKI (whitespace-normalised)"
             else
                 echo "  VERIFY FAILED: signed UKI carries a different cmdline than the one given to dracut"
                 echo "      expected: $CMD"
@@ -253,5 +265,5 @@ done
 
 # A non-zero exit is the load-bearing half. The FAIL lines were already being
 # printed; what was missing was anything a caller could test.
-[[ -n ${_regen_failed:-} ]] && exit 1
+(( ${_regen_failed:-0} )) && exit 1
 exit 0
