@@ -85,6 +85,50 @@ def strip_strings(text):
     return "".join(out)
 
 
+def strip_for_wordlists(text):
+    """Blank the WORD LIST of a `for NAME in a b c; do` header.
+
+    Without this the word list reads as commands. It produced four phantom
+    misses the moment the failover hook grew its EFI-variable loop:
+
+        LoaderEntrySysFail  LoaderEntryOneShot  LoaderEntryPreferred
+        LoaderEntryDefault  _f  _v
+
+    `_f` and `_v` are the loop VARIABLES and the rest are the four variable
+    names being iterated - none of them is executed. Worse than a false
+    positive: the check went RED and stayed red, so the next real missing
+    binary would have arrived inside an already-failing run where nobody
+    distinguishes a new failure from the standing one.
+
+    The variable and the `in` keyword are kept, so a loop over a COMMAND
+    (`for c in cat cp`) still reports - which is the case the check exists for.
+    """
+    out = []
+    # The header is matched over the WHOLE remaining text, not line by line: a
+    # word list continued with a trailing `\` onto the next line - which is how
+    # both loops here are written - never matches a per-line pattern at all.
+    # That is why the first version of this function changed nothing.
+    for m in re.finditer(r"(^[ \t]*for[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]+in[ \t]+)"
+                         r"((?:[^\n\\]|\\\n)*?)(;.*?\bdo\b)", text, re.M):
+        head, words, tail = m.group(1), m.group(2), m.group(3)
+        # Blank the word list AND the loop variable itself. Both are matched
+        # as commands: the variable because COMMAND_POS anchors on `^` with
+        # re.M and a header line begins with `for _v in ...` after indentation,
+        # and the word list because it is just words on a line. Neither is ever
+        # executed, and both are precisely what this loop is iterating over.
+        # `for NAME` is kept only so the header still parses as a loop.
+        name = re.match(r"[ \t]*for[ \t]+([A-Za-z_][A-Za-z0-9_]*)", head)
+        blank = "".join(ch if ch.isspace() else " " for ch in words)
+        blank = blank.replace("\\\n", "\n" if "\\\n" in words else "\\\n")
+        text = text[:m.start(2)] + blank + text[m.end(2):]
+        if name:
+            i = m.start(1) + name.group(0).index(name.group(1))
+            text = text[:i] + " " * len(name.group(1)) + text[i + len(name.group(1)):]
+        del tail
+    out.append(text)
+    return "".join(out)
+
+
 # re.M matters: `^` must match the start of each LINE, or a command that sits on
 # its own indented line - which is how `sync` is written - is invisible to this.
 # The trailing (?![a-zA-Z0-9_.-]) forces the WHOLE token to be consumed: without
@@ -103,7 +147,7 @@ if not hooks:
 
 used = set()
 for s in hooks:
-    body = strip_strings(strip_comments(s.read_text()))
+    body = strip_for_wordlists(strip_strings(strip_comments(s.read_text())))
     funcs = set(re.findall(r"^\s*([a-zA-Z_][a-zA-Z0-9_.-]*)\s*\(\)\s*\{", body, re.M))
     for m in COMMAND_POS.finditer(body):
         tok = m.group(1)
