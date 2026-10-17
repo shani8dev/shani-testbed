@@ -1781,3 +1781,46 @@ the slot here is on `7.2.10-arch1-1` while the published image was built against
 
 Until (2) aborts, scenario C through a regenerated UKI is not a valid
 measurement - which is why no boot was run on it.
+
+## 2026-10-18: the harness-only re-run ran, and it reproduces CLOSED
+
+`8eec805` made (2) abort, so the blocked run above was runnable. Same two boots,
+same three hook lines each, reached entirely through repo tooling
+(`regen-uki.sh --break-root` → `powercut-scenario.sh C` → `test.sh vmspawn
+--commit`), no throwaway:
+
+    boot 1: FAIL: Entering emergency mode (33s)
+            previous boot also failed (@blue); boot default switched
+              shanios-green+3-0.conf -> shanios-blue.conf
+            boot_hard_failure written for slot '@unknown'
+    ESP:    loader.conf default: shanios-blue.conf
+    boot 2: boot_hard_failure written for slot '@blue'
+            boot_hard_failure cleared — root mount succeeded
+            shanios login:
+
+**This reproduces `# CLOSED` above line for line. It is not a second
+demonstration and I did not treat it as one.** What it adds is only that the
+result now comes from the committed harness rather than the one-off script, so
+the CLOSED claim is no longer resting on a throwaway.
+
+Two things I got wrong while doing it, both recorded because both are this
+file's own recurring shapes:
+
+- **I wrote the result up in a new `POWER-CUT-SCENARIO-C-RESULTS.md` and
+  reported it as a first-time demonstration.** It is neither. `# CLOSED` at the
+  top of this section already carried both boots, and my write-up contradicted
+  the `BOOT 1 ... the failover did NOT fire` heading further up without
+  retracting it — one record, two accounts, and the newer file in neither the
+  repo's layout nor its convention. Removed; this entry replaces it.
+- **`boot_hard_failure written for slot '@blue'` in boot 2 is not evidence the
+  hook chose blue.** It is the marker written on every boot before the root
+  mounts, and boot 1 wrote `@unknown` for the same reason. Reading it as a
+  selection is the absence-shaped read this file has been bitten by repeatedly.
+
+Still true and still unproven: the **efivarfs half**. Boot 2 printed no
+`cleared` line, because this harness's NVRAM has no `LoaderEntry*` variables to
+clear — `lib/vmspawn.sh` passes no `--nvram`, so each run gets a fresh one. The
+`rm -f` is proven to unlink a node on real efivarfs and the hook is proven to
+issue and verify the call, but **no boot in this harness has had a variable to
+delete.** Settling the 8-variable precedence gap needs one boot that both sets
+`LoaderEntryDefault` and reboots with the same NVRAM.
