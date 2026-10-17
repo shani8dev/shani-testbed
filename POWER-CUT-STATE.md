@@ -1269,3 +1269,54 @@ failure is specific to the `vmspawn` path.
 `loader.conf` is unchanged, that is the proof — the guest cleared a file and
 re-read it as still there. It also gives a cheap negative control for every
 vmspawn-based write test run so far, all of which are now suspect.
+
+## Confirmed: `vmspawn` was discarding the evidence, not the hook losing it
+
+`lib/vmspawn.sh` boots a **qcow2 overlay** backed by `install.img`:
+
+    docker exec "$VMSPAWN_CONTAINER" qemu-img create -q -f qcow2 -F raw \
+        -b "/src/$(basename "$src")" "$overlay"
+
+and on exit `pkill`s qemu and never commits the overlay. Every guest write goes
+to the overlay and is deleted. **So "the hook's write is lost" was never a
+finding about the hook.**
+
+The evidence that settled it, and none of it is a shape a real boot produces:
+
+| what the guest did | what the next boot / host found |
+|---|---|
+| boot 1 + 2 both logged `boot_hard_failure cleared` | the marker still read `blue` |
+| the reboot script `touch`ed an ESP file (and returned 0) | absent |
+| the hook rewrote `loader.conf` | unchanged |
+
+A guest that **deletes** a file, reboots cleanly, and finds the file still there
+is not a flush problem. It is a harness that threw the result away.
+
+The asymmetry that pointed at it: the same ESP, written from a **`systemd-nspawn`**
+session, *did* persist — `HOST-VISIBLE-TEST.txt` read back from the host after
+`clean`. Writes reach `install.img` through the harness's loop device; only the
+`vmspawn` path discarded them. So `nspawn` and `vmspawn` write tests disagreeing
+is a tell.
+
+`--commit` is the fix (opt-in, since it mutates the image). `tests/vmspawn-args.sh`
+covers it; five mutations confirmed to go red, including the one that matters —
+**a failed commit that reported success**.
+
+**And the fix had the same bug in its first minute, which is why it has a test.**
+`qemu-img commit` writes to the overlay's **backing file**, and the source is
+bind-mounted `-v "$(dirname "$src"):/src:ro"`. Read-only. The commit cannot
+succeed. The test caught it as a red assertion before the flag was ever used for
+real, and the *default's* `:ro` is asserted separately so the lazy fix — always
+mount rw — fails too.
+
+## One more way to get a green result without running anything
+
+The first `--commit` launch was refused by the disk lock:
+
+    another harness run holds .../disk: pid 630638, `vmspawn --tpm=no --timeout=720`
+
+and exited immediately. It was in a background task whose output I had not yet
+read, so for a while the last several tool results in this session were
+attributing observations to a run that never happened. The harness already
+refuses concurrent disk-touching runs; what it does not do is make a *refused*
+launch look different from a *slow* one.
