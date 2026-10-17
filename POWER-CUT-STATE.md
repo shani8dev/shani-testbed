@@ -1130,3 +1130,33 @@ before unmounting and reports a failed unmount instead of discarding it with
 without it — but a hook that reports success on every boot while leaving the
 boot target exactly where it was should not be able to lose its own write
 without saying so.
+
+## The sync + unmount change did not help, and the unmount was not failing
+
+Rebuilt the UKI with the new hook and re-ran scenario C. The failover fired
+again, and **`umount of ... failed` did not appear** — so the unmount succeeded,
+`sed -i` returned 0, and the data still is not on the block device. The last
+cheap explanation is gone.
+
+That narrows it further: within the initramfs the hook mounts the ESP, seds
+`loader.conf`, syncs, unmounts successfully, and the change evaporates.
+
+**A trap worth recording, hit three separate times in one stretch.** The VM's
+loop device is `/dev/loop33`, and `/test-env/disk/install.img` — the path
+`losetup -a` reports for it — **does not exist on the host**. It is the
+container's bind path (`shani-install-media/test-env/disk -> /src`). So:
+
+- comparing loop33's backing path against the host's path finds nothing, and
+  invites the conclusion that the guest is writing to a different file. It is
+  not — the bind maps to the same file;
+- reading the file through a *second* loop device while the VM is still running
+  shows a pre-boot view, because the two loop devices have independent page
+  caches;
+- reading it through loop33 itself while the VM is up shows a **stale**
+  filesystem, because vfat was not unmounted cleanly when the VM died.
+
+In all three the file looks wrong in a way that reads as a finding and is not.
+**One rule would have prevented all of them: do not read `install.img` until
+`test clean` has run, and treat its output ("Detaching loop device ... / Clean
+complete") as the precondition rather than the afterthought.** Every wrong
+conclusion in this stretch came from reading before that point.
