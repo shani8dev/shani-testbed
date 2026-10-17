@@ -1231,3 +1231,41 @@ changes what `vmspawn` boots.*
 **So the remaining work is one line of plumbing, not more diagnosis.** Everything
 needed to run it is in place — the scenario, the UKI carrying the hook with
 `vfat`, the reboot-once unit, and the read-back procedure.
+
+## Two boots, the same `CUR`, and a marker that came back — the write is not the problem
+
+Put a one-shot `reboot` in the real `@green` (guarded by a marker on the ESP,
+since `/var` is tmpfs), booted with room for two boots, and got:
+
+    boots seen: 2
+    boot 1: previous boot also failed (@blue); default switched green-broken+3-0 -> green
+            boot_hard_failure written for slot '@green'
+            boot_hard_failure cleared — root mount succeeded
+    boot 2: previous boot also failed (@blue); default switched green-broken+3-0 -> green
+            boot_hard_failure written for slot '@green'
+            boot_hard_failure cleared — root mount succeeded
+
+**Boot 2 saw exactly what boot 1 saw.** And it fired *again*, which it cannot do
+honestly: boot 1 cleared the marker, so for boot 2 to find one, the marker must
+have come back.
+
+So across a **clean guest reboot** — the guest rebooted itself, flushing and
+re-reading its own block layer — *nothing the guest wrote survived*. Not the
+ESP's `loader.conf`, and not `@data`'s marker.
+
+**That means "the hook's write is lost" was never a finding about the hook.** The
+hook may have been doing exactly the right thing on every boot, and the harness's
+`vmspawn` disk handling discarding guest writes on the way out. The evidence now
+points at the harness, not the product — which inverts the conclusion of the
+previous several steps.
+
+The asymmetry that supports it: the same ESP, written from a **`systemd-nspawn`**
+session, *did* land — `HOST-VISIBLE-TEST.txt` was read back from the host after
+`clean`. So writes reach `install.img` through the harness's loop device, and the
+failure is specific to the `vmspawn` path.
+
+**Next check, and it is a harness question:** read `boot_hard_failure` and
+`loader.conf` off the host after this run. If the marker is present and
+`loader.conf` is unchanged, that is the proof — the guest cleared a file and
+re-read it as still there. It also gives a cheap negative control for every
+vmspawn-based write test run so far, all of which are now suspect.
