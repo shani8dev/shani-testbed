@@ -751,3 +751,62 @@ push** — same author, pkgrel 52->53, same pin, plus my test file at its
 pre-mutation-fix state. Both repos are at `origin/main` with nothing unpushed,
 so the "stop before pushing" instruction was overtaken by something outside this
 session. Flagging it rather than claiming the work is local.
+
+## Scenario C must be built, not patched
+
+Reading `finalize_boot_entries()` settled the question the state file had been
+carrying as a note. Loader entries are written with **only `title` and `efi`** —
+there is no `options` line at all:
+
+    title   shanios-blue (Active)
+    efi     /EFI/shanios/shanios-blue.efi
+
+Slot selection works by each entry loading a **different UKI**, each carrying its
+own embedded `.cmdline` with its own `rootflags=subvol=@…`. So there is no
+`subvol=` in an entry to point anywhere.
+
+Scenario C ran `sed -i 's|subvol=@[^, ]*|subvol=@no-such-slot|'` against the
+entry. **It matched nothing.** `sed` exits 0, the scenario printed
+`SCENARIO C applied`, the candidate booted perfectly normally, the success path
+cleared the marker, and the run read as a pass. The one scenario that was
+supposed to be the positive test of the failover hook **could not fail**.
+
+It now extracts the UKI's real `.cmdline` and refuses unless it carries
+`@no-such-slot`. Two bugs in that extraction, both found by testing it, both of
+which would have made the guard refuse everything and so look like a fix:
+
+- `objcopy -O binary` cannot write to `/dev/stdout` — it exits 0 and produces
+  nothing, so the pipeline read as an empty cmdline rather than an error. It
+  extracts to a temp file, and an empty `.cmdline` is an abort.
+- The synthetic fixture needed `alloc,load,data` on the section: `-O binary`
+  lays sections out by address and silently skips the rest, which looked
+  exactly like a broken parser.
+
+Verified against real `objcopy` in all three directions: `@blue` refused,
+no-subvol refused, `@no-such-slot` the only accepted value.
+
+**This is the fifth time this session that a `sed`/substitution matched nothing
+and the result was read as a finding.** It is now the standing rule for this
+harness: *a substitution whose effect is not verified is not a step.*
+
+## Published, and the blocker is gone for real
+
+`gh workflow run build.yaml` (the documented workaround — `CROSS_REPO_PAT` is
+still dead) built and published:
+
+    shani-settings 0.0.5-49  ->  404, gone
+    shani-settings 0.0.5-53  ->  2043785 bytes, live
+    shani-deploy   0.0.1-95  ->  0.0.1-96
+
+Checked against the **real published artifact**, not a local build:
+
+    etc/nut entries: 0
+    usr/share/shani/nut/{nut,ups,upsd,upsmon}.conf  all 4 present
+    nut.conf sha256 ea85a85ebec573ec… == the tree moved out of etc/nut
+
+(The first `pacman -Sl` after the publish still showed `-49`, from the
+container's cached db — a stale read that briefly looked like the publish had
+not landed. Re-fetched, it serves `-53`.)
+
+So the image build is unblocked and running: it got past `checking package
+integrity`, which is exactly where the `conflicting files` abort used to land.
