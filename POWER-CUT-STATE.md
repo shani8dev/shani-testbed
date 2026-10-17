@@ -1091,3 +1091,42 @@ ESP writes reach `install.img` at all: write a marker file to the ESP from
 inside a booted slot, shut the guest down cleanly, and read it back from the
 host. That separates "the hook's write is lost" from "nothing written to this
 ESP from the guest ever lands", and it is one boot with no hook involved.
+
+## Two isolation tests, both of which came back clean
+
+**1. Do ESP writes from inside a session reach `install.img` at all? Yes.**
+
+    marker written from a booted slot:  host-visible-1792209939
+    after 'test clean' detached the loop, read back from the host:
+    PRESENT on the host: host-visible-1792209939
+
+That kills the largest remaining hypothesis. I had expected the guest's writes
+to be going somewhere else entirely, since two loop devices on one file have
+independent page caches and the harness's own `AGENTS.md` records a 44 GB
+`/var/log/cups` lost to a mount-path mistake of exactly that kind. It is not
+that: writes land, and they survive the loop being detached.
+
+**2. Does the hook's exact sequence work outside the initramfs? Yes.**
+
+    fresh mount -t vfat -o rw   -> rc=0, options: rw
+    sed -i on loader.conf       -> rc=0
+    read back                   -> default HOOKSEQ-PROBE
+    sync; umount                -> rc=0
+    restore through the normal path -> default shanios-green-broken+3-0.conf
+
+So mount, sed, unmount and restore are all sound, on the same filesystem, with
+the same tools, writing the same file. **The failure is specific to the
+initramfs**, and not to the write path, the filesystem, or the sequence.
+
+That is a much narrower question than the one I started this stretch with, and
+it is worth stating plainly because the narrowing is the actual progress: four
+days of "the failover has never fired" became "the hook runs, and its ESP write
+does not survive the initramfs", and the next boot either shows the switch
+persisting or prints the reason.
+
+**One change made on the strength of it** (`cd4fa9f`): the hook now `sync`s
+before unmounting and reports a failed unmount instead of discarding it with
+`|| true`. This is **not claimed as the fix** — the sequence reproduces cleanly
+without it — but a hook that reports success on every boot while leaving the
+boot target exactly where it was should not be able to lose its own write
+without saying so.
