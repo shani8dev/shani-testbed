@@ -367,23 +367,56 @@ scenario() {
   # stub.
   local sch="$sd/schemas"
   mkdir -p "$sch"
-  sed 's|<key name="kokoro-tts-enabled" type="b">\n|&|' "$SCHEMA_XML" > "$sch/org.shani.chronoa.gschema.xml"
-  if [[ "$consent" == on ]]; then
-    python3 - "$sch/org.shani.chronoa.gschema.xml" <<'PY'
+  cp "$SCHEMA_XML" "$sch/org.shani.chronoa.gschema.xml"
+
+  # Set the consent key to the value THIS scenario asks for, rather than
+  # flipping an assumed baseline. It used to rewrite `<default>false` to
+  # `true` and only for consent=on; the schema's real default is now `true`
+  # (kokoro is the path the key's own description argues against on a
+  # four-core CPU), so that rewrite matched 0 keys and every scenario died on
+  # the count - reporting a harness rot as four consent failures. Deriving the
+  # direction from the argument means a product default can move either way
+  # without silently inverting what is under test. The `n != 1` guard stays:
+  # a key that stops existing must be loud, not a scenario that quietly runs
+  # against whatever default is left.
+  local want; [[ "$consent" == on ]] && want=true || want=false
+  python3 - "$sch/org.shani.chronoa.gschema.xml" "$want" <<'PY'
 import re, sys
-path = sys.argv[1]
+path, want = sys.argv[1], sys.argv[2]
 text = open(path).read()
 new, n = re.subn(
-    r'(<key name="kokoro-tts-enabled" type="b">\s*<default>)false(</default>)',
-    r"\1true\2", text)
+    r'(<key name="kokoro-tts-enabled" type="b">\s*<default>)(?:true|false)(</default>)',
+    lambda m: m.group(1) + want + m.group(2), text)
 if n != 1:
     raise SystemExit("consent mutation applied to %d keys, expected exactly 1" % n)
 open(path, "w").write(new)
 PY
-  fi
   glib-compile-schemas "$sch" 2>/dev/null
   [[ -f "$sch/gschemas.compiled" ]] || {
     echo "  (scenario $name: schema did not compile)" >&2; return 1; }
+
+  # Read it back THROUGH the compiled schema, which is the only reader the
+  # slot-test uses. A compile that exits 0 while ignoring the edited XML would
+  # otherwise leave every scenario testing the product's own default while the
+  # report says it tested the mutation - the absence-shaped green, one level
+  # below the one the `n != 1` guard catches.
+  # NO 2>/dev/null here, deliberately. With it, a transient failure to import
+  # gi is indistinguishable from "the schema disagreed", and the scenario is
+  # refused for a reason that names the wrong thing - which is the trap this
+  # file already records for the espeak argv. One run of the whole suite came
+  # back 14/10 off exactly this read-back and green on four reruns, which is
+  # the signature. An exit-0 python -c prints nothing, so success stays quiet
+  # without a blanket discard.
+  if ! rback=$(GSETTINGS_SCHEMA_DIR="$sch" WANT="$want" python3 -c '
+import os, sys
+from gi.repository import Gio
+got = Gio.Settings.new("org.shani.chronoa").get_boolean("kokoro-tts-enabled")
+if got != (os.environ["WANT"] == "true"):
+    sys.exit("schema read back %s, scenario asked for %s" % (got, os.environ["WANT"]))
+' 2>&1); then
+    echo "  (scenario $name: compiled schema did not take consent=$want: ${rback:-no output})" >&2
+    return 1
+  fi
 
   # A doctored package for the regression scenario: `soothing` deleted from the
   # preset table, so the stage must report a FAIL rather than a quiet SKIP. The
