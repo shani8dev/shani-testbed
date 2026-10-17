@@ -1013,3 +1013,39 @@ inside an `enter` slot, so the module has to be passed in by content
 (`base64 -d`), and the copy has to be verified — an earlier attempt failed
 silently against a path that does not exist there, and the regeneration
 succeeded anyway using the *old* module.
+
+## Correction: the switch fired in the guest but was lost before it reached disk
+
+`loader.conf` **exists** and still reads `default shanios-green-broken+3-0.conf`.
+The rewrite did not land. That is not the hook failing — it is how the test was
+ended.
+
+The guest was stopped with `SIGTERM` to qemu a few minutes into the boot, which
+is an abrupt power-off: the ESP write was still in the guest's page cache when
+the VM died, so it never reached the virtual disk, and the virtual disk is the
+host file behind `/dev/loop33`. `shani-testbed`'s own AGENTS.md warns about
+exactly this for `desktop`/`--boot`:
+
+> **any caller must budget its own outer timeout comfortably above `--timeout`
+> plus that 30 s, or risk the same thing** — a hard kill mid-write left both
+> `@blue` and `@green` missing once.
+
+I did the same thing to a boot and then had to spend several steps untangling it:
+reading through a second loop device (independent page caches, so it looks like
+the file is empty), concluding `loader.conf` had been *deleted*, and only
+finding it intact once `test clean` had detached `loop33` and the real state
+appeared. **Two wrong conclusions in a row, both from not controlling the read.**
+
+So the evidence stands where it stood — the hook's own log, emitted only after
+`sed -i` returned 0:
+
+    previous boot also failed (@blue); boot default switched
+        shanios-green-broken+3-0.conf -> shanios-green
+
+and the **on-disk end state is still unconfirmed.** To confirm it the guest has
+to be allowed to shut down cleanly rather than be signalled.
+
+**Harness gap, worth fixing:** `vmspawn` leaves its loop device attached when
+the VM dies, holding unflushed writes. `test clean` does detach it (and is the
+only thing that does), but until then every post-boot read of `install.img` is
+unreliable through any other loop device.
