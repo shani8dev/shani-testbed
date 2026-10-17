@@ -962,3 +962,54 @@ marker and the next boot landing on the good slot. Scenario C ran in
 `SHANIOS_HOOK_ONLY=1` mode, which is labelled as proving the hook fires and
 *not* that an unbootable candidate recovers. The broken UKI still has to be
 built through `gen-efi`'s own `--kernel-cmdline`.
+
+## THE FAILOVER FIRED
+
+    previous boot also failed (@blue); boot default switched
+        shanios-green-broken+3-0.conf -> shanios-green
+
+Seven boots, six of which produced only `boot_hard_failure written`. This one
+did the thing. That line is emitted **only after `sed -i` returned 0**, with
+`$CUR` read out of `loader.conf` and `$FALLBACK` chosen from the entries — so
+it is not an inference: the hook read a tries-counted default, mounted the ESP,
+found the first non-tries entry, and rewrote the line.
+
+**Two undeclared prerequisites, both found only by booting it.** Neither
+produces an error at build time or at boot, and both had to be fixed together:
+
+| what | where declared | symptom when missing |
+|---|---|---|
+| `cat cp ls readlink tr head basename` | `inst_multiple` | DIAG lines empty, `PRIOR_FAILURE` empty, the rewrite never runs |
+| `vfat` (+`fat`, `nls_*`) | `instmods` | `prior failure (@blue) but could not mount the ESP (/dev/vda1)` |
+
+The second one blames the *device* when the device is fine and the module is
+absent, and `mount`'s stderr is redirected to `/dev/null`, so nothing else
+says otherwise.
+
+**The scenario C used was `SHANIOS_HOOK_ONLY=1`.** It proves the hook fires. It
+does **not** prove that an unbootable candidate recovers — that still needs the
+broken UKI built through `gen-efi`'s own `--kernel-cmdline`.
+
+**Not independently confirmed:** the post-boot contents of `loader.conf`. The
+VM's loop device (`/dev/loop33`) is still attached holding unflushed writes, and
+detaching it needs host root. Reading the same file through a *different* loop
+device shows a stale view — two loop devices on one file have independent page
+caches, so "the file looks empty" there is an artefact of how it was read, not
+evidence about the hook. **The harness should detach the vmspawn loop device on
+exit**; leaving it attached makes every post-boot inspection unreliable.
+
+**Getting the fix in without a 40-minute image rebuild:** the UKI is generated
+by `gen-efi` inside the slot, so the corrected `module-setup.sh` was written
+straight into `@green` and the UKI regenerated through the same command
+`gen-efi` uses, reusing the existing UKI's own `.cmdline` so nothing else
+changed:
+
+    dracut --force --uefi --kver "$KV" --kernel-cmdline "$CMD" "$UKI.tmp"
+    sbsign --key MOK.key --cert MOK.crt ... --output "$UKI.tmp.signed"
+
+The regenerated UKI grew ~76 KB and `check-uki-initrd.sh` then passed every
+check on it, `vfat` included. **Note:** `/home/builduser/build` is not visible
+inside an `enter` slot, so the module has to be passed in by content
+(`base64 -d`), and the copy has to be verified — an earlier attempt failed
+silently against a path that does not exist there, and the regeneration
+succeeded anyway using the *old* module.
