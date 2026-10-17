@@ -112,19 +112,52 @@ C) # The reported failure. The candidate must genuinely fail to mount.
    # the hook switched shanios-green-broken+3-0 -> shanios-green, which are
    # different NAMES loading the same EFI binary. The hook compares entry names
    # and cannot see that, so the guard below is the only thing that can.
-   if [[ ! -f "$ESPMNT/loader/entries/shanios-blue.conf" ]]; then
-       for f in "$ESPMNT/loader/entries"/shanios-blue+*.conf; do
-           [ -f "$f" ] || continue
-           cp "$f" "$ESPMNT/loader/entries/shanios-blue.conf"
-           echo "    restored the good slot's plain entry: shanios-blue.conf"
-           break
-       done
+   # WHICH slot is the candidate has to be stated, not guessed. Scenario C builds
+   # the broken entry FROM the candidate's own entry, so it must know which one
+   # that is - and it used to take the first plain entry on the ESP. That is wrong
+   # the moment the healthy slot sorts first, and it produced a run that switched
+   # shanios-green-broken+3 -> shanios-green: different NAMES, the same broken
+   # EFI binary. The hook compares entry names and cannot see that, so it reported
+   # a recovery that booted the candidate that had just failed.
+   CAND="${SHANIOS_CANDIDATE:-}"
+   if [[ -z $CAND ]]; then
+       echo "SCENARIO C ABORT: SHANIOS_CANDIDATE must name the slot whose UKI is unbootable." >&2
+       echo "  Set it to the slot regen-uki.sh --break-root was run against, e.g." >&2
+       echo "      SHANIOS_CANDIDATE=green bash powercut-scenario.sh C" >&2
+       exit 2
+   fi
+   if [[ ! -f "$ESPMNT/loader/entries/shanios-${CAND}.conf" ]]; then
+       echo "SCENARIO C ABORT: no plain entry for the candidate slot '${CAND}'." >&2
+       echo "  Entries are:" >&2; ls "$ESPMNT/loader/entries" >&2
+       exit 2
+   fi
+   CAND_EFI=$(sed -n 's/^efi[[:space:]]*//p' "$ESPMNT/loader/entries/shanios-${CAND}.conf" | head -1)
+
+   # The healthy sibling needs a PLAIN entry. After a real post-flip deploy it has
+   # one; left over from earlier scenario runs it may only have a tries entry,
+   # which the hook skips, so the fallback would resolve to the candidate itself.
+   SIB=""
+   for f in "$ESPMNT/loader/entries"/*.conf; do
+       [ -f "$f" ] || continue
+       e=$(sed -n 's/^efi[[:space:]]*//p' "$f" | head -1)
+       [ "$e" = "$CAND_EFI" ] && continue
+       SIB="$f"; break
+   done
+   if [[ -z $SIB ]]; then
+       echo "SCENARIO C ABORT: no entry loads a UKI other than the candidate's (${CAND_EFI})." >&2
+       echo "  There is nothing to fall back TO, so a recovery could not be shown." >&2
+       exit 2
+   fi
+   SIB_STEM=$(basename "$SIB" .conf); SIB_STEM="${SIB_STEM%%+[0-9]*-[0-9]*}"
+   if [[ ! -f "$ESPMNT/loader/entries/${SIB_STEM}.conf" ]]; then
+       cp "$SIB" "$ESPMNT/loader/entries/${SIB_STEM}.conf"
+       echo "    restored the good slot's plain entry: ${SIB_STEM}.conf"
    fi
 
-   BAD="${GOOD}-broken+3-0"          # base name only; ".conf" is added below
-   cp "$ESPMNT/loader/entries/${GOOD}.conf" "$ESPMNT/loader/entries/${BAD}.conf"
+   BAD="shanios-${CAND}+3-0"      # finalize_boot_entries() names it shanios-<slot>+3-0
+   cp "$ESPMNT/loader/entries/shanios-${CAND}.conf" "$ESPMNT/loader/entries/${BAD}.conf"
    set_default "${BAD}.conf"
-   printf 'blue\n' > "$DATAMNT/boot_hard_failure"
+   printf '%s\n' "${SIB_STEM#shanios-}" > "$DATAMNT/boot_hard_failure"
 
    # Verify the fallback is a DIFFERENT BINARY, not merely a different name.
    # The hook's selection is reproduced here exactly - shell glob order over
@@ -211,8 +244,12 @@ sync
 cat <<EOF
 SCENARIO $SC READY
 
-  Boot it with:
+  Boot it with (scenario C REQUIRES SHANIOS_CANDIDATE - it refuses without it,
+  because it has to know which slot's UKI is the unbootable candidate):
     cd ../shani-install-media && ./test-env/test.sh vmspawn --commit --timeout=900
+
+  Two boots, and the second one is the whole point: it selects nothing, shows no
+  menu, and must land on the known-good slot. Reads as a pass only if it does.
 
   --commit is REQUIRED here, not a convenience. vmspawn boots a qcow2 overlay and
   discards it on exit, so without it nothing the guest wrote reaches install.img
