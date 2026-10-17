@@ -1503,3 +1503,47 @@ disk and not — the question this whole investigation turned on — and it was 
 happening. Fixed, and `tests/dracut-hook-deps.py` now diffs every external command
 the hooks run against the declared list, with three mutations confirmed red
 including the original `cat`/`cp` omission.
+
+## CORRECTION to "the mechanism works" — the write lands; the boot has not moved
+
+Earlier in this file I wrote that the failover mechanism works. That was about
+the **write landing on disk**, which is measured and true. It is not the same
+claim as **the machine booting the good slot**, and on that claim the evidence now
+says no.
+
+Three runs, all with `loader.conf default: shanios-blue` read back off the disk,
+all with the entries verified to point at the right binaries:
+
+| entries present | booted | evidence |
+|---|---|---|
+| blue only | **blue** | hook wrote `@blue`, `root mount succeeded`, login banner |
+| all four (incl. stale `shanios-blue+3-0`) | **green** | hook wrote `@unknown`, mount failed |
+| minus the stale `shanios-blue+3-0` | **green** | hook wrote `@unknown`, mount failed |
+
+The last row is the one that rules out the tidy explanation. With
+`shanios-blue.conf -> /EFI/shanios/shanios-blue.efi` the only entry of its type,
+`default shanios-blue` in loader.conf, and no competing tries entry — systemd-boot
+still loaded the broken UKI. `@unknown` is the hook's own word for "the root mount
+failed, so I cannot tell which slot I am", so that is the boot's own testimony.
+
+**What is proven:** the hook reads the marker, mounts the ESP, picks the plain
+entry, rewrites `default`, backs up what it replaced, and the rewrite is on disk
+and survives. That is a real fix to a real gap.
+
+**What is not proven:** that a machine then boots the good slot. Until that is
+shown, `+3-0` is not merely redundant — the recovery this hook exists to provide
+may not happen at all.
+
+**Not established, and I am not going to guess at it:** why systemd-boot ignores
+`default` here. Candidates I could rule out: the stale tries entry (row 3), a
+mis-pointed `efi` line (entries read back correct), and the hook's write not
+reaching disk (read back correct). What I cannot read off the console is which
+entry systemd-boot *highlighted* — `console-mode max` draws the whole menu with
+ANSI cursor positioning, so the entries interleave in the log and a grep cannot
+distinguish the selection.
+
+**The next step is not another scenario run.** Every entry on this ESP was created
+by scenario scripts layered on each other, and the titles are already duplicated
+(`shanios-green (Active)` on two entries), which is not a state any deploy
+produces. Settle it on a clean ESP from a real `configure`, with the two entries a
+post-flip deploy actually writes, and read back which one systemd-boot boots.
