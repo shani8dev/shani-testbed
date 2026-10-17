@@ -860,3 +860,47 @@ terms: **a hook that shells out must declare what it shells out to.**
 **Standing rule for this harness, from six instances of it: a substitution
 whose effect is not verified is not a step, and a guard is not a check until it
 has been shown to fail.**
+
+## Where the initramfs is actually built — which fixes how scenario C must work
+
+`build-base-image.sh` **never runs dracut**. The only dracut invocation in the
+whole pipeline is `shani-deploy/scripts/gen-efi.sh:1260`:
+
+    dracut --force --uefi --kver "$kernel_ver" \
+           --kernel-cmdline "$kernel_cmdline" "${uki_path}.tmp"
+
+So the initramfs that carries the hooks is built when a UKI is generated — at
+install (`configure.sh`) or deploy (`gen-efi`), not by the image build. Two
+consequences:
+
+1. **The finished base image says nothing about whether the hooks ship.** The
+   check has to be against a UKI, which means bootstrapping or deploying first.
+   It also means the `inst_multiple` fix takes effect at the next UKI build, not
+   at the next image build.
+2. **`--kernel-cmdline` is the by-construction lever scenario C needs.** The
+   broken candidate is a UKI generated with a different cmdline, not a UKI
+   patched afterwards:
+
+       dracut --force --uefi --kver <kver> \
+              --kernel-cmdline "<real cmdline with subvol=@no-such-slot>" \
+              <path-to-broken-uki>
+
+   This is the same path the product itself uses, so the bad UKI differs from a
+   good one only in the one value under test. Hand-patching a UKI's PE sections
+   is where the earlier six boots went, including one that corrupted the section
+   and needed exact-length padding to extract again.
+
+**Sequence once the image lands:**
+
+1. `bootstrap` a slot — runs the real `configure.sh` → `gen-efi` → dracut → UKI.
+2. Extract that UKI's initramfs and assert three things with `cpio`, not
+   `lsinitramfs` (which reported zero `99shanios` entries and was recorded as an
+   `lsinitramfs` quirk — that is exactly what to re-test):
+   - `var/lib/dracut/hooks/pre-mount/90-shanios-boot-failure-hook.sh` present
+   - `bin/cp` and `bin/cat` present (the `inst_multiple` fix)
+   - the failover text `previous boot also failed` present in the hook
+3. **Scenario B** — healthy candidate, hook must NOT fire.
+4. **Scenario C** — generate the broken UKI via `gen-efi`'s own dracut call with
+   a bad cmdline, point the entry at it, boot.
+
+B is the control that makes C mean anything, and it has still never been run.
