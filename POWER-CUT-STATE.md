@@ -1736,3 +1736,48 @@ with nothing selected and no operator.
 **The scenario refuses to guess which slot is the candidate.** That is the whole
 point of `SHANIOS_CANDIDATE`: guessing is what produced a "recovery" that booted
 the same broken binary under another entry name and reported itself a pass.
+
+## 2026-10-17: the hook fix is in the regenerated initramfs; the cmdline guard blocks the boot
+
+After the efivarfs fix (a zero-byte write does not delete a variable - see
+shani-install-media's AGENTS.md), the documented re-injection ran end to end:
+
+    install-module-into-slot.sh green
+      -> @green: module installed and byte-identical to the working tree (4 files)
+    regen-uki.sh --expect-in-initrd="rm -f" green
+      -> regenerated: 54196784 -> 87751776 bytes (delta 33554992)
+      -> VERIFIED: the initramfs really contains 'rm -f'
+      -> VERIFY FAILED: signed UKI carries a different cmdline than the one given to dracut
+
+**So the fixed hook is provably inside the regenerated UKI.** That was the open
+question - whether the change reaches the initramfs that actually boots - and it
+is answered.
+
+**What is NOT answered, and is not a product bug:** the cmdline guard failed, so
+the UKI now on the ESP does not carry the cmdline it was built with and a
+scenario-C boot through it would not test what it claims to. `regen-uki.sh`
+prints the failure and continues rather than aborting, which is the same
+"reported and carried on" shape as everything else in this file: the artifact is
+in place and wrong, with a FAIL line above it.
+
+The +33 MB size jump is the other unexplained half. It is the opposite of the
+documented stale-module signature (a UKI SMALLER than the one it replaced),
+which points at the rebuild taking different input rather than an older one -
+the slot here is on `7.2.10-arch1-1` while the published image was built against
+`7.2.6`, so the rebuilt initramfs is not byte-comparable to the original.
+
+**Two harness defects found, both pre-existing:**
+
+1. `install-module-into-slot.sh` defaults `SHANIOS_REPO_ROOT` to `/work`, but
+   `run_in_container.sh` mounts this repo at `/home/builduser/build`. It also
+   has to be passed INLINE (`run_in_container.sh /bin/bash -c 'VAR=... script'`),
+   because the runner forwards only an allowlist of environment variables - the
+   exact trap shani-install-media's AGENTS.md already records for
+   `CUSTOM_MIRROR_BASE_URL` and `BRANCH`. Three attempts failed on this before
+   it worked; the stale default is worth correcting at the site.
+2. `regen-uki.sh`'s cmdline verification does not stop the run. It is the one
+   check standing between a bad regeneration and a power-cut boot that measures
+   nothing, and it currently reports and continues.
+
+Until (2) aborts, scenario C through a regenerated UKI is not a valid
+measurement - which is why no boot was run on it.
