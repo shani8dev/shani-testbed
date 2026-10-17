@@ -41,7 +41,11 @@ _isovm_tools() {
   [[ -f /usr/share/edk2/x64/OVMF_CODE.4m.fd || -f /usr/share/edk2/x64/OVMF_CODE.fd ]] || missing+=(edk2-ovmf)
   command -v python3 >/dev/null || missing+=(python)
   (( ${#missing[@]} )) || return 0
-  log "iso-install: installing ${missing[*]} into the builder container (pacman cache is persistent)"
+  # Only the CACHE is persistent (it is bind-mounted); the builder container is
+  # --rm, so the installation itself is discarded and redone on every run. As of
+  # the shani-builder image carrying qemu-base/edk2-ovmf/swtpm this list is
+  # normally empty; the fallback is what runs on an older image.
+  log "iso-install: installing ${missing[*]} into the builder container (cache only - the --rm container discards the install)"
   local try
   for try in 1 2 3; do
     pacman -Sy --needed --noconfirm "${missing[@]}" && return 0
