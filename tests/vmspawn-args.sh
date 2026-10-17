@@ -150,6 +150,35 @@ fi
 OUT="$(run_vmspawn --image="$IMG" --timeout=60 --commit)"
 check "--commit is accepted, not refused as usage" "$(grep -c '^RC=2$' <<<"$OUT")" "0"
 
+# --- 5. the backing file must be writable when --commit is asked for --------
+# qemu-img commit writes to the overlay's BACKING file, which is the bind-mounted
+# source image. If that mount is :ro the commit cannot succeed - and the run
+# reports it as "the image is unchanged", which is true and useless.
+# Measured in the builder image against a real read-only bind: `commit` exits 1
+# with the guest's write absent from the base image, and `-U` does not help (it
+# bypasses image locks, not filesystem permissions).
+# $rec accumulates across every run, so each of these starts from empty.
+: > "$TMP/rec"
+OUT="$(run_vmspawn --image="$IMG" --timeout=60 --commit)"
+check "--commit bind-mounts the source writable" "$(grep -c '/src:ro' "$TMP/rec" 2>/dev/null || true)" "0"
+check "--commit bind-mounts the source explicitly rw" "$(grep -c '/src:rw' "$TMP/rec" 2>/dev/null || true)" "1"
+
+# `commit` needs NO flags to write into the backing file - that is what it is for.
+# `-r` is --rate-limit, and it made the whole flag fail on its first real use
+# ("Invalid rate limit specified: '-f'"), which an earlier version of this file
+# asserted the presence of. Assert the absence, so it cannot come back.
+check "--commit's commit carries no rate-limit/format flags" \
+  "$(grep -cE 'qemu-img commit -|qemu-img commit .* -r|qemu-img commit -r' "$TMP/rec" 2>/dev/null || true)" "0"
+check "--commit's commit is the plain commit form" \
+  "$(grep -c 'COMMIT ' "$TMP/rec" 2>/dev/null || true)" "1"
+
+# ...and the default keeps that mount read-only, so a boot that is NOT asked to
+# persist cannot touch the image even if something else in the guest tries to.
+: > "$TMP/rec"
+OUT="$(run_vmspawn --image="$IMG" --timeout=60)"
+check "without --commit the source stays mounted read-only" \
+  "$(grep -c '/src:ro' "$TMP/rec" 2>/dev/null || true)" "1"
+
 echo
 echo "${pass} passed, ${fail} failed"
 [[ "$fail" -eq 0 ]]

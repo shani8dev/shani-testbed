@@ -91,11 +91,21 @@ cmd_vmspawn() {
   trap 'docker rm -f "$VMSPAWN_CONTAINER" >/dev/null 2>&1 || true' EXIT
   log "vmspawn: ${src} (kvm=${kvm} tpm=${tpm} secure-boot=${secure_boot} timeout=${timeout}s)"
   log "console: ${log_file}"
+  # The source is bind-mounted read-only so a boot cannot scribble on the image
+  # through the filesystem -- except under --commit, which exists precisely to
+  # write to it. qemu-img commit writes into the overlay's BACKING file, and that
+  # path is refused by the kernel when the bind is :ro. Measured, not assumed:
+  # a read-only bind gives `commit` exit 1 with the guest's write absent from the
+  # base image. `-U` does NOT rescue it -- that bypasses image locks, not
+  # filesystem permissions.
+  local src_ro="ro" src_mode=""
+  (( commit )) && src_ro="rw" && src_mode=" (--commit: the image is being written)"
   docker run -d --name "$VMSPAWN_CONTAINER" --privileged --cgroupns=host \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /tmp \
-    -v "$(dirname "$src"):/src:ro" -v "${pacman_cache}:/var/cache/pacman/pkg" "${kvm_dev[@]}" \
+    -v "$(dirname "$src"):/src:${src_ro}" -v "${pacman_cache}:/var/cache/pacman/pkg" "${kvm_dev[@]}" \
     --user root --entrypoint /usr/lib/systemd/systemd "$builder" >/dev/null \
     || _vmspawn_die "could not start the systemd container"
+  [[ -n "$src_mode" ]] && log "vmspawn: source bind mounted rw$src_mode"
 
   local state="" i
   for (( i=0; i<60; i++ )); do
@@ -146,8 +156,14 @@ cmd_vmspawn() {
   #
   # --commit opts into writing the overlay back into the image. It is opt-in
   # for that reason: it mutates the image.
+  #
+  # No flags. `commit` already writes into the backing file -- that is what it is
+  # for -- and the two flags this originally carried were both wrong:
+  # `-r` is --rate-limit (so the `-f` after it was parsed as the limit's
+  # argument: "Invalid rate limit specified: '-f'", exit 1), and `-f` is not
+  # needed to name a format here. Measured in the builder image.
   if (( commit )); then
-    if docker exec "$VMSPAWN_CONTAINER" qemu-img commit -r -f "$overlay" >/dev/null 2>&1; then
+    if docker exec "$VMSPAWN_CONTAINER" qemu-img commit "$overlay" >/dev/null 2>&1; then
       log "committed the guest's writes into $(basename "$src") (--commit)"
     else
       _vmspawn_die "--commit: qemu-img commit failed; the image is unchanged"
