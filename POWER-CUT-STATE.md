@@ -904,3 +904,61 @@ consequences:
    a bad cmdline, point the entry at it, boot.
 
 B is the control that makes C mean anything, and it has still never been run.
+
+## SOLVED (twice over): the failover hook now runs, and scenario B passes
+
+**The DIAG lines appeared for the first time in six attempts**, because the
+binaries they were built from were finally declared:
+
+    DIAG by-label=/dev/vda2
+    DIAG mountpoint-before=boot_hard_failure current-slot downloads overlay ...
+    boot_hard_failure written for slot '@green'
+    pre-pivot: boot_hard_failure cleared — root mount succeeded
+
+That is `inst_multiple` confirmed, not inferred: `ls`, `readlink` and `tr` are
+what those lines are made of.
+
+**Scenario B — the control, never run before — passes.** Healthy tries-counted
+entry, no prior marker, and the hook correctly did not act: **zero** lines
+matching `previous boot also failed` or `boot default switched`. The machine
+booted `@green` and reached multi-user.
+
+## Scenario C then found the real blocker, which was a second link in the same chain
+
+    prior failure (@blue) but could not mount the ESP (/dev/vda1)
+
+The marker was read, `blkid -L shani_boot` resolved `/dev/vda1` — and the mount
+failed. Checked against the UKI that was about to boot:
+
+    overlay.ko  present
+    vfat.ko     *** ABSENT ***
+
+`instmods` declared `overlay` and never `vfat`. `mount -t vfat` cannot work
+without it, and the hook redirects mount's stderr to `/dev/null`, so this
+produces no error at build time, none at boot, and a message that blames the
+device rather than the module. Fixed (`4937087`).
+
+**So the mechanism had two independent reasons to be inert, both the same
+mistake:** the hooks' prerequisites were never declared — the binaries in
+`inst_multiple`, the module in `instmods`. Either one alone is enough, and
+neither produces a diagnostic. The DIAG lines were what finally made it
+visible, and only once they themselves stopped depending on undeclared
+binaries.
+
+**Also fixed in the harness along the way**, each found by running it:
+
+- scenario C still referenced `$MNT/esp` after `MNT` had become an array, so
+  every path resolved to `/mnt/scen/esp/esp` — the script had never worked past
+  mounting.
+- scenarios A and B passed entry names *without* `.conf`, while `loader.conf`
+  names them *with* it (`default shanios-blue.conf`). The `set_default` guard
+  caught it, which is what it is for.
+- the scenario relied on udev to create `${LOOP}p*` nodes; in a container it
+  does not, so it read as "partitions not identified" instead of "device node
+  missing". It builds them from sysfs now.
+
+**Still open:** the full field loop — a genuinely unbootable candidate leaving a
+marker and the next boot landing on the good slot. Scenario C ran in
+`SHANIOS_HOOK_ONLY=1` mode, which is labelled as proving the hook fires and
+*not* that an unbootable candidate recovers. The broken UKI still has to be
+built through `gen-efi`'s own `--kernel-cmdline`.
