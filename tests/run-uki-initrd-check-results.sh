@@ -25,8 +25,6 @@ mkinitrd() { # $1=dir  $2=omit-binary (optional)
         >"$1"/var/lib/dracut/hooks/pre-mount/90-shanios-boot-failure-hook.sh
     printf '#!/bin/sh\ntrue\n' \
         >"$1"/var/lib/dracut/hooks/pre-pivot/90-shanios-boot-success-clear.sh
-    printf '#!/bin/bash\ninst_hook pre-mount 90 "$moddir/x.sh"\n' \
-        >"$1"/usr/lib/dracut/modules.d/99shanios/module-setup.sh
     for b in printf sed blkid mount mountpoint mkdir rmdir rm cat ls readlink tr head basename; do
         [ "$b" = "$omit" ] && continue
         printf '#!/bin/sh\n' >"$1"/usr/bin/"$b"

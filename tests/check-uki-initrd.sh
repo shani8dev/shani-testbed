@@ -95,9 +95,13 @@ for UKI in "$@"; do
     P="$TREE/var/lib/dracut/hooks/pre-pivot/90-shanios-boot-success-clear.sh"
     if [ -f "$P" ]; then ok "pre-pivot success-clear hook present"; else bad "pre-pivot success-clear hook MISSING"; fi
 
-    # The module descriptor itself is what makes dracut include the hooks.
-    M=$(find "$TREE" -path '*dracut/modules.d/99shanios/module-setup.sh' 2>/dev/null | head -1)
-    if [ -n "$M" ]; then ok "99shanios module-setup.sh present"; else bad "99shanios module-setup.sh MISSING"; fi
+    # NOT asserted: modules.d/99shanios/module-setup.sh. dracut CONSUMES the
+    # module descriptor at build time and installs only the hooks and the
+    # binaries they name - the descriptor is a build-time input, not a runtime
+    # artifact, so its absence from the initramfs is correct. Asserting it was
+    # a FAIL on a perfectly good UKI, which is the exact shape this script
+    # exists to stop: an absence read as a finding. The hooks being present IS
+    # the evidence that the module was processed.
 
     # THE CHECK THAT MATTERS MOST. A hook that shells out to a binary dracut was
     # never told to install does not fail - it silently does nothing, and
