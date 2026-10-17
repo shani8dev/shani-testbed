@@ -1049,3 +1049,45 @@ to be allowed to shut down cleanly rather than be signalled.
 the VM dies, holding unflushed writes. `test clean` does detach it (and is the
 only thing that does), but until then every post-boot read of `install.img` is
 unreliable through any other loop device.
+
+## Unresolved: the hook reports the switch, and the disk disagrees
+
+Re-ran scenario C and let the guest shut down **cleanly** (`vmspawn` detached
+its own loop device; `test clean` found nothing to tear down), so the write-back
+explanation is ruled out. The failover line appeared again:
+
+    previous boot also failed (@blue); boot default switched
+        shanios-green-broken+3-0.conf -> shanios-green
+
+and afterwards, on disk:
+
+    -rwxr-xr-x 1 root root 96 Oct 17 03:46 loader.conf
+        default shanios-green-broken+3-0.conf      <- unchanged, mtime untouched
+
+96 bytes, same mtime as the entries written by scenario C. The hook's message
+is emitted only when `sed -i` returns 0, so in the guest the write succeeded;
+the block device did not keep it.
+
+**Not diagnosed.** The candidates I could distinguish between with the context
+left, none of them checked:
+
+- the ESP is mounted a second time by the hook while the boot loader already
+  has it, and the guest's writes are discarded when the initramfs goes away
+  rather than when the hook's own `umount` runs;
+- `vmspawn` gives the guest a loop device over something that is not the file
+  the host later reads, so guest writes and host reads never meet;
+- the initramfs's vfat mount is `rw` at the VFS level but the underlying
+  device is read-only, and `sed -i` on such a mount returns 0 on this kernel.
+
+**What this does and does not establish.** The hook runs, reads the marker,
+mounts the ESP, selects the right fallback and reaches the rewrite — three of
+the four links in the chain are now proven by observation, and the fourth
+(`instmods vfat`) was proven by measurement against the UKI. What is *not*
+established is that the machine's boot target actually moves, which is the only
+part a user cares about. **Do not record this mechanism as working.**
+
+The next thing to do is not another boot. It is to find out whether the guest's
+ESP writes reach `install.img` at all: write a marker file to the ESP from
+inside a booted slot, shut the guest down cleanly, and read it back from the
+host. That separates "the hook's write is lost" from "nothing written to this
+ESP from the guest ever lands", and it is one boot with no hook involved.
