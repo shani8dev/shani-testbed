@@ -1818,9 +1818,60 @@ file's own recurring shapes:
   selection is the absence-shaped read this file has been bitten by repeatedly.
 
 Still true and still unproven: the **efivarfs half**. Boot 2 printed no
-`cleared` line, because this harness's NVRAM has no `LoaderEntry*` variables to
-clear — `lib/vmspawn.sh` passes no `--nvram`, so each run gets a fresh one. The
-`rm -f` is proven to unlink a node on real efivarfs and the hook is proven to
-issue and verify the call, but **no boot in this harness has had a variable to
-delete.** Settling the 8-variable precedence gap needs one boot that both sets
-`LoaderEntryDefault` and reboots with the same NVRAM.
+`cleared` line, because `lib/vmspawn.sh` passes no `--nvram`, so each
+`vmspawn` run gets a fresh NVRAM and there was no `LoaderEntry*` variable to
+clear.
+
+**Correcting what I wrote here an hour ago: I said this harness cannot do it.**
+That was wrong, and it was the wrong kind of wrong — I had not read
+`lib/isoinstall.sh`. `iso-install --boot-only` reuses `$ISOVM/OVMF_VARS.fd`
+across runs (`lib/isoinstall.sh:428` resets it only when the disk inode changed
+or `--reset-firmware` was passed), so **two consecutive `--boot-only` boots of
+the same `install.img` share firmware state**, and `--console-exec` runs a
+command inside the guest. The gap is closable here, and the only reason it was
+not closed is that nobody had gone looking.
+
+## The efivar measurement now exists, and can say no before it is trusted
+
+`tests/efivar-boot-facts.sh` (runs inside the boot via `--console-put` +
+`--console-exec`, prints `EFIVARFACT key=value`) and
+`tests/efivar-boot-verify.sh` (turns that stream into verdicts), shaped exactly
+like the `driver-boot-*` pair above. The measurement settles this in **one
+boot rather than two**, because the property the hook needs is not "does the
+variable survive a reboot" — it is "can efivarfs be written, read back and
+unlinked". So the facts script sets a real `LoaderEntryDefault`, reads it back,
+removes it exactly as the hook does (`rm -f` plus a verification read), and
+confirms it is gone.
+
+The decisive check is **`efivar-variable-unlinks`**. If it is no, the hook's
+clearing is a silent no-op, every `LoaderEntry*` stays set, `LoaderEntryDefault`
+keeps outranking loader.conf, and the machine boots whatever it names — failing
+open into a broken boot.
+
+`tests/efivar-boot-verify-results.sh`: **16 pass, 0 fail**, host-only, no boot —
+ten scenarios and **six mutations, each confirmed load-bearing** (guard removed →
+the bad input is let through, which is the direction that proves the guard was
+doing the work). Asserting the mutated run stays *red* instead of turning
+*green* would have "passed" every mutation that changed nothing, since a guard
+that never fires is always red-free; getting that backwards failed here first
+and said so.
+
+Two of my own bugs found by writing it, both already recorded above as this
+repo's recurring shapes:
+
+- **The facts script emitted `node_mode` twice** (before and after the probe)
+  and the verifier takes `head -1`. On this harness — where no boot has a
+  pre-existing `Loader*` variable — the check would have read the *first*
+  value, `none`, and SKIPped forever while the probe went on to create the very
+  node whose mode it wanted. Two emissions of one key is the leftover-`case`
+  defect from `driver-boot-verify.sh`, reached from the other side.
+- **The duplicate-verdict guard grepped `$STREAM`** for `^RESULT ` — but
+  `$STREAM` holds `EFIVARFACT` lines. It matched nothing, `dupes` was always
+  empty, and the guard was permanently green: exactly the `grep -qE '^-rw'`
+  "exists only in the source" shape. It reads `_EMITTED` now, which the run
+  fills in itself.
+
+**Not yet run against a real boot.** That needs one `iso-install --boot-only`
+with `--console-put=/opt/shani-testbed/tests/efivar-boot-facts.sh:...`, and the
+verifier is proven able to say FAIL first, which is the whole reason the results
+file exists.
