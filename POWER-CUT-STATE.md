@@ -1871,7 +1871,54 @@ repo's recurring shapes:
   "exists only in the source" shape. It reads `_EMITTED` now, which the run
   fills in itself.
 
-**Not yet run against a real boot.** That needs one `iso-install --boot-only`
-with `--console-put=/opt/shani-testbed/tests/efivar-boot-facts.sh:...`, and the
-verifier is proven able to say FAIL first, which is the whole reason the results
-file exists.
+### Two boots of it, and both changed the measurement
+
+Run via `iso-install -p gnome --boot-only --iso=iso-latest --console-put=
+/opt/shani-testbed/tests/efivar-boot-facts.sh:/tmp/efivar-facts.sh
+--console-exec="bash /tmp/efivar-facts.sh" --boot-timeout=900`. Both reached the
+guest (`rc=0`, kernel `7.2.6-arch2-1`) and both changed what the file measures.
+
+**The reason the clearing branch had nothing to do is not the one I gave.** I
+said this harness has no `Loader*` variables. It has **ten**:
+
+    LoaderDevicePartUUID-  LoaderEntries-      LoaderEntrySelected-
+    LoaderFeatures-        LoaderFirmwareInfo- LoaderFirmwareType-
+    LoaderImageIdentifier- LoaderInfo-         LoaderPcrSMBIOS-
+    LoaderTpm2ActivePcrBanks-      (all -4a67b082-0a4c-41cf-b6c7-440b29bb8c4f)
+
+What it has is none of the hook's **four** targets — `LoaderEntrySysFail`,
+`LoaderEntryOneShot`, `LoaderEntryPreferred`, `LoaderEntryDefault` are all
+absent. systemd-boot creates those only once something sets them, which on a
+machine nobody has ever pressed a boot-menu key on is nothing. Same observation,
+correct reason.
+
+**The check was measuring the wrong syscall, and it took two boots to see it.**
+It created a probe variable, read it back, then deleted it — and **the create
+fails with EINVAL**, so it could never reach the delete, which is the only
+operation the hook performs. It returned `delete_ok=no` and the verifier duly
+reported *"rm -f did not remove the variable, so the hook cannot clear
+LoaderEntry\* and the failover fails open"*: a verdict about the product, from a
+probe that never created anything, pointing the fix at an `rm -f` never reached.
+An error naming the wrong thing is worse than none, because it invites a fix to
+the wrong code.
+
+So the measurement now **unlinks something that already exists** —
+`LoaderEntrySelected-`, same class, real node, and systemd-boot rewrites it every
+boot so removal is self-healing. Whether efivarfs accepts a *create* is recorded
+separately as `creatable`/`create_errno` and **gates nothing**, because "can this
+platform be told what to boot" and "can it be told to forget" are different
+questions and merging them is the misattribution above.
+
+Three states where there were two: no target variable is a **SKIP naming the
+reason**, not a FAIL. A FAIL would claim the hook is broken on every fresh
+machine; a PASS would be the examined-nothing green.
+
+**A fix for the fix that did not work.** The errno was captured by redirecting
+`2>/tmp/e`, and the guest's debug shell answered `No such file or directory`, so
+`set_errno` came out `unknown` — a fix for *stop guessing the errno* that now
+guessed nothing at all. Captured with `2>&1 1>&3` instead.
+
+**Still unexplained, and not claimed otherwise:** `LoaderEntryDefault` *and* a
+brand-new `ShaniProbeVar` both return EINVAL, so the refusal is not about the
+variable's name or its class. `create_errno` carries it out of the next boot
+rather than it being guessed at from the armchair.
