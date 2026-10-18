@@ -82,6 +82,7 @@ check() {
 
 total=0
 violations=()
+review=()
 
 for root in "${ROOTS[@]}"; do
     [[ -d "$root" ]] || { echo "FAIL: no such directory: $root"; fail=$((fail+1)); continue; }
@@ -116,6 +117,50 @@ for root in "${ROOTS[@]}"; do
                 violations+=("${f#${here}/}:${n}: -> ${target}")
             fi
         done < <(grep -nE '[^>]>[[:space:]]*' "$f" 2>/dev/null | grep -v '^\s*#')
+
+        # A redirect target built from a variable is a BLIND SPOT, not a pass.
+        # `> ${UKI_BOOT_ENTRY}/${entry_filename}` contains no literal
+        # loader/entries path, so pass 1 cannot see it - and that one was real.
+        # Listing them turns an invisible gap into a visible one.
+        while IFS=: read -r n rest; do
+            [[ -n "$n" ]] || continue
+            [[ "$rest" =~ ^[[:space:]]*# ]] && continue
+            if [[ "$rest" =~ $REDIR_RE ]]; then
+                vt="${BASH_REMATCH[1]}"
+                [[ "$vt" == *.tmp || "$vt" == *.tmp.* || -z "$vt" ]] && continue
+                [[ "$vt" == *'$'* ]] || continue
+                # Gate on the TARGET's own shape, not on the file. A file-level
+                # gate listed ${new}MB, $(format_bytes and $* as "ESP writes",
+                # because shani-deploy.sh mentions the ESP somewhere - and a
+                # review list that lists everything is a review list nobody reads.
+                [[ "$vt" =~ (efi|EFI|\.conf|loader|entry|LOADER) ]] || continue
+                review+=("${f#${here}/}:${n}: variable target -> ${vt}")
+            fi
+        done < <(grep -nE '[^>]>[[:space:]]*' "$f" 2>/dev/null | grep -v '^\s*#')
+
+        # --- pass 2: cp / mv / install / tee DESTINATIONS ---
+        # `cp a b` truncates b before writing and has NO redirect operator, so
+        # pass 1 cannot see it at all. That is the shape that was missed in
+        # shani-deploy.sh's rollback UKI copy.
+        #
+        # `mv "$x.tmp" "$loader_conf"` is the CORRECT staging rename and must not
+        # be flagged, so an mv with any .tmp argument is exempt.
+        while IFS=: read -r n rest; do
+            [[ -n "$n" ]] || continue
+            [[ "$rest" =~ ^[[:space:]]*# ]] && continue
+            if [[ "$rest" =~ (^|[^[:alnum:]_])(cp|mv|install|tee)[[:space:]] ]]; then
+                cmd="${BASH_REMATCH[2]}"
+                case "$rest" in
+                    *.tmp*|*.tmp.*) [[ "$cmd" == mv ]] && continue ;;
+                esac
+                dest="${rest##*[[:space:]]}"
+                dest="${dest%[\;\)\]]*}"; dest="${dest%[\"\']}"
+                [[ -z "$dest" || "$dest" == -* ]] && continue
+                if [[ "$dest" =~ $CRIT_RE ]]; then
+                    violations+=("${f#${here}/}:${n}: $cmd dest -> ${dest}")
+                fi
+            fi
+        done < <(grep -nE '(^|[^[:alnum:]_])(cp|mv|install|tee)[[:space:]]' "$f" 2>/dev/null | grep -v '^\s*#')
     done < <(find "$root" -maxdepth 1 -name '*.sh' -type f | sort)
 done
 
@@ -127,6 +172,14 @@ done
 
 echo
 echo "critical-writes: $total script(s) scanned, $fail violation(s)"
+
+# Blind spots, reported rather than hidden. These are not failures - they are
+# writes this check cannot resolve, listed so a reader knows what was NOT
+# examined instead of having to rediscover it from a black screen.
+for r in "${review[@]+"${review[@]}"}"; do
+    echo "REVIEW (unresolvable target): $r"
+done
+[[ ${#review[@]} -gt 0 ]] && echo "  ${#review[@]} write(s) to a variable-built path - not decidable by this check"
 
 # A scanner that examined nothing has not passed. This is the difference between
 # "no violations" and "no files", and only one of them is a result.
