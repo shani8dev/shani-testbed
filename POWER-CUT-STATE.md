@@ -1922,3 +1922,188 @@ guessed nothing at all. Captured with `2>&1 1>&3` instead.
 brand-new `ShaniProbeVar` both return EINVAL, so the refusal is not about the
 variable's name or its class. `create_errno` carries it out of the next boot
 rather than it being guessed at from the armchair.
+
+---
+
+# 2026-10-18, later: the machine actually recovers — and the fix I made first made it worse
+
+The entry above closes the investigation on the **deploy** path, where a real
+deploy had run and `LoaderEntryDefault` existed. This session went after the
+other half: a **first install**, which is the case in the original report
+("even from the first installation"), and where `configure.sh` deliberately
+omits `bootctl set-default`, so there is no `LoaderEntryDefault` to outrank
+`loader.conf` at all.
+
+Fifteen defects were measured. Eight things I proposed before reading or running
+the relevant code were wrong, and each is recorded below at the point it was
+wrong, because the wrongness is the useful part.
+
+## The regression: I removed the hook's only trigger
+
+Earlier the same day, `configure.sh` was changed (`9ed3e34`) to write plain
+entries on both slots, on the reasoning that the `+3-0` tries counter is frozen
+on this platform and so is dead weight.
+
+The counting is frozen. The conclusion does not follow. The suffix is not a
+counter here, it is a **marker**, and the dracut hook's failover guard is
+precisely *"the current default carries a tries counter, which is exactly how a
+deploy marks an unproven candidate"*. Measured, on a real ESP written by that
+version of the script:
+
+    shanios-hook: prior failure (@unknown) but default 'shanios-blue.conf'
+    carries no tries counter - not an unproven candidate, leaving it
+
+Which is the reported symptom — a machine broken from its very first
+installation — produced by the change meant to help it. A first install is
+exactly where there is no deploy and therefore nothing else in the chain.
+Restored (`27cf14b`).
+
+The same comment also asserted the counter would count down to zero on a healthy
+install, be marked bad, and never be unsealed. It cannot: a frozen counter never
+runs out. That harm was imagined, and it was part of the justification.
+
+## The guard was dead code on any correctly-configured machine
+
+`case "$CUR" in *+*-*)` decided "is this an unproven candidate" by
+pattern-matching the `default` **string** in `loader.conf`, never looking at the
+filesystem.
+
+Upstream commit `4301ad0` ("boot: Strip boot counter from entry id", fixes
+#38813, 2025-09-11) made `boot_entry_parse_tries()` *set* `entry->id` with the
+counter removed:
+
+    entry->id = xasprintf("%.*ls%ls", (int) prefix_len - 1, file, suffix);
+
+So on the systemd this image ships (v262), `shanios-blue+3-0.conf` has id
+`shanios-blue.conf`, `loader.conf`'s default is `efi_fnmatch`'d against that id,
+and **the base ID is the spelling that matches**. A correctly-written
+`loader.conf` therefore names the plain id even when the entry on disk is marked
+— precisely the case the guard could not match. It could only fire when
+`loader.conf` used the one spelling systemd-boot does *not* match.
+
+Two files in this workspace asserted opposite things about this. Both were
+wrong in different directions. I changed `configure.sh` to write the marked
+default on the strength of the wrong one, and reverted it.
+
+Fixed by resolving the default against the entries directory instead of
+re-deriving it from a string (`46bee73`).
+
+## The marked-entry lookup asked for a file that cannot exist
+
+Building the lookup as `$ENTRIES/$CUR` + `+*-*.conf` asks for
+`shanios-blue.conf+3-0.conf`. The counter goes *before* the `.conf`. It matched
+nothing, and the guard reported "carries no tries counter" — which is a *wrong
+answer*, and that is the only reason it was findable at all (`76a8202`).
+
+## Two harness bugs, both of which had been invalidating the tests
+
+**`install-module-into-slot.sh` copied only `*.sh`.**
+`cp -f "$SRC"/*.sh "$DEST/"` dropped `shanios-recover-default.service`, so no
+regenerated initramfs contained the recovery unit, and every boot reported
+
+    shanios-recover-default.service does not exist
+
+which reads as a systemd or unit-path fault and is neither. **Every test of the
+in-boot recovery until now tested a unit that was never installed.** It now
+copies every file and refuses any file type it does not recognise (`d5bc062`).
+
+**`vmspawn --commit` raced qemu's exit.** `pkill` is asynchronous; the commit
+ran immediately after it, while qemu still held the backing file:
+
+    --commit: qemu-img commit failed; the image is unchanged
+
+which names the commit and not the cause. The cost was not the failed commit but
+what it did to the reading of the run: that boot's recovery rewrote
+`loader.conf`, cleared the marker, rebooted and reached a login prompt — all
+visible on the console — and every on-disk check then read the *pre-boot* state,
+because nothing had been committed. `"default is still blue, marker still
+present"` is exactly what a boot where the recovery did nothing also looks like.
+Now bounded-waits for qemu to actually exit (`429aed3`).
+
+## The unit fought itself
+
+    WantedBy=emergency.target
+    Conflicts=emergency.target
+
+Arming created the symlink; `emergency.target` started; `Conflicts` told systemd
+to stop the unit. It could never run, by construction. Evidenced by the order of
+three lines on one boot — `unit-present=yes`, then `armed emergency-mode
+default recovery`, then `Reached target Emergency Mode.` — and then nothing from
+the unit at all.
+
+It also could not see its own guard's input: the marker lives on `@data`, and
+the hook's mount is torn down before `emergency.target` fires. It now mounts
+`@data` for itself, as it already did for the ESP.
+
+## The loop guard I claimed was vacuous
+
+With the unit running, it rebooted into the slot the hook had already switched
+to — and logged the decision as *"is not the failed slot (@unknown)"*. `@unknown`
+is what the hook writes whenever `rootflags` does not parse; the hook refuses to
+guess so that `shani-auto-rollback` cannot act on a bad slot. A name appearing in
+no entry filename made `case "$CUR" in *"$FAILED_SLOT"*)` vacuously false, so
+that branch fired on **every** boot and the loop it was said to close was
+unreachable. The claim was wrong because the guard had never been tested against
+a marker that does not say what it was assumed to say.
+
+The fix was not to loosen the hook. It was to stop asking the wrong party: the
+hook has already resolved the default to the entry the bootloader chose, so it
+records that id to `@data` as `shanios_switched_from`, and the unit compares
+against it. Read, not inferred. Absent that file, behaviour is unchanged and the
+marker-based path applies (`5e0a878`).
+
+## What is measured, on real firmware
+
+Starting state: default `shanios-blue.conf` → `shanios-blue+3-0.conf`, whose UKI
+carries `subvol=@no-such-slot`.
+
+| boot | what happened |
+|---|---|
+| 1 | no prior marker → **did not arm** → wrote marker → emergency shell |
+| 2 | marker present → armed → resolved → rewrote `loader.conf` → unit ran → rebooted |
+| 3 | landed on the good slot |
+
+```
+shanios-hook: default resolved to marked entry 'shanios-blue+3-0.conf' on disk
+shanios-hook: previous boot also failed (@blue); boot default switched
+  shanios-blue+3-0.conf -> shanios-green.conf
+shanios-recover: default 'shanios-green.conf' is not 'shanios-blue+3-0.conf',
+  the entry the hook switched away from - reboot is safe; rebooting
+```
+
+On disk afterwards, read from the committed image:
+
+```
+ESP default:     default shanios-green.conf
+entries:         shanios-blue+3-0.conf  shanios-green.conf   (nothing deleted)
+marker:          ABSENT
+switched_from:   ABSENT
+```
+
+**A machine with an unbootable default returns to a login prompt unattended, in
+one reboot, on a first-install ESP.** No boot entry is ever deleted; the default
+is the only thing rewritten.
+
+## The image carries it
+
+`bootstrap -p gnome -d 20261018` (the real `install.sh` + `configure.sh` over
+the freshly built image) gives a slot whose module directory holds all six files,
+with `switched_from` recorded and read, no `Conflicts=`, the recovery script mode
+`755`, and the ESP mount's own error surfaced at line 159 of the hook.
+
+## Not done, deliberately
+
+`cache/output/gnome/latest.txt` still names `shanios-20260925-gnome.zst`. The
+20261018 image is built, signed and verified, but **not promoted** — that runs
+through `promote-stable.sh` behind `validate-image.sh`, and a build landing on
+disk is not the same as a build being offered to users.
+
+## The pattern, since it is the transferable half
+
+Eight proposed fixes were wrong before any of them were read or run. The two
+things that ever worked were running the real thing and reading what it actually
+printed — including when the print contradicted the conclusion it was collected
+for. Four separate false signals came from my own verification steps (a `grep`
+pattern I had renamed out of existence, a `tail` that cut the file I was
+counting, `grep -q` against a path that did not exist reporting success, and a
+decompression run that answered a question already answered).
