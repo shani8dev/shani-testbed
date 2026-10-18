@@ -70,12 +70,36 @@ with a positive case **and** a negative control.
 
 ```bash
 for f in testbed lib/*.sh slot-tests/*.sh tests/*.sh; do bash -n "$f"; done
+tests/critical-writes.sh      # no script truncates a boot-critical ESP file in place
 python3 -m py_compile lib/*.py mcp/*.py
 tests/run-app-actions.sh        # real Xvfb + GTK4/libadwaita test of lib/app.sh + lib/a11y_client.py, in docker
 tests/run-web-client.sh         # real headless Chromium test of lib/web_client.py + web_serve.py, in docker
 tests/chronoa-singing-results.sh  # proves slot-tests/chronoa-singing.sh's style checks can go red (host, no docker)
 tests/sysctl-hardening-results.sh  # proves slot-tests/sysctl-hardening.sh's comparisons can go red (host, no docker)
 ```
+
+- **`tests/critical-writes.sh` is the suite's FIRST step, and that placement is
+  the point (2026-10-18).** Nine non-atomic writes to boot-critical files existed
+  across `shani-deploy` and `os-installer-config` - `loader.conf`, the type-1
+  boot entries, the rollback UKI copy, and the first-install secure-boot
+  binaries including `BOOTX64.EFI` - and **every step the suite ran passed while
+  all of them were present**, because the suite exercises the deploy and none of
+  them looks at the source. A power cut is not in the test set.
+
+  So the check is static, and runs first: a violation costs 0 seconds instead of
+  five minutes of bootstrap and deploy. Verified in both directions — with a
+  planted in-place `loader.conf` write the suite reports `FAIL(1)` at 0s and
+  skips every later step; reverted, it is green again.
+
+  Its own negative control lives inside it (a fixture that writes
+  `loader.conf` directly must be counted exactly once), and it refuses to PASS
+  when it scans **zero** scripts — which is the state its first run was in,
+  because the sibling roots resolved one directory short and "no files" was
+  reported as "no violations". Read its header before trusting a PASS: it
+  matches a literal critical path after a redirect, or a `cp`/`mv`/`tee`
+  destination, and **cannot see a target built from shell variables**. Two real
+  violations got past it for exactly that reason before the variable case was
+  at least surfaced as an unresolvable `REVIEW` line.
 
 ## Extend the harness — don't write one-off test scripts
 
