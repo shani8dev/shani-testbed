@@ -3,6 +3,9 @@
 #
 #   tests/critical-writes.sh [root...]      (defaults to the sibling checkouts)
 #
+# Wired into the harness: `build.sh test suite` runs it as its FIRST step,
+# because a check nothing calls is not a gate.
+#
 # WHY THIS EXISTS. Two real power-cut defects, found 2026-10-18 by reading the
 # deploy's boot-flip for an unrelated reason, not by any test:
 #

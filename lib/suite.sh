@@ -72,6 +72,16 @@ cmd_suite() {
     (( rc == 0 )) || failed=1
   }
 
+  # Static, and FIRST: no point spending five minutes bootstrapping and
+  # deploying only to discover that a script truncates a boot-critical file in
+  # place. Every power-cut defect this harness now guards against was invisible
+  # to the steps below - they exercise the deploy, not the source.
+  #
+  # A check nothing calls is not a gate (this workspace has one of those
+  # recorded in shani-install-media/AGENTS.md about validate-image.sh), so this
+  # line is what makes the check real rather than decorative.
+  _suite_step critical-writes bash "${TESTBED_ROOT}/tests/critical-writes.sh" || true
+
   _suite_step clean cmd_clean
   if (( ! failed )); then _suite_step ca cmd_ca || true; fi
   if (( ! failed )); then _suite_step bootstrap cmd_bootstrap "${boot_args[@]}" || true; fi
