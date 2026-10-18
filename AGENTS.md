@@ -247,6 +247,45 @@ containers first.
 
 ## Audit-verified known issues (confirmed present)
 
+- **`install-module-into-slot.sh` copied only `*.sh`, so no regenerated initramfs
+  ever contained the dracut module's unit file (fixed 2026-10-18).** The copy
+  was `cp -f "$SRC"/*.sh "$DEST/"`, which silently dropped
+  `shanios-recover-default.service`. Every firmware boot in the power-cut
+  investigation then reported `shanios-recover-default.service does not exist` -
+  a message that names systemd and the unit search path, and is neither. The
+  real cause was this line.
+
+  **What it cost:** every test of the in-boot recovery ran against a unit that
+  was never installed, for an entire investigation. It is the same shape as
+  everything else in this file's history - a check that cannot fail because its
+  subject is not present - except that here the *fixture* was missing, so the
+  subject under test was absent and the harness reported a result anyway. The
+  file count it printed (`5 files`) looked plausible; the unit was not in it.
+
+  It now copies every file in the module and **refuses any file type it does not
+  recognise**, so the next file added to a module cannot be dropped the same
+  quiet way, and prints the unit count explicitly rather than a bare total.
+
+- **`vmspawn --commit` raced qemu's exit and blamed `qemu-img` (fixed 2026-10-18).**
+  `pkill -f qemu-system` is asynchronous, and `qemu-img commit` ran immediately
+  after it while qemu still held the backing file open. The result was
+
+      --commit: qemu-img commit failed; the image is unchanged
+
+  which names the commit and not the cause. The real damage was not the failed
+  commit but the reading of the run: a boot whose guest rebooted ITSELF had its
+  recovery rewrite `loader.conf`, clear its marker and reach a login prompt -
+  all visible on the console - and then every on-disk check read the **pre-boot**
+  state. That is byte-identical to a boot where the recovery did nothing, which
+  is the specific question `--commit` exists to answer. A commit that silently
+  loses the guest's writes is worse than no `--commit`, because it converts an
+  honest "writes discarded" into a confident wrong answer.
+
+  Now bounded-waits (30 s) for qemu to actually be gone before touching the
+  image. **Generalises: any commit/flush/close that follows a kill must wait for
+  the killed thing to be gone, or it reports on the wrong moment.**
+
+
 - **`--crawl=N` reported PASS having crawled nothing, and the real docs site hit
   it (2026-10-01).** Found while verifying a `shani-docs` change: the run said
   `RESULT crawl PASS (0/0 same-origin pages clean)` and I read it as a pass.
