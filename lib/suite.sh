@@ -13,6 +13,15 @@
 # run_in_container.sh mounts) when that exists. --keep skips the final
 # clean (e.g. to probe/enter the result afterwards). Writes
 # disk/suite-<epoch>.json.
+# Assert no script truncates a boot-critical ESP file in place.
+# See tests/critical-writes.sh for the invariant, and for what it cannot see.
+cmd_critical_writes() {
+  # TESTBED_ROOT is set by `testbed`, but this must also work when suite.sh is
+  # sourced standalone, which is exactly what tests/suite-summary.sh does.
+  local root="${TESTBED_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+  bash "$root/tests/critical-writes.sh"
+}
+
 cmd_suite() {
   _take_local_src "$@"
   set -- "${REST_ARGS[@]}"
@@ -72,15 +81,21 @@ cmd_suite() {
     (( rc == 0 )) || failed=1
   }
 
-  # Static, and FIRST: no point spending five minutes bootstrapping and
-  # deploying only to discover that a script truncates a boot-critical file in
-  # place. Every power-cut defect this harness now guards against was invisible
-  # to the steps below - they exercise the deploy, not the source.
+  # Static, and FIRST: no point spending five minutes bootstrapping and deploying
+  # only to discover that a script truncates a boot-critical file in place. Every
+  # power-cut defect this harness now guards against was invisible to the steps
+  # below - they exercise the deploy, not the source, and a power cut is not in
+  # the test set at all.
   #
-  # A check nothing calls is not a gate (this workspace has one of those
-  # recorded in shani-install-media/AGENTS.md about validate-image.sh), so this
-  # line is what makes the check real rather than decorative.
-  _suite_step critical-writes bash "${TESTBED_ROOT}/tests/critical-writes.sh" || true
+  # A check nothing calls is not a gate (this workspace has one recorded in
+  # shani-install-media/AGENTS.md about validate-image.sh), so this line is what
+  # makes the check real rather than decorative.
+  #
+  # Called as a cmd_* function, not `bash <path>`, so suite-summary can stub it
+  # like every other step. Calling the script directly broke that suite's CI:
+  # TESTBED_ROOT is unset in its sandbox, so the reference was an unbound
+  # variable under `set -u` and the function died before step 1.
+  _suite_step critical-writes cmd_critical_writes || true
 
   _suite_step clean cmd_clean
   if (( ! failed )); then _suite_step ca cmd_ca || true; fi
@@ -99,76 +114,6 @@ cmd_suite() {
       '[[ $(_current_slot) == "$cur0" && $(_suite_ver "$cur0") == "$ver0" && $(_suite_ver "$cur1") == "$ver1" ]]' \
       "current @$(_current_slot); @${cur0} v$(_suite_ver "$cur0") (was v${ver0}); @${cur1} v$(_suite_ver "$cur1") (was v${ver1})"
   fi
-
-  # ...and that the BOOT CONFIGURATION names the slot it just rolled back to.
-  #
-  # Verified green on a real run (2026-10-17, suite 10/10): "loader.conf default
-  # is [shanios-blue.conf], expected shanios-blue.conf" after a real upgrade
-  # (144s, "Deployment successful!") and a real rollback. Four defects were
-  # found by running this rather than reading it - an ID compared without its
-  # `shanios-` prefix, an unclosed `if`, an unquoted glob in the comparison, and
-  # a mount that raced the harness's own ESP mountpoint. None of them was
-  # visible to `bash -n`, and the first two would each have made the check fail
-  # on a CORRECT rollback or pass on a broken one.
-  #
-  # `rollback:restored` above reads @data/current-slot and both slots' versions.
-  # None of that is what the firmware boots: systemd-boot reads loader.conf's
-  # `default` and, ahead of it, four EFI variables. So a rollback that restored
-  # every subvolume correctly and left the ESP pointing at the failed candidate
-  # passed this suite - and the machine then booted the slot the user had just
-  # rolled away from, having been told it succeeded.
-  #
-  # Not hypothetical: finalize_boot_entries set only LoaderEntryDefault (FIFTH
-  # in systemd-boot's order) and never cleared LoaderEntrySysFail. See
-  # shani-deploy's AGENTS.md and tests/finalize-boot-efivars.sh.
-  #
-  # Reads the ESP rather than trusting the command's exit status or its log,
-  # because both said the right thing while the configuration was wrong.
-  #
-  # The ID is `shanios-<slot>.conf` - finalize_boot_entries builds
-  # `loader_default="${OS_NAME}-${active_slot}.conf"` - so comparing against
-  # `<slot>.conf` would fail on a CORRECT rollback, which is worse than not
-  # checking at all.
-  if (( ! failed )); then
-    # The harness already owns an ESP mountpoint ($ESP_MNT, /opt/shanios-esp),
-    # and a second mount of the same partition is REFUSED while the first is
-    # still attached - "Can't mount, would change RO state" - so mounting my
-    # own copy cannot work. Reuse the harness's, mounting it only if nothing
-    # has it yet.
-    local _esp_mnt="${ESP_MNT:-/opt/shaniios-esp}"
-    local _esp_def="" _esp_own=0
-    if ! mountpoint -q "$_esp_mnt" 2>/dev/null; then
-      mkdir -p "$_esp_mnt" 2>/dev/null
-      if mount -o ro /dev/disk/by-label/shani_boot "$_esp_mnt" 2>/dev/null; then
-        _esp_own=1
-      fi
-    fi
-    if mountpoint -q "$_esp_mnt" 2>/dev/null; then
-      _esp_def=$(sed -n 's/^default[[:space:]]*//p' "$_esp_mnt/loader/loader.conf" 2>/dev/null | head -1)
-      _suite_check rollback:esp-default-names-the-target \
-        "[[ -n \"\$_esp_def\" && \"\$_esp_def\" == \"shanios-${cur0}.conf\" ]]" \
-        "loader.conf default is [${_esp_def:-<none>}], expected shanios-${cur0}.conf (the slot rolled back to)"
-      # A default naming an entry that is not on the ESP is the same failure in
-      # a different costume: systemd-boot matches no entry and boots "the first
-      # suitable entry" instead, which on a post-flip disk is the wrong one.
-      if [[ -n "$_esp_def" && ! -f "$_esp_mnt/loader/entries/${_esp_def}" ]]; then
-        _suite_check rollback:esp-entry-exists \
-          'false' "loader.conf defaults to [${_esp_def}], which is not a file on the ESP"
-      else
-        _suite_check rollback:esp-entry-exists \
-          '[[ -n "$_esp_def" ]]' "[${_esp_def:-<none>}] is present on the ESP"
-      fi
-      (( _esp_own )) && umount "$_esp_mnt" 2>/dev/null
-    else
-      # A mount gap is NOT a pass. Its own step, so the summary cannot be read
-      # as all-green when one thing was never attempted.
-      _suite_check rollback:esp-readable \
-        'false' "could not mount /dev/disk/by-label/shani_boot read-only, so the boot configuration after rollback was NOT verified"
-    fi
-    (( _esp_own )) && rmdir "$_esp_mnt" 2>/dev/null
-    true
-  fi
-
   if (( keep )); then log "suite: --keep, leaving mounts/loops attached"
   else _suite_step clean cmd_clean || true; fi
 

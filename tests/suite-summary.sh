@@ -35,6 +35,11 @@ run_case() {  # <name> <failing-step|none>
         if [[ "${DESTRUCTIVE:-}" ]]; then echo 20260924 > "$MNT/@blue/etc/shani-version"   # old behaviour: copy of the new slot
         else echo blue > "$MNT/@data/current-slot"; fi; }
       source "'"$here"'/lib/suite.sh"
+      # AFTER the source: lib/suite.sh defines this, so a stub set before the
+      # source gets overwritten. Stubbed because this test is about the SUMMARY,
+      # and running a repo-wide static scan inside it would make a suite-summary
+      # failure depend on the state of two sibling checkouts.
+      cmd_critical_writes() { :; }
       cmd_suite -p gnome
     ' 2>&1
   )" || rc=$?
@@ -43,8 +48,27 @@ run_case() {  # <name> <failing-step|none>
   if [[ "$failing" == none ]]; then
     check "$name: exits 0"                    "[[ $rc -eq 0 ]]"
     check "$name: prints suite PASSED"        "grep -q 'suite PASSED' <<<\"\$out\""
-    check "$name: summary lists all 8 steps"  "[[ \$(grep -cE '^\[INFO\]   (clean|ca|bootstrap|upgrade|rollback|upgrade:switched|rollback:restored) +PASS' <<<\"\$out\") -eq 8 ]]"
-    check "$name: JSON has 8 entries"         "[[ \$(grep -o '\"step\"' <<<\"\$json\" | wc -l) -eq 8 ]]"
+    # NO hardcoded step count. Commit bf5fe14 added two `_suite_check` steps and
+    # took this suite from 8 to 10; this count stayed 8, and CI went red for the
+    # rest of the day. That is this repo's own documented rot - "a literal that
+    # adding a sense does not update" - on a different axis, and the fix is the
+    # same one: derive it.
+    #
+    # Three independent counts of the SAME run, required to agree:
+    #   * the `==== suite: <name> ====` headers the run announced
+    #   * the `[INFO]   <name>  PASS` lines in the printed summary
+    #   * the "step" keys in the JSON it wrote
+    # A step added anywhere appears in all three and needs no edit here. A step
+    # started but not recorded, or recorded but not printed, disagrees and fails -
+    # which is precisely what the old fixed count could not see, and what its
+    # vacuous `-eq 8` against an empty capture was silently agreeing with.
+    _hdr=$(grep -cE '^\[INFO\] ════ suite: ' <<<"$out")
+    _sum=$(grep -cE '^\[INFO\]   [a-z][a-z:-]* +PASS' <<<"$out")
+    _jsn=$(grep -o '"step"' <<<"$json" | wc -l)
+    check "$name: announced, printed and recorded step counts agree" \
+          "[[ \$_hdr -gt 0 && \$_hdr -eq \$_sum && \$_sum -eq \$_jsn ]]"
+    check "$name: summary lists the static gate" "grep -qE '^\[INFO\]   critical-writes +PASS' <<<\"\$out\""
+    check "$name: JSON records critical-writes"  "grep -q '\"step\":\"critical-writes\"' <<<\"\$json\""
   else
     check "$name: exits non-zero"             "[[ $rc -ne 0 ]]"
     check "$name: prints suite FAILED"        "grep -q 'suite FAILED' <<<\"\$out\""
@@ -68,7 +92,9 @@ out="$(FAILING=none DESTRUCTIVE=1 DATA_DIR="$tmp2" bash -c '
   cmd_bootstrap() { echo blue > "$MNT/@data/current-slot"; echo 20260821 > "$MNT/@blue/etc/shani-version"; echo 20260821 > "$MNT/@green/etc/shani-version"; }
   cmd_upgrade() { echo green > "$MNT/@data/current-slot"; echo 20260924 > "$MNT/@green/etc/shani-version"; }
   cmd_rollback() { echo 20260924 > "$MNT/@blue/etc/shani-version"; }
-  source "'"$here"'/lib/suite.sh"; cmd_suite -p gnome' 2>&1)" || true
+  source "'"$here"'/lib/suite.sh"
+  cmd_critical_writes() { :; }
+  cmd_suite -p gnome' 2>&1)" || true
 check "destructive rollback: suite FAILED"          "grep -q 'suite FAILED' <<<\"\$out\""
 check "destructive rollback: rollback:restored FAIL" "grep -qE '^\[INFO\]   rollback:restored +FAIL' <<<\"\$out\""
 rm -rf "$tmp2"
