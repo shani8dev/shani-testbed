@@ -70,11 +70,31 @@ for SLOT in "${SLOTS[@]}"; do
 
   DEST="$W/usr/lib/dracut/modules.d/99shanios"
   mkdir -p "$DEST"
-  cp -f "$SRC"/*.sh "$DEST/" 2>/dev/null || { echo "@$SLOT: copy failed" >&2; umount "$W"; fail=1; continue; }
+
+  # Copy EVERY file in the module, not just the shell ones. `*.sh` alone dropped
+  # shanios-recover-default.service on the floor, so no regenerated initramfs
+  # contained the unit, and `systemctl enable` reported
+  # "shanios-recover-default.service does not exist" on every real boot - which
+  # reads as a systemd problem and is a harness one. The module has carried a
+  # .service since the in-boot recovery was written; every test of that unit
+  # until now tested a unit that was never installed.
+  #
+  # Anything not matching a known type is a hard error, so the next file type
+  # added to this module cannot be skipped quietly the same way.
+  FILES=()
+  for f in "$SRC"/*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+      *.sh|*.service) FILES+=("$f") ;;
+      *) echo "@$SLOT: UNKNOWN MODULE FILE TYPE: $f - refusing to skip it" >&2
+         umount "$W" 2>/dev/null; fail=1; continue 2 ;;
+    esac
+  done
+  cp -f "${FILES[@]}" "$DEST/" 2>/dev/null || { echo "@$SLOT: copy failed" >&2; umount "$W"; fail=1; continue; }
 
   # (4) compare content, per file
   bad=""
-  for f in "$SRC"/*.sh; do
+  for f in "${FILES[@]}"; do
     b=$(basename "$f")
     if [[ ! -f "$DEST/$b" ]]; then bad="$bad $b(absent)"; continue; fi
     cmp -s "$f" "$DEST/$b" || bad="$bad $b(differs)"
@@ -83,7 +103,17 @@ for SLOT in "${SLOTS[@]}"; do
       echo "@$SLOT: COPY DID NOT LAND:$bad" >&2
       umount "$W" 2>/dev/null; fail=1; continue
   fi
-  echo "@$SLOT: module installed and byte-identical to the working tree ($(ls "$SRC"/*.sh | wc -l) files)"
+  # A .service present in the working tree and missing from the slot is the
+  # failure this whole block exists to prevent, so say so by name rather than
+  # reporting a file count that looks fine either way.
+  for f in "$SRC"/*.service; do
+    [ -f "$f" ] || continue
+    if [[ ! -f "$DEST/$(basename "$f")" ]]; then
+      echo "@$SLOT: UNIT NOT INSTALLED: $(basename "$f") - the slot's initramfs will not contain it" >&2
+      umount "$W" 2>/dev/null; fail=1; continue
+    fi
+  done
+  echo "@$SLOT: module installed and byte-identical to the working tree (${#FILES[@]} files, incl $(ls "$SRC"/*.service 2>/dev/null | wc -l) unit)"
   umount "$W" 2>/dev/null
 done
 sync
