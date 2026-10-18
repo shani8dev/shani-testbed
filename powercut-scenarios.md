@@ -135,13 +135,9 @@ SLOTFILE=blue
 the stale variable wins outright.
 
 That is the row that mattered, and it is now a measurement rather than an
-argument. The consequence worth stating plainly: **a cut here means the deploy
-silently did not take.** The machine is on a known-good slot and boots, which is
-safe, but it is running the version the user was trying to leave behind, and
-nothing tells them. A deploy that reports success and is then interrupted is
-indistinguishable, afterwards, from one that never ran — so `shani-deploy` should
-say something durable about the flip rather than relying on the next deploy to
-notice.
+argument. The machine boots the OLD proven slot: safe, and now measured. **It is not
+silent, though** — see the correction below. I originally wrote that it was, and
+that was wrong: `/data/deployment_pending` already covers it.
 
 The other two mid-flip rows stay reasoning: cut after the entry rename leaves the
 old `loader.conf` (trivially the old slot), and cut after the variables are
@@ -155,3 +151,42 @@ prior `LoaderEntryDefault` at all — which is precisely why
 rather than incidental. There, `loader.conf` is the only source, so a truncated
 one has no fallback; which is the reason all five of the ESP writes now stage and
 rename.
+
+---
+
+## SCENARIO D — correcting my own conclusion
+
+SCENARIO D — correcting my own conclusion in the section above
+
+That section ends by saying a deploy interrupted mid-flip "is indistinguishable,
+afterwards, from one that never ran", and that shani-deploy should say something
+durable about the flip. **Both are wrong.** The mechanism exists, has for some
+time, and I did not look for it.
+
+`/data/deployment_pending` is written at deploy start (`shani-deploy.sh:4189`,
+`touch "$DEPLOY_PENDING"`) and removed when the deploy completes (`:4215`).
+`shani-health` reads it and reports it with an age threshold and a remediation:
+
+    !!  deployment_pending 42min old — deploy interrupted?
+    _rec  Stale deployment_pending (42 min) - check: shani-deploy --rollback
+
+So an interrupted flip is surfaced on the next health check, with severity
+rising past an hour, and with the command to run. Scenario D's real consequence
+is therefore narrower and better than I wrote: the machine boots the old proven
+slot, and the user is told the deploy did not complete.
+
+**How I got there, because the method is the point.** I grepped for
+`deploy_pending` - lowercase - and found exactly two lines: the default and the
+assignment. I read that as "declared and never used" and built a fix on it.
+The variable is `DEPLOY_PENDING`, uppercase, and appears at ten sites including
+four removal paths and two refusal checks. A case-sensitive grep for the wrong
+name returned a clean, plausible, and completely misleading result.
+
+Then, having concluded the feature was missing, I did not search for an existing
+consumer either - I reasoned from the code in front of me about what a user
+would see. `shani-health.sh` has been answering exactly that question all along.
+
+Two wrong steps in a row, both from not searching, and both producing a result
+that read as a finding. The correction matters more than the fix would have:
+had I shipped my version, it would have written a second marker over one that
+already works, in a different format, with different semantics.
