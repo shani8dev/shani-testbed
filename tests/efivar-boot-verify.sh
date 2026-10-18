@@ -48,7 +48,8 @@ have_key() { grep -q "^EFIVARFACT ${1}=" "$STREAM"; }
 # about the platform.
 missing=""
 for k in kernel kernel_source efivarfs_present efivarfs_count loader_vars \
-         node_mode writable set_ok readback delete_ok gone_after_delete done; do
+         node_mode writable writable_errno set_ok set_errno readback \
+         delete_ok gone_after_delete done; do
   have_key "$k" || missing="$missing $k"
 done
 if [ -n "$missing" ]; then
@@ -105,7 +106,7 @@ esac
 if [ "$(fact writable)" = "yes" ]; then
   res efivarfs-is-writable "PASS"
 else
-  res efivarfs-is-writable "FAIL (the kernel refused a write to efivarfs — the hook cannot create or clear anything here)"
+  res efivarfs-is-writable "FAIL (the kernel refused a well-formed efivarfs write: $(fact writable_errno) — nothing can be created or cleared here)"
 fi
 
 # --- 7. set + read back --------------------------------------------------------
@@ -117,7 +118,29 @@ rb="$(fact readback)"
 if [ "$(fact set_ok)" = "yes" ] && [ "$rb" = "shani-test-probe" ]; then
   res efivar-variable-roundtrips "PASS (wrote and read back '$rb')"
 else
-  res efivar-variable-roundtrips "FAIL (set_ok=$(fact set_ok) readback='$rb')"
+  res efivar-variable-roundtrips "FAIL (set_ok=$(fact set_ok) readback='$rb' errno=$(fact set_errno))"
+fi
+
+# --- 8. THE DECISIVE ONE, but only if there was anything to unlink --------------
+# The hook's clearing is `rm -f` on the node. If the unlink does not take effect,
+# every variable stays set, `LoaderEntryDefault` keeps outranking loader.conf's
+# `default`, and the machine boots whatever it names.
+#
+# **GATED ON THE SET, and that gate was added because the first real boot got
+# this wrong in the dangerous direction.** With the write failing (EINVAL) the
+# stream carried `delete_ok=no`, and the unguarded version reported
+# "rm -f did not remove the variable, so the hook cannot clear LoaderEntry* and
+# the failover fails open" — a confident verdict about the product drawn from a
+# probe that never created a variable, so there was nothing to remove. An error
+# naming the wrong thing is worse than no error, because it sends the fix to the
+# wrong code: that reading points at the hook's `rm -f`, which is not what failed.
+# So when the set did not happen, the unlink was never exercised and must say so.
+if [ "$(fact set_ok)" != "yes" ]; then
+  res efivar-variable-unlinks "SKIP (the probe variable was never created — set_ok=$(fact set_ok) errno=$(fact set_errno) — so \`rm -f\` was never exercised. This says NOTHING about the hook's clearing, in either direction.)"
+elif [ "$(fact delete_ok)" = "yes" ] && [ "$(fact gone_after_delete)" = "yes" ]; then
+  res efivar-variable-unlinks "PASS (rm -f removed the node and it stayed removed — the hook's clearing is not a no-op)"
+else
+  res efivar-variable-unlinks "FAIL (the variable was created, and rm -f did not remove it: delete_ok=$(fact delete_ok) gone=$(fact gone_after_delete) — the hook cannot clear LoaderEntry* and the failover fails open)"
 fi
 
 # --- 8. THE DECISIVE ONE -------------------------------------------------------
@@ -125,12 +148,6 @@ fi
 # every variable stays set, `LoaderEntryDefault` keeps outranking loader.conf's
 # `default`, and the machine boots whatever it names. This is the check the whole
 # pair exists for, and the one with no passing substitute in any unit test.
-if [ "$(fact delete_ok)" = "yes" ] && [ "$(fact gone_after_delete)" = "yes" ]; then
-  res efivar-variable-unlinks "PASS (rm -f removed the node and it stayed removed — the hook's clearing is not a no-op)"
-else
-  res efivar-variable-unlinks "FAIL (delete_ok=$(fact delete_ok) gone=$(fact gone_after_delete) — rm -f did not remove the variable, so the hook cannot clear LoaderEntry* and the failover fails open)"
-fi
-
 # --- 9. structural: one verdict per check --------------------------------------
 # A superseded block beside the live chain emitted `module-dir-readonly` twice —
 # a PASS and a leftover PASS, which reads as one strong result. The duplicate is

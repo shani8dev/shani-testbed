@@ -67,19 +67,39 @@ else
   f loader_vars ""
   f node_mode none
   f set_ok no
+  f set_errno skipped
   f readback ""
   f delete_ok no
   f gone_after_delete no
+  f writable no
+  f writable_errno skipped
   f done yes
   exit 0
 fi
 
-# Can we create one? A plain write needs a 4-byte little-endian attribute field
-# followed by UTF-16LE data, which is what bootctl writes; a bare string write is
-# rejected by the kernel with EINVAL and would read as "efivarfs is broken".
-f writable yes
-if printf '\x07' > "$EFIVARS/.__wtest" 2>/dev/null; then f writable yes; else f writable no; fi
-rm -f "$EFIVARS/.__wtest" 2>/dev/null || true
+# Can we create one? A valid efivarfs write is a 4-byte little-endian attribute
+# field followed by UTF-16LE data; a bare string is rejected with EINVAL.
+#
+# **Two bugs here, both found by the first real boot of this script.**
+#   - The probe wrote ONE byte (`printf '\x07'`), which efivarfs rejects with
+#     EINVAL because the attributes field is a u32. It was not testing
+#     writability, it was testing a malformed write, and reported `no`.
+#   - `f writable yes` was emitted BEFORE the probe and `f writable no` after,
+#     and the verifier takes `head -1` — so the pair read as a clean `yes` and
+#     `efivarfs-is-writable` reported PASS against a probe that had just failed.
+#     That is the same double-emission defect as `node_mode`, in a second key,
+#     and it is the more dangerous direction: it turned a failure into a PASS.
+# So: no optimistic default, a valid payload, and the errno reported so the next
+# boot can say WHY rather than leaving it to be guessed at.
+writable=no; writable_errno=none
+if { printf '\x07\x00\x00\x00ShaniProbe\x00'; } > "$EFIVARS/ShaniProbeVar" 2>/tmp/e; then
+  writable=yes
+else
+  writable_errno="$(tr -d '\n' </tmp/e 2>/dev/null | sed 's/.*: //')"
+fi
+rm -f "$EFIVARS/ShaniProbeVar" 2>/dev/null || true
+f writable "$writable"
+f writable_errno "$writable_errno"
 
 # UTF-16LE of the probe value. iconv if it exists, else built byte by byte in
 # bash — a missing tool must not silently produce a zero-length variable, which
@@ -98,11 +118,11 @@ to_u16() {
 }
 
 PROBE=shani-test-probe
-# 0x07 = NON_VOLATILE | BOOTSERVICE_ACCESS | RUNTIME_ACCESS, which is what
-# systemd-boot's own LoaderEntry* variables carry.
-if { printf '\x07\x00\x00\x00'; to_u16 "$PROBE"; } > "$EFIVARS/LoaderEntryDefault" 2>/dev/null \
+set_errno=none
+if { printf '\x07\x00\x00\x00'; to_u16 "$PROBE"; } > "$EFIVARS/LoaderEntryDefault" 2>/tmp/e2 \
    && [ -e "$EFIVARS/LoaderEntryDefault" ]; then
   f set_ok yes
+  f set_errno none
   # Read the data back out and decode, so a variable that was written but is
   # unreadable is distinguishable from one that was never written.
   rb=$(tail -c +5 "$EFIVARS/LoaderEntryDefault" 2>/dev/null | tr -d '\000')
@@ -123,7 +143,15 @@ if { printf '\x07\x00\x00\x00'; to_u16 "$PROBE"; } > "$EFIVARS/LoaderEntryDefaul
     f gone_after_delete no
   fi
 else
+  # **The errno is reported rather than swallowed.** The first real boot got
+  # EINVAL on this write with nothing in the harness to explain it, and the
+  # obvious reading — "efivarfs will not let you create LoaderEntryDefault" —
+  # is a guess about the product from a failed probe about the mechanism. The
+  # distinction matters: if this variable cannot be created, the hook's clearing
+  # is fine and its SETTING is wrong; if it is just this payload, neither is.
+  set_errno="$(tr -d '\n' </tmp/e2 2>/dev/null | sed 's/.*: //')"
   f set_ok no
+  f set_errno "${set_errno:-unknown}"
   f readback ""
   f delete_ok no
   f gone_after_delete no

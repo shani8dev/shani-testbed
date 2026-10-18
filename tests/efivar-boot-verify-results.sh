@@ -30,7 +30,9 @@ EFIVARFACT efivarfs_count=0
 EFIVARFACT loader_vars=
 EFIVARFACT node_mode=400 root:root
 EFIVARFACT writable=yes
+EFIVARFACT writable_errno=none
 EFIVARFACT set_ok=yes
+EFIVARFACT set_errno=none
 EFIVARFACT readback=shani-test-probe
 EFIVARFACT delete_ok=yes
 EFIVARFACT gone_after_delete=yes
@@ -127,6 +129,23 @@ ck scenario-10-readable-node-is-fail \
   "$([ "$(failed "$T/readable" efivar-node-is-root-only)" = ok ] && echo ok || echo no)" \
   "$(run "$T/readable" | grep '^RESULT efivar-node-is-root-only')"
 
+# --- 11. a failed SET must not be reported as a broken UNLINK --------------------
+# Found by the first real boot. With the write failing (EINVAL) the stream carried
+# `delete_ok=no`, and the verifier then printed "rm -f did not remove the variable,
+# so the hook cannot clear LoaderEntry* and the failover fails open" — a confident
+# verdict about the product drawn from a probe that never created a variable. It
+# points the fix at the hook's `rm -f`, which is not what failed.
+sed -e 's/^EFIVARFACT set_ok=yes$/EFIVARFACT set_ok=no/' \
+    -e 's/^EFIVARFACT set_errno=none$/EFIVARFACT set_errno=Invalid argument/' \
+    -e 's/^EFIVARFACT readback=shani-test-probe$/EFIVARFACT readback=/' \
+    "$T/good" > "$T/noset"
+set_out=$(run "$T/noset")
+ck scenario-11-failed-set-is-not-a-broken-unlink \
+  "$(grep -q '^RESULT efivar-variable-unlinks .*SKIP' <<<"$set_out" \
+     && ! grep -q '^RESULT efivar-variable-unlinks .*FAIL' <<<"$set_out" && echo ok || echo no)" \
+  "$(grep '^RESULT efivar-variable-unlinks' <<<"$set_out")"
+
+
 # --- MUTATIONS: revert the guards and confirm they go red ------------------------
 # A mutation BREAKS a guard. The proof that the guard was load-bearing is that
 # after breaking it, the input that should have been caught is let through — so
@@ -144,16 +163,27 @@ mut() { # mut <name> <sed-expr> <bad-stream> <check>
   local before after
   before=$(run "$3" | grep "^RESULT $4 " || true)
   after=$(bash "$T/m" "$3" 2>&1 | grep "^RESULT $4 " || true)
-  case "$before" in *FAIL*) ;; *) printf 'FAIL mutation-%-40s %s\n' "$1" "scenario $3 was not red to begin with ($before) — nothing to prove"; return;; esac
+  # "The guard held" means the verdict was NOT a pass. FAIL and SKIP both count:
+  # the set-gate turns a bad verdict into a SKIP rather than a FAIL, and both are
+  # the guard refusing to let bad input through as green. What must follow the
+  # mutation is a PASS — that is the bad input getting through.
+  case "$before" in
+    *PASS*) printf 'FAIL mutation-%-40s %s\n' "$1" "scenario $3 was green to begin with ($before) — nothing to prove"; return;;
+  esac
   case "$after" in
     *PASS*) printf 'PASS mutation-%-40s %s\n' "$1" "guard removed -> now let through (load-bearing)"; pass=$((pass+1));;
-    *)      printf 'FAIL mutation-%-40s %s\n' "$1" "STILL RED after the guard was broken, so this guard is not what made it red: $after"; fail=$((fail+1));;
+    *)      printf 'FAIL mutation-%-40s %s\n' "$1" "STILL refusing after the guard was broken, so this guard is not what held it: $after"; fail=$((fail+1));;
   esac
 }
 
-# (a) the decisive check neutered: a failed unlink reported as a pass
+# (a) the decisive check neutered: a failed unlink reported as a pass.
+#     Matched on the verdict's PREFIX, not its full text. Pinning the whole
+#     literal meant this mutation silently stopped applying the moment the
+#     message gained the "the variable was created" qualifier — and a mutation
+#     that no longer matches anything "passes" as a no-op, which is the harness
+#     rot AGENTS.md records for the espeak argv and the hardcoded module path.
 mut unlink-check-neutered \
-  's|^  res efivar-variable-unlinks "FAIL (delete_ok=.*$|  res efivar-variable-unlinks "PASS (mutated: always ok)"|' \
+  's|^  res efivar-variable-unlinks "FAIL (.*$|  res efivar-variable-unlinks "PASS (mutated: always ok)"|' \
   "$T/stuck" efivar-variable-unlinks
 # (b) the completeness guard removed
 mut completeness-guard-removed \
@@ -182,6 +212,9 @@ mut empty-readback-accepted \
   's|\[ "$rb" = "shani-test-probe" \]|[ "$rb" != "__never__" ]|' \
   "$T/empty" efivar-variable-roundtrips
 # (f) the root-only assertion dropped
+mut set-gate-removed \
+  's|^if \[ "$(fact set_ok)" != "yes" \]; then$|if false; then|' \
+  "$T/noset" efivar-variable-unlinks
 mut root-only-assertion-dropped \
   's|^  \*)       res efivar-node-is-root-only "FAIL (.*$|  *)       res efivar-node-is-root-only "PASS (mutated)"|' \
   "$T/readable" efivar-node-is-root-only
