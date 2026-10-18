@@ -50,13 +50,7 @@ candidate — is not reachable, because the variable writes are last and a cut
 before them leaves the variables naming the *previous* deploy's slot, which was
 proven at the time.
 
-**This is reasoning from the write order and the precedence list, not a
-measurement.** It has not been booted. To make it a scenario the harness would
-need to seed `LoaderEntryDefault`/`LoaderEntryPreferred` in the guest's NVRAM and
-have that survive `powercut-scenario.sh`, which it cannot do offline — there is
-no efivarfs outside a booted guest, which is the same reason
-`SHANIOS_EFIVARS_DIR` exists and why the efivar proof is a firmware boot rather
-than a unit test.
+**The row that mattered has since been MEASURED - see SCENARIO D below.
 
 ## Two writes in that sequence were NOT crash-safe, and are now
 
@@ -100,3 +94,64 @@ test-env/test.sh vmspawn --tpm=no          # boot 2 — lands on the good slot
 - **A real UEFI boot IS possible without `/dev/kvm`** — `vmspawn` boots
   `install.img` end to end here. The earlier claim that firmware boots were
   unavailable on this host was wrong.
+
+---
+## SCENARIO D — the mid-flip cut, MEASURED (2026-10-18)
+
+This is the one state the matrix could not previously express, because it exists
+only mid-flip: `loader.conf` has been rewritten to the candidate, but the EFI
+variable write that follows it has not happened, so `LoaderEntryDefault` still
+names the **previous** deploy's slot.
+
+The obstacle was seeding an EFI variable offline, which is impossible — there is
+no efivarfs outside a booted guest. But `lib/isoinstall.sh:428` only resets the
+guest's NVRAM on `--reset-firmware` or when `install.img` has been re-created, so
+**NVRAM persists across `iso-install --boot-only` runs** and the state can be
+built in two steps instead of invented.
+
+```sh
+# 1. seed the stale variable from a real guest (this is the write the cut missed)
+iso-install -p gnome --boot-only --iso=iso-latest --boot-timeout=900 \
+  --console-exec="bootctl --esp-path=/boot/efi set-default shanios-blue.conf"
+
+# 2. offline: the rest of the flip - loader.conf now names the candidate
+sed -i 's|^default .*|default shanios-green.conf|' <ESP>/loader/loader.conf
+
+# 3. boot it and read which slot actually took
+iso-install -p gnome --boot-only --iso=iso-latest --boot-timeout=900 \
+  --console-exec="cat /proc/cmdline; cat /data/current-slot"
+```
+
+State under test: `loader.conf` = `shanios-green.conf`, `LoaderEntryDefault` =
+`shanios-blue.conf`.
+
+```
+CMDLINE=... rootflags=subvol=@blue ...
+SLOTFILE=blue
+```
+
+**The machine boots the OLD proven slot.** `LoaderEntryDefault` is fifth in
+`config_select_default_entry()`'s precedence and `loader.conf` is seventh, so
+the stale variable wins outright.
+
+That is the row that mattered, and it is now a measurement rather than an
+argument. The consequence worth stating plainly: **a cut here means the deploy
+silently did not take.** The machine is on a known-good slot and boots, which is
+safe, but it is running the version the user was trying to leave behind, and
+nothing tells them. A deploy that reports success and is then interrupted is
+indistinguishable, afterwards, from one that never ran — so `shani-deploy` should
+say something durable about the flip rather than relying on the next deploy to
+notice.
+
+The other two mid-flip rows stay reasoning: cut after the entry rename leaves the
+old `loader.conf` (trivially the old slot), and cut after the variables are
+cleared leaves `loader.conf`'s candidate (the deploy's intent). Neither needs a
+guest to establish, because in both the surviving `default` line is the deciding
+source and nothing outranks it.
+
+**Still untested:** the same window on a **first install**, where there is no
+prior `LoaderEntryDefault` at all — which is precisely why
+`configure.sh` omits `bootctl set-default`, and why that omission is load-bearing
+rather than incidental. There, `loader.conf` is the only source, so a truncated
+one has no fallback; which is the reason all five of the ESP writes now stage and
+rename.
