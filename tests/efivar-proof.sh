@@ -118,3 +118,47 @@ try "dd-null" bash -c 'dd if=/dev/null of="$1" 2>/dev/null' _ "$victim"
 emit "exists-final=$([[ -e $victim ]] && echo true || echo false)"
 emit "size-final=$(stat -c %s "$victim" 2>/dev/null || echo absent)"
 emit "done=true"
+
+# --- 2026-10-18: is "undeletable" a property of the VARIABLE, or of the CONTEXT? --
+# Everything above deliberately targets an **inert** firmware variable, and the
+# reason is a safety one: "the VM regenerated it" is the entire argument for
+# deleting one. That choice has a consequence nobody had recorded — it means this
+# proof never measures the only class the failover hook actually deletes:
+# `LoaderEntrySysFail`, `LoaderEntryOneShot`, `LoaderEntryPreferred`,
+# `LoaderEntryDefault`.
+#
+# A boot of the image's own kernel then reported
+#
+#     rm: cannot remove '…/LoaderEntrySelected-4a67b082-…': Operation not permitted
+#
+# while the inert class deletes cleanly. Those are consistent — they are different
+# variables — but the difference lands exactly on the class that matters. If
+# `LoaderEntry*` is undeletable, then the hook's clearing is a no-op on every
+# **deployed** machine, because `finalize_boot_entries` persists
+# `LoaderEntryDefault` via `bootctl set-default` after every deploy, and that
+# variable outranks the `loader.conf` line the hook rewrites correctly.
+#
+# Only a comparison **inside one invocation** can separate the two explanations,
+# because "this shell cannot delete anything" and "this class cannot be deleted"
+# produce identical output from a single class. Hence this block, appended rather
+# than folded in: everything above keeps its exact output and its safety
+# argument, and both classes are now measured under the same uid, capabilities,
+# namespace and firmware.
+#
+# Deleting `LoaderEntrySelected` is safe for the same reason the inert variables
+# are: systemd-boot rewrites it on every boot, so a refused delete leaves the
+# machine exactly as it was and a successful one heals on the next boot.
+for _lv in $(cd "$EF" 2>/dev/null && ls -1 LoaderEntrySelected-* LoaderEntryDefault-* 2>/dev/null); do
+  emit "loader-victim=${_lv}"
+  emit "loader-mode=$(stat -c '%a %U:%G' "$EF/$_lv" 2>/dev/null || echo absent)"
+  emit "loader-size-before=$(stat -c %s "$EF/$_lv" 2>/dev/null || echo absent)"
+  # stderr captured rather than discarded: `unlink_ok=no` with no reason is what
+  # produced an unexplainable measurement in the first place, and the reason is
+  # the whole point of asking.
+  _lerr=$(rm -f "$EF/$_lv" 2>&1); _lrc=$?
+  emit "loader-unlink-rc=$_lrc"
+  emit "loader-unlink-errno=${_lerr//$'\n'/ }"
+  emit "loader-exists-after=$([[ -e "$EF/$_lv" ]] && echo true || echo false)"
+done
+emit "loader-victims-tried=$(cd "$EF" 2>/dev/null && ls -1 LoaderEntrySelected-* LoaderEntryDefault-* 2>/dev/null | wc -l | tr -d ' ')"
+emit "loader-done=true"

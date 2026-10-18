@@ -31,7 +31,9 @@ EFIVARFACT efivarfs_count=10
 EFIVARFACT loader_vars=LoaderEntries-4a67,LoaderEntrySelected-4a67,LoaderFeatures-4a67
 EFIVARFACT hook_target_present=yes
 EFIVARFACT target_name=LoaderEntrySelected-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
-EFIVARFACT target_mode=400 root:root
+EFIVARFACT unlink_errno=
+EFIVARFACT rm_present=yes
+EFIVARFACT target_mode=644 root:root
 EFIVARFACT unlink_ok=yes
 EFIVARFACT gone_after_delete=yes
 EFIVARFACT creatable=yes
@@ -77,6 +79,7 @@ ck scenario-3-rm-reported-failure \
 sed -e 's/^EFIVARFACT hook_target_present=yes$/EFIVARFACT hook_target_present=no/' \
     -e 's/^EFIVARFACT target_name=.*$/EFIVARFACT target_name=/' \
     -e 's/^EFIVARFACT target_mode=.*$/EFIVARFACT target_mode=/' \
+    -e 's/^EFIVARFACT rm_present=.*$/EFIVARFACT rm_present=yes/' \
     "$T/good" > "$T/none"
 none_out=$(run "$T/none")
 ck scenario-4-no-target-is-an-honest-skip \
@@ -133,10 +136,10 @@ ck scenario-9-duplicate-verdict-is-fail \
   "$(grep '^RESULT efivar-one-verdict-per-check' <<<"$dup_out")"
 
 # --- 10. a node readable by others --------------------------------------------
-sed 's/^EFIVARFACT target_mode=400 root:root$/EFIVARFACT target_mode=644 root:root/' "$T/good" > "$T/readable"
-ck scenario-10-readable-node-is-fail \
-  "$([ "$(failed "$T/readable" efivar-node-is-root-only)" = ok ] && echo ok || echo no)" \
-  "$(run "$T/readable" | grep '^RESULT efivar-node-is-root-only')"
+sed 's/^EFIVARFACT target_mode=644 root:root$/EFIVARFACT target_mode=602 root:root/' "$T/good" > "$T/readable"
+ck scenario-10-world-writable-node-is-fail \
+  "$([ "$(failed "$T/readable" efivar-node-not-world-writable)" = ok ] && echo ok || echo no)" \
+  "$(run "$T/readable" | grep '^RESULT efivar-node-not-world-writable')"
 
 # --- MUTATIONS: revert the guards, confirm the bad input gets through -----------
 # A mutation BREAKS a guard. The proof that the guard was load-bearing is that
@@ -176,14 +179,27 @@ mut completeness-guard-removed \
 mut no-firmware-downgraded \
   's|^  res firmware-boot-has-efivarfs "FAIL (efivarfs not present.*$|  res firmware-boot-has-efivarfs "PASS (mutated)"|' \
   "$T/nofw" firmware-boot-has-efivarfs
-mut root-only-assertion-dropped \
-  's|^  \*)       res efivar-node-is-root-only "FAIL (.*$|  *)       res efivar-node-is-root-only "PASS (mutated)"|' \
-  "$T/readable" efivar-node-is-root-only
+# Anchored on a bracket-free substring: the condition is inside `[ ... ]`, which a
+# BRE reads as a bracket expression, so a pattern written the obvious way does not
+# match and the mutation silently does nothing. Substituting a constant that makes
+# the test always true is the same neutering and is expressible without brackets.
+mut world-writable-assertion-dropped \
+  's|8#\$o & 2|8#0 \& 2|' \
+  "$T/readable" efivar-node-not-world-writable
+
+# rm missing: the hook's call was never executed, so a failure there says nothing.
+sed 's/^EFIVARFACT rm_present=yes$/EFIVARFACT rm_present=no/' "$T/good" > "$T/norm"
+ck scenario-11-no-rm-is-an-honest-skip \
+  "$(grep -q '^RESULT efivar-target-unlinks .*SKIP' <<<"$(run "$T/norm")" && echo ok || echo no)" \
+  "a missing rm does not condemn the hook"
+mut no-rm-gate-removed \
+  's|^if \[ "$(fact rm_present)" != "yes" \]; then$|if false; then|' \
+  "$T/norm" efivar-target-unlinks
 
 # The no-target gate: turning "no variable present" from a SKIP into a FAIL claims
 # the hook is broken on every fresh machine. Remove the gate and it must pass.
 mut no-target-gate-removed \
-  's|^if \[ "$(fact hook_target_present)" != "yes" \]; then$|if false; then|' \
+  's|^elif \[ "$(fact hook_target_present)" != "yes" \]; then$|elif false; then|' \
   "$T/none" efivar-target-unlinks
 
 # (d) the structural duplicate guard can never fire (back to reading $STREAM).

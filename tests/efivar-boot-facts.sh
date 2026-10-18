@@ -61,6 +61,8 @@ if [ ! -d "$EFIVARS" ]; then
   f target_name ""
   f target_mode ""
   f unlink_ok no
+  f unlink_errno skipped
+  f rm_present "$(command -v rm >/dev/null 2>&1 && echo yes || echo no)"
   f gone_after_delete no
   f creatable no
   f create_errno skipped
@@ -73,21 +75,40 @@ f loader_vars "$(cd "$EFIVARS" 2>/dev/null && ls -1 Loader* 2>/dev/null | tr '\n
 f efivarfs_count "$(find "$EFIVARS" -maxdepth 1 -name 'Loader*' 2>/dev/null | wc -l | tr -d ' ')"
 
 # --- 1. THE MEASUREMENT: unlink a variable that already exists ------------------
-# Prefer `LoaderEntrySelected-`: a real systemd-boot variable of the same class,
-# rewritten every boot so removing it is self-healing. Any `Loader*` is an
-# acceptable fallback, and the name is reported so the verdict can name it.
-target="$(cd "$EFIVARS" 2>/dev/null && ls -1 LoaderEntrySelected-* Loader* 2>/dev/null | head -1)"
+# **Target selection is explicit, not alphabetical.** An earlier version globbed
+# `LoaderEntrySelected-* Loader*` and took `head -1`, which picked
+# `LoaderDevicePartUUID-` — alphabetically first, and the wrong variable. The
+# preferred name is tried first and the fallback is explicit.
+target="$(cd "$EFIVARS" 2>/dev/null && ls -1 LoaderEntrySelected-* 2>/dev/null | head -1)"
+[ -n "$target" ] || target="$(cd "$EFIVARS" 2>/dev/null && ls -1 Loader* 2>/dev/null | head -1)"
+
+# Is `rm` even present? This harness has a documented history of minimal
+# environments missing binaries — POWER-CUT-STATE.md records `sync: command not
+# found` from the initramfs, visible in the console the whole time. A `rm -f`
+# that fails because `rm` is absent is indistinguishable, with stderr discarded,
+# from a `rm -f` the kernel refused — and those two demand opposite conclusions
+# about the hook. So the tool is checked and reported, and the unlink verdict is
+# gated on it.
+f rm_present "$(command -v rm >/dev/null 2>&1 && echo yes || echo no)"
+
 if [ -n "$target" ] && [ -e "$EFIVARS/$target" ]; then
   f hook_target_present yes
   f target_name "$target"
   f target_mode "$(stat -c '%a %U:%G' "$EFIVARS/$target" 2>/dev/null || echo none)"
 
-  # The hook's actual call, verbatim in shape: rm -f, then verify.
-  if rm -f "$EFIVARS/$target" 2>/dev/null; then
-    f unlink_ok yes
-  else
-    f unlink_ok no
-  fi
+  # The hook's actual call, verbatim in shape: rm -f, then verify. Its stderr is
+  # CAPTURED, not discarded: `2>/dev/null` on the one call whose failure decides
+  # whether the failover works is how this file produced an unexplainable
+  # `unlink_ok=no` and had to throw the measurement away.
+  #
+  # `2>&1` goes BEFORE the redirect on purpose. Bash applies redirections left to
+  # right, so a failing output redirect errors *before* a later `2>&1` exists and
+  # the message goes to the terminal instead of the capture — which is what
+  # `create_errno=unknown` was in the previous boot, and it was this script's bug,
+  # not a quirk of the guest.
+  _ulerr=$(rm -f "$EFIVARS/$target" 2>&1)
+  if [ $? -eq 0 ]; then f unlink_ok yes; else f unlink_ok no; fi
+  f unlink_errno "$(printf '%s' "$_ulerr" | head -1 | tr -d '\r')"
   if [ ! -e "$EFIVARS/$target" ]; then
     f gone_after_delete yes
   else
@@ -98,6 +119,7 @@ else
   f target_name ""
   f target_mode ""
   f unlink_ok no
+  f unlink_errno no-target
   f gone_after_delete no
 fi
 
@@ -113,12 +135,10 @@ fi
 # and the verdict said `unknown` — a fix for "stop guessing the errno" that
 # silently guessed nothing at all.
 creatable=no; create_errno=none
-exec 3>&1
-_err=$( { printf '\x07\x00\x00\x00ShaniProbe\000'; } > "$EFIVARS/ShaniProbeVar" 2>&1 1>&3 )
-exec 3>&-
+_err=$( { printf '\x07\x00\x00\x00ShaniProbe\000'; } 2>&1 > "$EFIVARS/ShaniProbeVar" )
 if [ -e "$EFIVARS/ShaniProbeVar" ]; then creatable=yes; else create_errno="${_err:-unknown}"; fi
-rm -f "$EFIVARS/ShaniProbeVar" 2>/dev/null || true
+command -v rm >/dev/null 2>&1 && rm -f "$EFIVARS/ShaniProbeVar" 2>/dev/null
 f creatable "$creatable"
-f create_errno "$(printf '%s' "$create_errno" | tr -d '\r\n')"
+f create_errno "$(printf '%s' "$create_errno" | head -1 | tr -d '\r\n')"
 
 f done yes
