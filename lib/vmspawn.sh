@@ -142,6 +142,28 @@ cmd_vmspawn() {
   docker exec "$VMSPAWN_CONTAINER" pkill -f qemu-system >/dev/null 2>&1 || true
   kill "$vm_pid" 2>/dev/null || true
 
+  # Wait for qemu to ACTUALLY be gone before touching the image.
+  #
+  # pkill is asynchronous: it signals and returns, and the commit below used to
+  # run immediately after it, while qemu still had the backing file open. When
+  # that happened `qemu-img commit` failed on the lock and the harness reported
+  #
+  #   --commit: qemu-img commit failed; the image is unchanged
+  #
+  # which names the commit and not the cause, and is exactly the "a test that
+  # cannot fail" shape in reverse - a test that can fail for a reason that has
+  # nothing to do with the thing under test. Observed on a boot whose guest
+  # rebooted ITSELF: the in-boot recovery rewrote loader.conf, cleared the
+  # marker, rebooted and reached a login prompt, and every on-disk check then
+  # read the PRE-boot state, because the commit had lost the race and the
+  # harness said so in a sentence about qemu-img.
+  #
+  # Bounded, so a qemu that will not die cannot hang the harness.
+  for _ in $(seq 1 30); do
+    docker exec "$VMSPAWN_CONTAINER" pgrep -f qemu-system >/dev/null 2>&1 || break
+    sleep 1
+  done
+
   # The guest booted a qcow2 OVERLAY backed by the image, and everything it
   # wrote went there. By default that overlay is thrown away, which is the
   # right default: a boot must not be able to scribble on install.img, and
