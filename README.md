@@ -985,6 +985,35 @@ minimal PATH so the host's own `/usr/bin/zenity` can't leak in and give a
 false rc=1) — the full nspawn harness is flaky in this environment, and the
 *positive* paths (real yad dialog rendering) were already verified live.
 
+### Did a GUI step change the screen? `lib/visual_progress.py`
+
+A click that misses, a keystroke into an unfocused window, or a hung app all
+leave the framebuffer unchanged, and until now `gui`/`app` called the step done
+anyway — the same absence-shaped green this harness keeps paying for. The idea is
+AIYantra **Extra**'s `extra_soul_wait` / stall-breaker (a perceptual-hash diff
+plus a pixel-change fraction), reimplemented in the standard library so it needs
+no Pillow, numpy or imagehash — a test VM is fully ours, so there is no
+screen-capture consent to weigh.
+
+It compares two **P6 PPM** frames — exactly what `qmp_client.py screendump` and
+`gui --screenshot=FILE` already write — and says whether the screen actually
+changed. A cursor blink or a one-pixel jitter stays `same`; a window opening is
+`changed`. No new `gui` flag is needed, because `--screenshot=FILE` is an action
+you can place *more than once in one boot*:
+
+```bash
+# capture before, click, capture after — in one firmware boot
+testbed gui --screenshot=before.ppm --click=640,400 --screenshot=after.ppm
+# then assert the click did something (exit 0 changed, 2 same, 65 bad input)
+python3 lib/visual_progress.py assert-changed before.ppm after.ppm
+```
+
+`compare` prints a JSON verdict (`hamming`, `changed_cells`, `changed_fraction`);
+`assert-changed` turns it into an exit code a slot-test can gate on. The host
+self-test `tests/visual-progress-results.sh` proves the verdict goes both ways —
+`same` for an identical frame **and** for a cursor-sized dot, `changed` for a
+window-sized block — so a check that always said one thing can't hide here.
+
 ## Testing GUI apps: `app`
 
 `app` runs any GUI program **inside a slot** (the real installed userspace,

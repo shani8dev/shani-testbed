@@ -76,6 +76,7 @@ tests/run-app-actions.sh        # real Xvfb + GTK4/libadwaita test of lib/app.sh
 tests/run-web-client.sh         # real headless Chromium test of lib/web_client.py + web_serve.py, in docker
 tests/chronoa-singing-results.sh  # proves slot-tests/chronoa-singing.sh's style checks can go red (host, no docker)
 tests/sysctl-hardening-results.sh  # proves slot-tests/sysctl-hardening.sh's comparisons can go red (host, no docker)
+tests/visual-progress-results.sh   # proves lib/visual_progress.py's framebuffer verdict goes both ways (host, no docker)
 ```
 
 - **`tests/critical-writes.sh` is the suite's FIRST step, and that placement is
