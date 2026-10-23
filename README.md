@@ -1281,6 +1281,150 @@ claude mcp add shani-harness -- python3 /path/to/shani-testbed/mcp/shani_harness
 Typical agent prompt: *"Start `shani-cassini` in the blue slot, walk through every
 tab, and report UI/UX problems with screenshots."*
 
+## Reference (generated from the code)
+
+These tables are rebuilt by `tools/gen_readme.py` from the dispatcher in
+`testbed`, `lib/usage.sh`, `mcp/shani_harness_mcp.py` and `slot-tests/`, and
+`tests/readme-generated.sh` fails when they are stale - so unlike the prose
+above, they cannot describe a command that no longer exists. Do not edit
+between the markers; edit the source and rerun the generator.
+
+### Commands
+
+<!-- BEGIN GENERATED: commands -->
+| command | arguments | what it does (lib/usage.sh) | runs | via MCP |
+|---|---|---|---|---|
+| `disk` |  | Kept for compatibility: ensures /dev/disk/by-label exists and removes the legacy root.img/esp.img pair | container (lib/disk.sh) | `harness_run` |
+| `pacstrap` | `-p <profile> [pkg ...]` | Real signature-verification smoke test: runs an actual `pacstrap` against that profile's real pacman.conf into a throwaway target (removed on success), using the builder container's real, already-populated pacman keyring | container (lib/install.sh) | `harness_run` |
+| `ca` | `[extra-host ...]` | Generate a throwaway CA + a leaf server cert for downloads.shani.dev, plus one more per extra hostname given (e.g. ca raw.githubusercontent.com) | container (lib/pki.sh) | `harness_run` |
+| `bootstrap` | `-p <profile> [-d latest\|stable\|<date>] [--encrypted] [--from-r2]` | Runs the REAL install.sh+configure.sh (calls cmd_install/cmd_configure directly) to produce @blue/@green, plus one genuinely test-only step: trust-anchoring this session's throwaway CA into both slots | container (lib/install.sh) | `harness_run` |
+| `serve` | `[port] [docroot] [cert-host]` | Serve a docroot as an HTTPS stand-in for cert-host (default: cache/output as downloads.shani.dev) | container (lib/pki.sh) | `harness_start` |
+| `enter` |  | Enter a slot via systemd-nspawn (requires <blue\|green> [--boot] [--local-src=<dir>] [--local-pkg=<name\|file>] [--repo-pkg=<name,...>] [cmd...]) | container (lib/boot.sh) | `harness_run` |
+| `verify-boot` |  | **no line in lib/usage.sh** - `testbed --help` does not list it | container (lib/boot.sh) | `harness_run` |
+| `desktop` | `<blue\|green> [--de=auto\|gnome\|plasma] [--display=virtual\|host] [--size=WxH] [--hold=SECONDS] [--local-pkg=<name\|file>] [--exec="cmd"] [--out=<file.png>] [--timeout=N] [--settle=N] [--local-src=<dir>]` | Real desktop verification via nspawn -- no VM | container (lib/boot.sh) | `harness_run` |
+| `probe` | `<blue\|green> --exec="cmd" [--timeout=N] [--settle=N] [--local-src=<dir>] [--local-src-chronoa=<dir>] [--timeout=N] [--settle=N] [--local-pkg=<name\|file>]` | Generic live-boot diagnostic: boots the slot for real (--boot), nsenter's in once a Multi-User/Graphical target is reached, runs any command (e.g. `systemctl status <unit> --no-pager -l`), prints its output | container (lib/boot.sh) | `harness_run` |
+| `slot-test` |  | **no line in lib/usage.sh** - `testbed --help` does not list it | container (lib/boot.sh) | `harness_run` |
+| `app` | `<blue\|green> --run="cmd" [--local-src=<dir>] [--local-pkg=<name\|file>] [--display=virtual\|host] [--size=WxH] [ACTIONS...\|--script=F\|--interactive\|--control=DIR]` | Run a GUI app inside the slot on a private virtual display and drive it: wait-window, windows, click/doubleclick/rightclick/ move (X,Y or @WINDOW-REGEX:X,Y), drag, scroll, type, key, focus, screenshot, tree / find / click-element (accessibility tree | container (lib/app.sh) | `app_*` tools |
+| `install` | `-p <profile> [-d latest\|stable\|<date>] [--encrypted] [--label-clash=foreign\|target]` | Runs the REAL os-installer-config install.sh (partitioning, LUKS, subvolumes, image extraction) against a fresh whole-disk image | container (lib/install.sh) | `harness_run` |
+| `configure` | `-p <profile> [--encrypted]` | Runs the REAL os-installer-config configure.sh (locale/hostname/user/Secure Boot/UKI) against install's result | container (lib/install.sh) | `harness_run` |
+| `upgrade` | `[--local-src=<dir>] [extra shani-deploy args...]` | Real deploy: calls shani-deploy directly (--force --channel latest --skip-self-update) | container (lib/deploy.sh) | `harness_run` |
+| `update-check` |  | **no line in lib/usage.sh** - `testbed --help` does not list it | container (lib/deploy.sh) | `harness_run` |
+| `reboot` |  | Simulate a reboot (re-enters whichever slot is now current) | container (lib/deploy.sh) | `harness_run` |
+| `rollback` | `[--local-src=<dir>]` | Real rollback: calls shani-deploy --rollback directly (as upgrade does) | container (lib/deploy.sh) | `harness_run` |
+| `cycle` |  | -p <profile> [--local-src=<dir>] ca (if missing) → bootstrap → serve (background) → upgrade → reboot | container (lib/deploy.sh) | `harness_run` |
+| `suite` | `[-p <profile>] [-d <sel>] [--local-src=<dir>] [--keep] [--encrypted]` | The mandatory verification sequence (clean → ca → bootstrap → upgrade → rollback → clean) as one command, with per-step timing and a PASS/FAIL summary (disk/suite-<epoch>.json) | container (lib/suite.sh) | `harness_run` |
+| `gate` | `-p <profile> [--candidate=<file.zst>] [--skip=iso,fresh,upgrade,desktop] [--keep] [--reuse-install]` | Release gate for promote-stable, the image and the ISO separately: iso = the candidate ISO via iso-install, first update on the stable channel; fresh = a new user updated to the candidate; upgrade = stable updated to the candidate | container (lib/gate.sh) | `harness_run` |
+| `iso-install` |  | **no line in lib/usage.sh** - `testbed --help` does not list it | container (lib/isoinstall.sh) | `harness_run` |
+| `status` |  | Read-only view: images, loop attachments, by-label links, slots, overlays (incl. --local-src files pending revert) | container (lib/suite.sh) | `harness_run` |
+| `qemu` |  | Genuine UEFI boot via OVMF | host (lib/qemu.sh) | `harness_start` |
+| `gui` |  | Headless real-desktop check via OVMF+QMP+guest-agent | host (lib/gui.sh) | `harness_start` |
+| `watch` | `[--port=N] [--vnc-port=N]` | HOST-ONLY local page (default http://127.0.0.1:8090/) with a noVNC viewer for `qemu --vnc` | host (lib/qemu.sh) | `harness_start` |
+| `iso` |  | Boot a real installer ISO via OVMF | host (lib/qemu.sh) | `harness_run` |
+| `vmspawn` | `[--image=PATH\|--iso=PATH] [--timeout=S] [--until=RE] [--fail=RE] [--tpm=yes\|no] [--secure-boot=no\|yes] [--force]` | HOST-ONLY real UEFI boot (OVMF + systemd-boot + swtpm TPM) under systemd-vmspawn; works WITHOUT /dev/kvm | host (lib/vmspawn.sh) | `harness_run` |
+| `web` | `<--url=URL \| --site=DIR [--path=/sub/]> [--expect=SEL] [--allow-host=H]... [--offline] [--spa=/path] [--crawl=N] [--devices=desktop,tablet,mobile] [--schemes=light,dark] [--budget-lcp=MS] [--budget-cls=N] [--ignore=RE] [--resolve=RULES]` | Real headless Chromium over the DevTools protocol (lib/web_client.py, stdlib Python): exceptions, console errors, failed loads, Chrome issues, CSP violations, egress allowlist, title/lang, accessible names, LCP/CLS, and on EVERY device (desktop 1280x800, tablet 820x1180 touch, mobile 390x844 touch - built in, default all three): its own load + errors, horizontal overflow, tap targets >= 24x24 px, full-page shots in light and dark - and the page's FEATURES used for real on each device (lib/web_features.py): hamburger menu, search + its shortcut, theme toggle + persistence + OS colour scheme, disclosures, dialogs, breadcrumbs, contents links, copy-code, back-to-top, reading progress, skip link, focus visibility / obscuring / traps, print, contrast in light and dark, reflow at 320 px, text spacing, reduced motion, landmarks, headings, ids, labels, head metadata, robots/sitemap/404 (--no-features: off) | container (lib/web.sh) | `harness_run` |
+| `slot-diff` | `[--from=blue\|green] [--to=blue\|green] [--json=FILE]` | What moving between the slots changes, from the two roots on disk: packages (+/-/~), sonames that disappear, units and their enablement, changed /etc defaults, kernel | container (lib/slotdiff.sh) | `harness_run` |
+| `clean` |  | Unmount everything and detach install.img's loop device | container (lib/disk.sh) | `harness_run` |
+<!-- END GENERATED: commands -->
+
+### MCP tools
+
+<!-- BEGIN GENERATED: mcp-tools -->
+| tool | what it does |
+|---|---|
+| `app_start` | Start a GUI app inside a ShaniOS slot on a private virtual display (safe: never touches the real screen). Waits until ready. First run installs Xvfb/xdotool into the builder container. |
+| `app_screenshot` | Screenshot of the whole virtual display (PNG image). |
+| `app_tree` | Accessibility tree of the app (AT-SPI): [ref] role 'name' =value [states] @x,y wxh — the native-app DOM. |
+| `app_find` | Find on-screen elements. query: regex on name/role, or ROLE:NAME-REGEX like 'button:^OK$'. |
+| `app_click_element` | Click the centre of the Nth element matching query (see app_find). |
+| `app_click` | Click at pixel coordinates. |
+| `app_double_click` | Double-click at pixel coordinates. |
+| `app_move` | Move the pointer (hover). |
+| `app_drag` | Press at (x1,y1), move to (x2,y2), release. |
+| `app_scroll` | Scroll the wheel. |
+| `app_type` | Type literal text into the focused widget. |
+| `app_key` | Press a key or combo (X keysyms): Return, Escape, Tab, ctrl+a, alt+F4, BackSpace. |
+| `app_windows` | List visible windows: id, position, size, title. |
+| `app_wait_window` | Wait until a window whose title matches the regex is visible. |
+| `app_focus` | Give keyboard focus to the window matching the title regex. |
+| `app_status` | Is the app still running (or its exit code)? |
+| `app_stop` | Stop the session; returns the app's stdout, stderr and exit code. |
+| `app_wait_element` | Wait until an element matching query (see app_find) is on screen. |
+| `app_expect_absent` | Fail if an element matching query appears at any point within secs. |
+| `app_expect_window` | Fail unless a window whose title matches the regex exists now. |
+| `app_expect_gone` | Wait until no window matches the title regex. |
+| `app_wait_exit` | Wait for the app to exit and report its exit code. |
+| `app_a11y_lint` | Fail if any on-screen control has no accessible name (what a screen reader would announce as just 'button'). |
+| `app_expect_text` | OCR the display (tesseract) and fail unless the regex is found. |
+| `app_mask` | Blank a region in every later app_expect_same/app_expect_changed comparison (clock, spinner). |
+| `app_expect_same` | Fail if more than pct % of the display differs from a reference PNG (visual regression). |
+| `app_expect_changed` | Fail unless more than pct % of the display differs from a reference PNG - 'the click did something'. |
+| `app_monkey` | N random clicks on enabled on-screen controls from the accessibility tree; fails if the app exits. The seed is printed so failures replay. |
+| `app_log` | Show the app's stderr so far. |
+| `app_expect_clean_log` | Fail if the app's stderr has GLib/GTK/Qt warnings or criticals (optional ignore regex). |
+| `app_voice` | (voice sessions) pick the espeak-ng voice for app_say, e.g. en-us. |
+| `app_say` | (voice sessions) speak text into the app's virtual microphone. |
+| `app_play` | (voice sessions) play a WAV file into the app's virtual microphone. |
+| `app_heard_mark` | (voice sessions) start app_expect_heard afresh from now. |
+| `app_expect_heard` | (voice sessions) transcribe what the app played on its virtual speaker and fail unless the regex is heard (or, with negate, fail if it is). |
+| `app_observe` | Numbered view of what the app shows: window title, focused element, selected rows, then '[N] role name' for every usable control. Cheaper than app_tree; pick a control by number with app_click_control. |
+| `app_click_control` | Click control [n] as numbered by the last app_observe. The reply says which controls appeared or disappeared. |
+| `app_expect_field` | Fail unless the focused text field's content matches the regex - verifies app_type actually landed (catches dropped keystrokes). |
+| `app_click_text` | Click visible text found by OCR (word boxes) - for windows with no accessibility tree. nth picks among several matches. |
+| `app_wait_settle` | Wait until the display stops changing for `quiet` seconds (at most `timeout`) - instead of a fixed sleep. |
+| `app_sleep` | Pause inside the session (let an animation or async load settle). |
+| `app_action` | Escape hatch: send any raw lib/app.sh action string (e.g. 'sleep=2'). Prefer the typed tools. |
+| `harness_start` | Start a long-running harness command in the background (serve, watch, qemu, gui, or anything slow). Returns a job id. |
+| `harness_job` | Status and output tail of a background harness job. |
+| `harness_stop` | Stop a background harness job (SIGTERM to its process group). |
+| `harness_run` | Run a harness command to completion and return exit code + output tail. Any testbed command except app: status, clean, disk, ca, bootstrap, verify-boot, probe, enter, desktop, slot-test, slot-diff, upgrade, rollback, update-check, reboot, cycle, pacstrap, suite, gate, install, configure, iso-install, web (container) and vmspawn, iso (host). Use harness_start for serve, watch, qemu, gui. |
+<!-- END GENERATED: mcp-tools -->
+
+### Slot tests
+
+<!-- BEGIN GENERATED: slot-tests -->
+| slot-test | mode | what it checks |
+|---|---|---|
+| `apparmor` | boot | every shipped profile parses |
+| `backup-snapshots` | boot | what `shani_backup.btrfs` actually does on a REAL btrfs filesystem, measured rather than reasoned about, driving the repo's own module (/mnt/src/shani-backup, the live checkout, read-only) instead of a copy of it |
+| `boot-health` | boot | every unit that failed in this boot is either on the list of failures systemd-nspawn itself causes (each with the evidence that proved it), or it is reported as a real failure |
+| `boot-safety-onfailure` | boot | shani-deploy's OnFailure= wiring on the boot-safety units (shani-boot-safety-failed@.service) and shani-health --boot's "Safety units" / "Kernel crash" rows, in a real booted slot |
+| `chronoa-binary-hardening` | boot | the `binary_hardening` skill, driven on the REAL image through the REAL dispatch path (`tools.execute_tool_outcome`, which runs the handler in the sandboxed child a model's tool call would use) |
+| `chronoa-cli-formats` | boot | the output shapes shani-chronoa's CLI parsers depend on, measured on the REAL image, because the dev boxes they were written on cannot run half of these binaries |
+| `chronoa-demo` | boot | one boot, the whole story, measured |
+| `chronoa-disk-layout` | boot | the `disk_layout` skill, driven on the REAL image through the REAL dispatch path (`tools.execute_tool_outcome`, which runs the handler in the sandboxed child a model's tool call would use) |
+| `chronoa-distill` | boot | distil the real local model into a routing student, on a booted ShaniOS slot, and report what it actually learned |
+| `chronoa-driver-skills` | boot | the five driver-development skills, driven on the REAL image through the REAL dispatch path (`tools.execute_tool_outcome`, which runs each handler in the sandboxed child a model's tool call would use) |
+| `chronoa-driver-tools` | boot | the environment a Linux driver needs, measured on the REAL ShaniOS image |
+| `chronoa-eval` | boot | Chronoa's task eval (tools/task_eval.py) against the real local model on a booted ShaniOS slot |
+| `chronoa-extras` | boot | the setup window's optional extras done for real in a booted ShaniOS slot, each through setup_wizard's own step function and then USED |
+| `chronoa-machine-state` | boot | acceptance coverage for the machine-state senses on a REAL booted ShaniOS slot, driven through the REAL installed /usr/bin/shani-chronoa-sense |
+| `chronoa-matrix-skills` | boot | the twenty skills shani-chronoa built from the cli_matrix shortlist (2026-10-07), run on a REAL booted ShaniOS slot through the REAL dispatch path (`tools.execute_tool_outcome`, which runs each handler in a sandboxed child), against the image's own binaries |
+| `chronoa-matrix` | boot | shani-chronoa's tools/cli_matrix.py run against a REAL installed image |
+| `chronoa-presence` | boot | does releasing the model actually release it? |
+| `chronoa-senses` | boot | acceptance coverage for shani-chronoa's senses/ layer, driven through the REAL installed entry point /usr/bin/shani-chronoa-sense inside a REAL booted slot |
+| `chronoa-setup` | boot | shani-chronoa's first-run setup (setup_wizard.py) done for real in a booted ShaniOS slot |
+| `chronoa-singing` | boot | does the pitch contour actually bend a real voice on a real installed Shanios, and what is missing when it does not |
+| `chronoa-speech` | boot | acceptance coverage for shani-chronoa's SPEECH stack (whisper.cpp STT + Piper/RHVoice/espeak-ng TTS) inside a REAL booted ShaniOS slot |
+| `chronoa-state` | boot | does Chronoa's state land somewhere that survives, on the immutable layout this image actually boots? |
+| `chronoa-whisper-prompt` | boot | does whisper.cpp's `--prompt` help this system's vocabulary, measured on the REAL ShaniOS image |
+| `config-validators` | boot | every security/system config in the INSTALLED image checked by its own real validator, after every package, overlay and configure.sh step has touched it |
+| `deploy-status` | boot | `shani-deploy --status [--check] --json`, what Shani Cassini reads |
+| `disk-layout` | boot | the Btrfs top level holds only the installed layout |
+| `dnscrypt-enable` | boot | Does enabling dnscrypt-proxy break the machine's networking? |
+| `fresh-user` | boot | what a person gets on a fresh install |
+| `initramfs-drivers` | boot | every UKI on the ESP carries the drivers its root disk can need, so the initqueue can find root=UUID= on more than a virtio disk |
+| `launchers` | boot | what the shipped desktop pins is really there |
+| `nut-stack` | boot | does the NUT stack START from systemd on a real Shanios boot, with the config shani-settings ships and NO UPS attached? |
+| `pam-wiring` | boot | every PAM module referenced by a shipped PAM service is actually installed, and Shanios' own system-auth override still resolves |
+| `post-reset-setup` | boot | the state a factory reset leaves behind, and the one hook that has to clean it up |
+| `repo-pytest` | boot | run the GUI apps' OWN test suites (shani-cassini, shani-chronoa, shani-backup) against the Python, PyGObject, GTK and libadwaita this image ships, not the CI runner's |
+| `service-start` | boot | every opt-in service ShaniOS ships disabled must actually START on a fresh install the moment a user turns it on (Cassini's Sharing / Remote Access / Virtualization pages, or `systemctl enable --now`) |
+| `sysctl-hardening` | boot | the kernel values shani-settings' sysctl.d files ASK for, read back from /proc/sys on a booted system, and compared against what those files actually say |
+| `systemd-report-signing` | boot | Can systemd 262 sign a fleet report with the TPM2 on this machine? |
+| `unit-verify` | boot | `systemd-analyze verify` over every unit ShaniOS itself ships, in the installed image, plus every load-time complaint PID 1 logged this boot |
+| `user-setup-path` | boot | shani-user-setup.path stays active after boot (no trigger-limit-hit); the /data/user-setup-needed marker and useradd still trigger shani-user-setup.service; a sync that fixes several users at once converges with the path unit alive (missing shells repaired); another spelling of the same zsh is not rewritten; a shell a user chose (bash) is kept - no forced zsh; re-adding the old PathExists= line reproduces the failure (negative control); shani-health --security's "Unit Sandboxing" works |
+<!-- END GENERATED: slot-tests -->
+
 ## Requirements
 
 Whatever `../run_in_container.sh` already needs for a normal build — nothing
