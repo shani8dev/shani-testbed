@@ -161,10 +161,53 @@ def compare(before_path: str, after_path: str, grid: int = GRID) -> dict:
     }
 
 
+#: Consecutive "same" comparisons that mean the screen has stopped moving.
+STABLE_RUN = 2
+
+
+def settled(frame_paths: "list[str]", stable_run: int = STABLE_RUN, grid: int = GRID):
+    """The index of the first frame by which the screen had held still for
+    `stable_run` comparisons in a row (settled), or None if it never did.
+
+    The adaptive wait Extra calls `extra_soul_wait`: instead of a fixed sleep
+    after an action, the harness screendumps a few times and asks this where the
+    animation stopped - so a slow dialog is waited out and a fast one is not
+    waited on needlessly. The capturing is the caller's (the harness already
+    screendumps); this is only the "has it stopped" judgement, so it stays
+    host-testable against a fixed sequence of frames.
+    """
+    if len(frame_paths) < stable_run + 1:
+        return None  # too few frames to prove it held still
+    run = 0
+    for i in range(1, len(frame_paths)):
+        if compare(frame_paths[i - 1], frame_paths[i], grid)["verdict"] == "same":
+            run += 1
+            if run >= stable_run:
+                return i
+        else:
+            run = 0
+    return None
+
+
 def main(argv: "list[str]") -> int:
+    if argv[:1] == ["settled"]:
+        paths = argv[1:]
+        if len(paths) < STABLE_RUN + 1:
+            sys.stderr.write(
+                "usage: visual_progress.py settled FRAME1.ppm FRAME2.ppm FRAME3.ppm [...]\n")
+            return 64
+        try:
+            where = settled(paths)
+        except (OSError, PPMError) as exc:
+            sys.stderr.write(f"visual_progress: {exc}\n")
+            return 65
+        print(json.dumps({"settled_at": where, "frames": len(paths)}))
+        return 0 if where is not None else 2
+
     if len(argv) != 3 or argv[0] not in ("compare", "assert-changed"):
         sys.stderr.write(
-            "usage: visual_progress.py compare|assert-changed BEFORE.ppm AFTER.ppm\n")
+            "usage: visual_progress.py compare|assert-changed BEFORE.ppm AFTER.ppm\n"
+            "       visual_progress.py settled FRAME1.ppm FRAME2.ppm FRAME3.ppm [...]\n")
         return 64
     try:
         result = compare(argv[1], argv[2])

@@ -1013,7 +1013,18 @@ and **where** it changed — `region` is the `[x0, y0, x1, y1]` pixel bounding b
 of the change and `center` its midpoint, so a slot-test can assert not just that
 a click did something but that it opened something *where it should* (a menu to
 the right of the click, a dialog in the middle). `assert-changed` turns the
-verdict into an exit code a slot-test can gate on. The host
+verdict into an exit code a slot-test can gate on.
+
+`settled` is the adaptive wait (Extra's `extra_soul_wait`): instead of a fixed
+`--sleep`, screendump a few frames and ask where the animation stopped —
+
+```bash
+testbed gui --screenshot=f0.ppm --sleep=0.2 --screenshot=f1.ppm \
+            --sleep=0.2 --screenshot=f2.ppm --sleep=0.2 --screenshot=f3.ppm
+python3 lib/visual_progress.py settled f0.ppm f1.ppm f2.ppm f3.ppm   # exit 0 settled, 2 never
+```
+
+so a slow dialog is waited out and a fast one is not waited on needlessly. The host
 self-test `tests/visual-progress-results.sh` proves the verdict goes both ways —
 `same` for an identical frame **and** for a cursor-sized dot, `changed` for a
 window-sized block — so a check that always said one thing can't hide here.

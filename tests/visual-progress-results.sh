@@ -54,6 +54,13 @@ ppm("same.ppm")
 ppm("cursor.ppm", (5, 5, 9, 9, (240, 240, 240)))
 ppm("window.ppm", (40, 40, 280, 200, (240, 240, 240)))
 ppm("right.ppm", (180, 90, 300, 150, (240, 240, 240)))  # a 320-wide frame's right half
+# A settling run: grows, grows, then holds still twice (settled).
+for i, box in enumerate([(0, 0, 40, 40), (0, 0, 120, 120), (0, 0, 200, 200),
+                         (0, 0, 200, 200), (0, 0, 200, 200)]):
+    ppm(f"settle{i}.ppm", (*box, (240, 240, 240)))
+# A churning run: never holds still.
+for i in range(5):
+    ppm(f"churn{i}.ppm", (0, 0, 30 + i * 40, 30 + i * 40, (240, 240, 240)))
 open(f"{d}/bad.ppm", "wb").write(b"not a ppm at all")
 PY
 
@@ -87,7 +94,15 @@ fi
   && ok "an unchanged frame reports no region" \
   || no "no-change region" "a same frame reported a changed region"
 
-# 5. assert-changed exit codes: 2 for 'same', 0 for 'changed'.
+# 5. settled: a run that stops moving reports where (exit 0); one that never does exits 2.
+python3 "$VP" settled "$TMP"/settle0.ppm "$TMP"/settle1.ppm "$TMP"/settle2.ppm "$TMP"/settle3.ppm "$TMP"/settle4.ppm >/dev/null; [[ $? -eq 0 ]] \
+  && ok "a settling run is detected as settled" \
+  || no "settled run" "a screen that stopped moving was not seen to settle"
+python3 "$VP" settled "$TMP"/churn0.ppm "$TMP"/churn1.ppm "$TMP"/churn2.ppm "$TMP"/churn3.ppm "$TMP"/churn4.ppm >/dev/null; [[ $? -eq 2 ]] \
+  && ok "a churning run is reported as never settled" \
+  || no "churn run" "a screen that kept changing was wrongly called settled"
+
+# 6. assert-changed exit codes: 2 for 'same', 0 for 'changed'.
 python3 "$VP" assert-changed "$TMP/base.ppm" "$TMP/same.ppm" >/dev/null; [[ $? -eq 2 ]] \
   && ok "assert-changed exits 2 on no change" \
   || no "assert-changed same" "did not exit 2 on an unchanged screen"
