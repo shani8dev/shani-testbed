@@ -1008,8 +1008,12 @@ testbed gui --screenshot=before.ppm --click=640,400 --screenshot=after.ppm
 python3 lib/visual_progress.py assert-changed before.ppm after.ppm
 ```
 
-`compare` prints a JSON verdict (`hamming`, `changed_cells`, `changed_fraction`);
-`assert-changed` turns it into an exit code a slot-test can gate on. The host
+`compare` prints a JSON verdict (`hamming`, `changed_cells`, `changed_fraction`)
+and **where** it changed — `region` is the `[x0, y0, x1, y1]` pixel bounding box
+of the change and `center` its midpoint, so a slot-test can assert not just that
+a click did something but that it opened something *where it should* (a menu to
+the right of the click, a dialog in the middle). `assert-changed` turns the
+verdict into an exit code a slot-test can gate on. The host
 self-test `tests/visual-progress-results.sh` proves the verdict goes both ways —
 `same` for an identical frame **and** for a cursor-sized dot, `changed` for a
 window-sized block — so a check that always said one thing can't hide here.

@@ -53,10 +53,12 @@ ppm("base.ppm")
 ppm("same.ppm")
 ppm("cursor.ppm", (5, 5, 9, 9, (240, 240, 240)))
 ppm("window.ppm", (40, 40, 280, 200, (240, 240, 240)))
+ppm("right.ppm", (180, 90, 300, 150, (240, 240, 240)))  # a 320-wide frame's right half
 open(f"{d}/bad.ppm", "wb").write(b"not a ppm at all")
 PY
 
-verdict() { python3 "$VP" compare "$1" "$2" | python3 -c 'import json,sys;print(json.load(sys.stdin)["verdict"])'; }
+field() { python3 "$VP" compare "$1" "$2" | python3 -c "import json,sys;print(json.load(sys.stdin)[\"$3\"])"; }
+verdict() { field "$1" "$2" verdict; }
 
 # 1. Identical frames -> same.
 [[ "$(verdict "$TMP/base.ppm" "$TMP/same.ppm")" == same ]] \
@@ -73,7 +75,19 @@ verdict() { python3 "$VP" compare "$1" "$2" | python3 -c 'import json,sys;print(
   && ok "a window-sized change reads as 'changed'" \
   || no "window change" "a large change did not register - the check cannot pass"
 
-# 4. assert-changed exit codes: 2 for 'same', 0 for 'changed'.
+# 4. The changed region is reported, and lands where the change is (right half).
+center="$(field "$TMP/base.ppm" "$TMP/right.ppm" center)"   # e.g. [240, 120]
+cx="$(printf '%s' "$center" | python3 -c 'import sys,ast;print(ast.literal_eval(sys.stdin.read())[0])' 2>/dev/null)"
+if [[ -n "$cx" && "$cx" -gt 160 ]]; then
+  ok "the changed region's centre ($center) is in the right half"
+else
+  no "changed region" "a change in the right half was not localised there (centre $center)"
+fi
+[[ "$(field "$TMP/base.ppm" "$TMP/same.ppm" region)" == None ]] \
+  && ok "an unchanged frame reports no region" \
+  || no "no-change region" "a same frame reported a changed region"
+
+# 5. assert-changed exit codes: 2 for 'same', 0 for 'changed'.
 python3 "$VP" assert-changed "$TMP/base.ppm" "$TMP/same.ppm" >/dev/null; [[ $? -eq 2 ]] \
   && ok "assert-changed exits 2 on no change" \
   || no "assert-changed same" "did not exit 2 on an unchanged screen"

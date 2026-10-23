@@ -90,9 +90,10 @@ def load_ppm(path: str) -> "tuple[int, int, bytes]":
     return width, height, pixels
 
 
-def thumbnail(path: str, grid: int = GRID) -> "list[int]":
-    """A grid*grid list of 0-255 grayscale cell averages, each the mean luminance
-    of the pixels sampled from that cell of the frame."""
+def thumbnail(path: str, grid: int = GRID) -> "tuple[list[int], int, int]":
+    """(cells, width, height): a grid*grid list of 0-255 grayscale cell averages,
+    each the mean luminance of the pixels sampled from that cell, and the frame's
+    pixel size (so a changed region can be reported in real coordinates)."""
     width, height, px = load_ppm(path)
     if width == 0 or height == 0:
         raise PPMError(f"{path} has a zero dimension")
@@ -113,7 +114,7 @@ def thumbnail(path: str, grid: int = GRID) -> "list[int]":
                     total += (px[i] * 77 + px[i + 1] * 150 + px[i + 2] * 29) >> 8
                     count += 1
             cells.append(total // count if count else 0)
-    return cells
+    return cells, width, height
 
 
 def _ahash(cells: "list[int]") -> int:
@@ -125,18 +126,37 @@ def _ahash(cells: "list[int]") -> int:
     return bits
 
 
+def _region(moved_cells: "list[tuple[int, int]]", grid: int, width: int, height: int):
+    """The pixel bounding box [x0, y0, x1, y1] of the changed grid cells, and its
+    centre [cx, cy] - what a slot-test asserts against ("the menu opened to the
+    right of the click"). None when nothing moved."""
+    if not moved_cells:
+        return None, None
+    gxs = [gx for gx, _ in moved_cells]
+    gys = [gy for _, gy in moved_cells]
+    x0 = min(gxs) * width // grid
+    y0 = min(gys) * height // grid
+    x1 = (max(gxs) + 1) * width // grid
+    y1 = (max(gys) + 1) * height // grid
+    return [x0, y0, x1, y1], [(x0 + x1) // 2, (y0 + y1) // 2]
+
+
 def compare(before_path: str, after_path: str, grid: int = GRID) -> dict:
-    """How much the screen changed between two PPM frames, and a verdict."""
-    a, b = thumbnail(before_path, grid), thumbnail(after_path, grid)
+    """How much the screen changed between two PPM frames, where, and a verdict."""
+    a, _aw, _ah = thumbnail(before_path, grid)
+    b, width, height = thumbnail(after_path, grid)  # the "after" frame is the screen now
     hamming = bin(_ahash(a) ^ _ahash(b)).count("1")
-    moved = sum(1 for x, y in zip(a, b) if abs(x - y) > CELL_DELTA)
-    fraction = moved / len(a)
+    moved_cells = [(i % grid, i // grid) for i, (x, y) in enumerate(zip(a, b)) if abs(x - y) > CELL_DELTA]
+    fraction = len(moved_cells) / len(a)
     changed = hamming >= HAMMING_FLOOR or fraction >= FRACTION_FLOOR
+    region, center = _region(moved_cells, grid, width, height)
     return {
         "verdict": "changed" if changed else "same",
         "hamming": hamming,
-        "changed_cells": moved,
+        "changed_cells": len(moved_cells),
         "changed_fraction": round(fraction, 4),
+        "region": region,
+        "center": center,
         "grid": grid,
     }
 
