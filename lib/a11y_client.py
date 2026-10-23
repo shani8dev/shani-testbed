@@ -11,6 +11,12 @@ cmd_app and points at that app's private session bus).
   a11y_client.py center QUERY [NTH]      "cx cy role 'name'" of the NTH match (1-based)
   a11y_client.py lint                    on-screen controls with no accessible name (exit 1 if any)
   a11y_client.py actionable              "cx cy role 'name'" of every on-screen, enabled control
+  a11y_client.py observe                 numbered view: window, focus, selected rows, then
+                                         "[N] role 'name' =value" for every usable control
+  a11y_client.py control N               "cx cy role 'name'" of control N, numbered as observe does
+  a11y_client.py snapshot FILE           save the usable controls (role + name) to FILE
+  a11y_client.py diff FILE               what appeared / disappeared since snapshot FILE
+  a11y_client.py focused-text            the full text of the focused element (exit 1 if none)
 
 QUERY is a case-insensitive regex matched against the element's name and
 role, or ROLE:NAME-REGEX to require an exact role (e.g. "button:^OK$").
@@ -361,6 +367,54 @@ def on_screen(acc):
     return ext is not None and ext[2] > 0 and ext[3] > 0 and "showing" in states_of(acc)
 
 
+def usable():
+    """On-screen, enabled controls in document order - the numbering `observe`
+    and `control` share. Ported from shani-chronoa's ui_driver.observation /
+    control_by_number: an agent picks a control by number from a short list
+    instead of reading the whole tree (fewer tokens, no regex to get wrong)."""
+    out = []
+    for ref, d, acc, role, name in walk():
+        if role in CONTROL_ROLES and on_screen(acc) and "sensitive" in states_of(acc):
+            label = name.strip() or (content_name(acc) if role in NAME_FROM_CONTENT else "")
+            out.append((ref, d, acc, role, label))
+    return out
+
+
+def _frame_title():
+    for ref, d, acc, role, name in walk(4):
+        if role in ("frame", "window", "dialog") and name and on_screen(acc):
+            return name
+    return ""
+
+
+def observation():
+    lines = []
+    title = _frame_title()
+    if title:
+        lines.append("window: %r" % title)
+    focused, selected = None, []
+    for ref, d, acc, role, name in walk():
+        st = states_of(acc)
+        if "focused" in st and focused is None and role not in ("frame", "window"):
+            focused = "%s %r" % (role, name.strip() or content_name(acc))
+        if "selected" in st and on_screen(acc) and role in ("list item", "tree item", "page tab", "table cell"):
+            selected.append("%s %r" % (role, name.strip() or content_name(acc)))
+    if focused:
+        lines.append("focused: " + focused)
+    if selected:
+        lines.append("selected: " + ", ".join(selected[:6]))
+    for i, (ref, d, acc, role, label) in enumerate(usable(), 1):
+        val = text_value(acc)
+        flags = [f for f in ("checked", "pressed", "expanded", "selected") if f in states_of(acc)]
+        lines.append("[%d] %s %r%s%s" % (i, role, label, " =%r" % val if val and val != label else "",
+                                         " [" + ",".join(flags) + "]" if flags else ""))
+    return lines
+
+
+def signature():
+    return sorted({"%s %r" % (role, label) for ref, d, acc, role, label in usable()})
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__, file=sys.stderr)
@@ -430,6 +484,67 @@ def main(argv):
             return 1
         print("all %d on-screen controls have an accessible name" % n)
         return 0
+    if cmd == "observe":
+        lines = observation()
+        if not any(l.startswith("[") for l in lines):
+            print("\n".join(lines + ["no usable on-screen controls (app not started, or accessibility off)"]))
+            return 1
+        print("\n".join(lines))
+        return 0
+    if cmd == "control":
+        if len(argv) < 3 or not argv[2].isdigit():
+            print("control needs a number from observe", file=sys.stderr)
+            return 2
+        n, ctl = int(argv[2]), usable()
+        if not 1 <= n <= len(ctl):
+            print("no control [%d]: observe lists %d" % (n, len(ctl)), file=sys.stderr)
+            return 1
+        ref, _, acc, role, label = ctl[n - 1]
+        x, y, w, h = extents(acc)
+        if not _in_window(acc, x, y, w, h):
+            x, y, w, h = _bring_into_view(acc, x, y, w, h)
+            if not _in_window(acc, x, y, w, h):
+                print("[%d] %s %r cannot be clicked: outside the window or covered" % (n, role, label), file=sys.stderr)
+                return 1
+        print("%d %d %s %r" % (x + w // 2, y + h // 2, role, label))
+        return 0
+    if cmd == "snapshot":
+        with open(argv[2], "w") as f:
+            f.write("\n".join(signature()) + "\n")
+        return 0
+    if cmd == "diff":
+        # "what appeared" - ported from shani-chronoa's browser_driver._what_appeared:
+        # after an action, say which controls came and went, so the agent sees the
+        # effect without re-reading everything (and a no-op click is visible as such)
+        try:
+            before = set(l for l in open(argv[2]).read().splitlines() if l)
+        except OSError:
+            print("no snapshot %s" % argv[2], file=sys.stderr)
+            return 1
+        after = set(signature())
+        came, went = sorted(after - before), sorted(before - after)
+        if not came and not went:
+            print("no controls appeared or disappeared")
+        else:
+            if came:
+                print("appeared: " + "; ".join(came[:12]) + (" (+%d more)" % (len(came) - 12) if len(came) > 12 else ""))
+            if went:
+                print("gone: " + "; ".join(went[:12]) + (" (+%d more)" % (len(went) - 12) if len(went) > 12 else ""))
+        return 0
+    if cmd == "focused-text":
+        for ref, d, acc, role, name in walk():
+            if "focused" not in states_of(acc):
+                continue
+            try:
+                if acc.get_text_iface() is None:
+                    continue
+                n = Atspi.Text.get_character_count(acc)
+                print(Atspi.Text.get_text(acc, 0, n) if n > 0 else "")
+                return 0
+            except Exception:
+                continue
+        print("no focused element with readable text", file=sys.stderr)
+        return 1
     if cmd == "actionable":
         # a monkey run tests that the app SURVIVES random use; a control whose
         # job is to end it (Close, Quit) ending it is correct, not a crash

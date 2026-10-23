@@ -60,7 +60,19 @@
 #   wait-element=QUERY[:SECS]    wait (default 30s) until find=QUERY matches
 #   expect-absent=QUERY[:SECS]   fail if find=QUERY matches at any point in
 #                                SECS (default 5) - the negative of find
-#   click-element=QUERY[#N]      click the centre of the Nth match (default 1st)
+#   click-element=QUERY[#N]      click the centre of the Nth match (default 1st);
+#                                the reply also says which controls appeared/went
+#   observe                      numbered view of the usable controls (window,
+#                                focus, selected rows, "[N] role 'name'") - pick
+#                                one by number instead of writing a query
+#   click-control=N              click control [N] from the last observe; the
+#                                reply says what appeared/disappeared
+#   expect-field=REGEX           fail unless the focused field's text matches -
+#                                catches keystrokes the app dropped while typing
+#   click-text=TEXT[#N]          click visible TEXT found by OCR (tesseract word
+#                                boxes) - for windows with no accessibility tree
+#   wait-settle[=QUIET[:MAX]]    wait until the display stops changing for QUIET
+#                                seconds (default 0.6), at most MAX (default 10)
 #   doubleclick-element= / rightclick-element=   same, other clicks
 #   a11y-lint                    fail if any on-screen control (button, entry,
 #                                check box, menu item, ...) has no accessible
@@ -136,6 +148,34 @@ _app_ensure_ocr() {
   command -v tesseract >/dev/null 2>&1
 }
 APP_MASKS=()
+
+# _app_ocr_image OUT: the image tesseract reads - the root window cropped to the
+# union of the app's visible windows, 2x upscaled, grey. Sets OCR_X OCR_Y (the
+# crop's origin on the display) so a word box maps back to display pixels.
+# WHY the crop: the virtual display is larger than the app's window, and on
+# 2026-10-23 tesseract 5.5.3 returned NOTHING for a 2x-upscaled full display
+# whose right/bottom edge was empty black - while the same pixels cropped to the
+# window read perfectly ("Shani Cassini System Overview Health ..."). Every
+# expect-text had been comparing against an empty string on such displays.
+_app_ocr_image() {
+  local out="$1" id x0=999999 y0=999999 x1=0 y1=0
+  import -display "$APP_DISPLAY" -window root "$out" 2>/dev/null || return 1
+  while read -r id; do
+    [[ -n "$id" ]] || continue
+    _app_geometry "$id"
+    (( WW > 1 && WH > 1 )) || continue
+    (( WX < x0 )) && x0=$WX; (( WY < y0 )) && y0=$WY
+    (( WX + WW > x1 )) && x1=$((WX + WW)); (( WY + WH > y1 )) && y1=$((WY + WH))
+  done < <(_app_find '.')
+  OCR_X=0 OCR_Y=0
+  if (( x1 > x0 && y1 > y0 )); then
+    (( x0 < 0 )) && x0=0; (( y0 < 0 )) && y0=0
+    OCR_X=$x0 OCR_Y=$y0
+    convert "$out" -crop "$((x1 - x0))x$((y1 - y0))+${x0}+${y0}" +repage "$out" 2>/dev/null || return 1
+  fi
+  # 2x upscale: tesseract reads 9-11 px UI text far better at 20+ px
+  convert "$out" -resize 200% -colorspace Gray "$out" 2>/dev/null
+}
 
 # --- voice: a virtual microphone and speaker in the app's session ----------
 # The builder side talks to the slot's PipeWire through APP_RT (bind-mounted
@@ -427,6 +467,28 @@ _app_ensure_focus() {
 }
 _app_no_window()  { [[ -z "$(_app_find "$1")" ]]; }
 
+# _app_settle QUIET MAX: return 0 once the display has not changed for QUIET
+# seconds, 1 if it is still changing after MAX. Ported from shani-chronoa's
+# ui_driver._settled: a fixed `sleep` is either too short (flaky) or too long
+# (slow); waiting for the pixels to stop moving is neither.
+_app_settle() {
+  local quiet="$1" maxs="$2" a="${APP_OUT}/.settle-a.png" b="${APP_OUT}/.settle-b.png" t0 still=0 d
+  t0=$(date +%s.%N)
+  import -display "$APP_DISPLAY" -window root "$a" 2>/dev/null || return 1
+  while :; do
+    sleep 0.2
+    import -display "$APP_DISPLAY" -window root "$b" 2>/dev/null || return 1
+    d=$(compare -metric AE -fuzz 2% "$a" "$b" null: 2>&1); d="${d%%[^0-9]*}"
+    if [[ "$d" == 0 ]]; then
+      still=$(python3 -c "print(round(${still} + 0.2, 1))")
+      python3 -c "import sys; sys.exit(0 if ${still} >= ${quiet} else 1)" && return 0
+    else
+      still=0; mv -f "$b" "$a"
+    fi
+    python3 -c "import sys,time; sys.exit(0 if time.time() - ${t0} < ${maxs} else 1)" || return 1
+  done
+}
+
 APP_SHOT_N=0
 A11Y_CLIENT="${LIB_DIR}/a11y_client.py"
 
@@ -542,12 +604,62 @@ _app_do() {
       local cx="${center%% *}" rest="${center#* }"
       local cy="${rest%% *}" label="${rest#* }"
       b=1; [[ "$name" == rightclick-element ]] && b=3
+      python3 "$A11Y_CLIENT" snapshot "${APP_OUT}/.observe-before" 2>/dev/null
       if [[ "$name" == doubleclick-element ]]; then
         xdotool mousemove "$cx" "$cy" click --repeat 2 --delay 120 1
       else
         xdotool mousemove "$cx" "$cy" click "$b"
       fi || { APP_REPLY="xdotool click failed"; return 1; }
-      APP_REPLY="${name%-element} ${label} at ${cx},${cy}" ;;
+      _app_settle 0.5 5 >/dev/null
+      APP_REPLY="${name%-element} ${label} at ${cx},${cy}; $(python3 "$A11Y_CLIENT" diff "${APP_OUT}/.observe-before" 2>&1 | tr '\n' ' ')" ;;
+    observe)
+      APP_REPLY="$(python3 "$A11Y_CLIENT" observe 2>&1)" || return 1 ;;
+    click-control)
+      [[ "$value" =~ ^[0-9]+$ ]] || { APP_REPLY="click-control needs a number from observe"; return 1; }
+      local ctl snap="${APP_OUT}/.observe-before"
+      ctl="$(python3 "$A11Y_CLIENT" control "$value" 2>&1)" || { APP_REPLY="$ctl"; return 1; }
+      python3 "$A11Y_CLIENT" snapshot "$snap" 2>/dev/null
+      local ccx="${ctl%% *}" crest="${ctl#* }"
+      xdotool mousemove "$ccx" "${crest%% *}" click 1 || { APP_REPLY="xdotool click failed"; return 1; }
+      _app_settle 0.5 5 >/dev/null
+      APP_REPLY="click [${value}] ${crest#* } at ${ccx},${crest%% *}; $(python3 "$A11Y_CLIENT" diff "$snap" 2>&1 | tr '\n' ' ')" ;;
+    expect-field)
+      local ftxt
+      ftxt="$(python3 "$A11Y_CLIENT" focused-text 2>&1)" || { APP_REPLY="expect-field: ${ftxt}"; return 1; }
+      if grep -qE -- "$value" <<<"$ftxt"; then APP_REPLY="focused field matches /${value}/: ${ftxt:0:200}"
+      else APP_REPLY="expect-field: focused field is '${ftxt:0:200}', does not match /${value}/"; return 1; fi ;;
+    click-text)
+      _app_ensure_ocr || { APP_REPLY="click-text: tesseract unavailable"; return 1; }
+      local want="$value" wn=1 hit
+      if [[ "$value" =~ ^(.*)#([0-9]+)$ ]]; then want="${BASH_REMATCH[1]}"; wn="${BASH_REMATCH[2]}"; fi
+      local tshot="${APP_OUT}/.ocr-click.png"
+      _app_ocr_image "$tshot" || { APP_REPLY="click-text: screenshot failed"; return 1; }
+      hit="$(tesseract "$tshot" - tsv 2>/dev/null | python3 -c '
+import sys, csv, re
+want, nth = sys.argv[1].lower().split(), int(sys.argv[2])
+rows = [r for r in csv.DictReader(sys.stdin, delimiter="\t") if r.get("text", "").strip() and float(r.get("conf") or -1) > 30]
+hits = []
+for i in range(len(rows)):
+    seq = rows[i:i + len(want)]
+    if len(seq) == len(want) and all(w in re.sub(r"[^\w&+-]", "", r["text"].lower()) for w, r in zip(want, seq)) \
+            and len({(r["block_num"], r["par_num"], r["line_num"]) for r in seq}) == 1:
+        x0 = min(int(r["left"]) for r in seq); y0 = min(int(r["top"]) for r in seq)
+        x1 = max(int(r["left"]) + int(r["width"]) for r in seq); y1 = max(int(r["top"]) + int(r["height"]) for r in seq)
+        hits.append(((x0 + x1) // 4, (y0 + y1) // 4, " ".join(r["text"] for r in seq)))
+if len(hits) < nth:
+    sys.exit("found %d OCR match(es)" % len(hits))
+print("%d %d %s" % hits[nth - 1])
+' "$want" "$wn" 2>&1)" || { APP_REPLY="click-text: /${want}/ not on screen (${hit})"; return 1; }
+      local tx="${hit%% *}" trest="${hit#* }"
+      tx=$((tx + OCR_X)); trest="$(( ${trest%% *} + OCR_Y )) ${trest#* }"
+      xdotool mousemove "$tx" "${trest%% *}" click 1 || { APP_REPLY="xdotool click failed"; return 1; }
+      APP_REPLY="click-text '${trest#* }' at ${tx},${trest%% *}" ;;
+    wait-settle)
+      local quiet="${value%%:*}" maxs=10
+      [[ "$value" == *:* ]] && maxs="${value#*:}"
+      [[ -n "$quiet" ]] || quiet=0.6
+      if _app_settle "$quiet" "$maxs"; then APP_REPLY="display settled (no change for ${quiet}s)"
+      else APP_REPLY="display still changing after ${maxs}s"; return 1; fi ;;
     a11y-lint)
       APP_REPLY="$(python3 "$A11Y_CLIENT" lint 2>&1)" || return 1 ;;
     mask)
@@ -585,9 +697,7 @@ _app_do() {
     expect-text)
       _app_ensure_ocr || { APP_REPLY="expect-text: tesseract unavailable"; return 1; }
       local ocr="${APP_OUT}/.ocr.png" txt
-      import -display "$APP_DISPLAY" -window root "$ocr" 2>/dev/null || { APP_REPLY="expect-text: screenshot failed"; return 1; }
-      # 2x upscale: tesseract reads 9-11 px UI text far better at 20+ px
-      convert "$ocr" -resize 200% -colorspace Gray "$ocr" 2>/dev/null
+      _app_ocr_image "$ocr" || { APP_REPLY="expect-text: screenshot failed"; return 1; }
       txt="$(tesseract "$ocr" - 2>/dev/null | tr -s '[:space:]' ' ')"
       if grep -qiE -- "$value" <<<"$txt"; then APP_REPLY="text /${value}/ is on screen"
       else APP_REPLY="expect-text: /${value}/ not found in OCR text: ${txt:0:300}"; return 1; fi ;;
