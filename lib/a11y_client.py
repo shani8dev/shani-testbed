@@ -228,6 +228,17 @@ def content_name(acc, depth=0):
     return " ".join(p for p in parts if p).strip()
 
 
+def shown_name(acc, role, name):
+    """The name a person (and `observe`) knows an element by: its own name, or
+    for an unnamed list/tree item the text inside it. `find`/`center` matched
+    the raw name only, so a GTK4 list row that `observe` listed as
+    'Driving Acting' could not be found, waited for or clicked by that name."""
+    name = (name or "").strip()
+    if name or role not in NAME_FROM_CONTENT:
+        return name
+    return content_name(acc)
+
+
 def _bring_into_view(acc, x, y, w, h):
     """Scroll an element into its window: AT-SPI scroll_to (GTK3, Qt), then
     focusing it (GTK4 has no scroll_to, but scrolls a focused child into
@@ -375,8 +386,7 @@ def usable():
     out = []
     for ref, d, acc, role, name in walk():
         if role in CONTROL_ROLES and on_screen(acc) and "sensitive" in states_of(acc):
-            label = name.strip() or (content_name(acc) if role in NAME_FROM_CONTENT else "")
-            out.append((ref, d, acc, role, label))
+            out.append((ref, d, acc, role, shown_name(acc, role, name)))
     return out
 
 
@@ -435,8 +445,9 @@ def main(argv):
             print(__doc__, file=sys.stderr)
             return 2
         ok = matcher(argv[2])
-        hits = [(ref, d, acc, role, name) for ref, d, acc, role, name in walk()
-                if ok(role, name) and on_screen(acc)]
+        hits = [(ref, d, acc, role, shown) for ref, d, acc, role, name in walk()
+                for shown in (shown_name(acc, role, name),)
+                if ok(role, shown) and on_screen(acc)]
         if not hits:
             print("no on-screen element matches %r" % argv[2], file=sys.stderr)
             return 1

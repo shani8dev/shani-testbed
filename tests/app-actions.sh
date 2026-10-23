@@ -104,6 +104,10 @@ rm -f "$APP_OUT/app.rc"
 APP_PID=$!
 step "wait-window=Fifth:20" >/dev/null; sleep 1
 step "monkey=12:7" && grep -q 'still running' <<<"$APP_REPLY" && res monkey-survives PASS || res monkey-survives FAIL
+# the same unnamed list item must be findable by the name observe shows for it -
+# find matched the raw (empty) name only, so a GTK4 list row observe listed could
+# not be found, waited for or clicked by that name
+step "find=list item:^stable$" && res a11y-find-list-item-by-content PASS || res a11y-find-list-item-by-content FAIL
 # the combo row's selected value is an unnamed list item around a named label:
 # named by its content, not an unnamed control
 step "a11y-lint" && res a11y-lint-named-checkboxes-and-combo PASS || res a11y-lint-named-checkboxes-and-combo "FAIL ($(head -3 <<<"$APP_REPLY" | tr '\n' ' '))"
@@ -116,5 +120,10 @@ APP_PID=$!
 step "wait-window=Sixth:20" >/dev/null; sleep 1
 step "click-element=button:^Item 40$" >/dev/null; step "wait-exit=10" >/dev/null
 [[ "$(cat "$APP_OUT/app.stdout" 2>/dev/null)" == "clicked 40" ]] && res click-element-scrolls-into-view PASS || res click-element-scrolls-into-view "FAIL ($(cat "$APP_OUT/app.stdout" 2>/dev/null))"
+# a control-session reply bigger than one argv string (128 KiB) - a large app's
+# a11y tree - must still be encoded, not replaced by empty text
+big="$(head -c 300000 /dev/zero | tr '\0' x)"
+enc="$(_json_str "$big" 2>/dev/null)"
+[[ "$enc" == "\"${big}\"" ]] && res reply-encodes-large-text PASS || res reply-encodes-large-text "FAIL (${#enc} chars)"
 APP_PID=""; _app_cleanup
 echo done
