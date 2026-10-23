@@ -820,7 +820,10 @@ _app_fit_windows() {
 }
 
 _json_str() {  # JSON-encode a string
-  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+  # On stdin, not argv: one argument is capped at 128 KiB (MAX_ARG_STRLEN), and
+  # a large app's accessibility tree is more - the encoder failed and the reply
+  # reached the MCP client as empty text, hiding even the error it carried.
+  printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
 }
 
 _app_control_loop() {
