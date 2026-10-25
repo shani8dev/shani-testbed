@@ -190,6 +190,30 @@ _fetch_published_iso() {
   name="signed_${OS_NAME}-${profile}-${date:0:4}.${date:4:2}.${date:6:2}-x86_64.iso"
   dest="${OUTPUT_DIR}/${profile}/${date}"
   mkdir -p "$dest"
+  # The filename date is the ISO's own build date and the folder date is the
+  # pipeline's pinned BUILD_DATE. They are the same day by convention, but a
+  # build session that started before midnight and reached mkarchiso after it
+  # dates the folder from build.sh's pinned BUILD_DATE and the ISO filename
+  # from profiledef.sh's own clock (this shipped for real: folder 20261016
+  # containing a 2026.10.17 ISO, which stranded the plasma ISO promotion when
+  # the gate reconstructed the folder-date name). Before dying on a 404, probe
+  # the two neighbouring days for a signed ISO with a matching .sha256 — the
+  # only drift a midnight boundary can produce. Still fail-closed: a folder
+  # with no resolvable ISO+checksum fails exactly as before.
+  if ! curl -fsSI --max-time 30 --retry 3 --retry-delay 5 --retry-all-errors \
+       "${base}/${date}/${name}.sha256" >/dev/null 2>&1; then
+    local nd cand
+    for nd in $(date -u -d "${date:0:4}-${date:4:2}-${date:6:2} 1 day" +%Y%m%d) \
+              $(date -u -d "${date:0:4}-${date:4:2}-${date:6:2} 1 day ago" +%Y%m%d); do
+      cand="signed_${OS_NAME}-${profile}-${nd:0:4}.${nd:4:2}.${nd:6:2}-x86_64.iso"
+      if curl -fsSI --max-time 30 --retry 3 --retry-delay 5 --retry-all-errors \
+           "${base}/${date}/${cand}.sha256" >/dev/null 2>&1; then
+        warn "ISO in folder ${date} is named for ${nd} (folder date/isofile date drift, likely a midnight-boundary build) - fetching ${cand}"
+        name="$cand"
+        break
+      fi
+    done
+  fi
   log "Fetching ${name} from ${base}/${date} (resumable)"
   for f in "$name.sha256" "$name.asc" "$name"; do
     _r2_get "${base}/${date}/${f}" "${dest}/${f}" 1
