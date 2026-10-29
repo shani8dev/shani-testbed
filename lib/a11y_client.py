@@ -9,6 +9,7 @@ cmd_app and points at that app's private session bus).
   a11y_client.py tree [--max-depth N]    every element: ref role "name" =value [states] @x,y wxh
   a11y_client.py find QUERY              matching elements that are on screen
   a11y_client.py center QUERY [NTH]      "cx cy role 'name'" of the NTH match (1-based)
+  a11y_client.py press QUERY [NTH]       do the NTH match's first action (a click, without a pointer)
   a11y_client.py lint                    on-screen controls with no accessible name (exit 1 if any)
   a11y_client.py actionable              "cx cy role 'name'" of every on-screen, enabled control
   a11y_client.py observe                 numbered view: window, focus, selected rows, then
@@ -460,6 +461,36 @@ def main(argv):
             print("no accessible applications on this session bus (app not started, or its toolkit has accessibility off)", file=sys.stderr)
             return 1
         print("\n".join(lines))
+        return 0
+    # a control's own action through AT-SPI (what a screen reader's "activate"
+    # does): for sessions with no pointer to click with - a nested compositor
+    if cmd == "press":
+        if len(argv) < 3:
+            print(__doc__, file=sys.stderr)
+            return 2
+        ok = matcher(argv[2])
+        found = [(acc, role, shown) for ref, d, acc, role, name in walk()
+                 for shown in (shown_name(acc, role, name),)
+                 if ok(role, shown)]
+        # on screen first; else scrolled out of view (a long panel) - a screen
+        # reader activates those too, so scroll it in and act on it
+        hits = [h for h in found if on_screen(h[0])] or found
+        nth = int(argv[3]) if len(argv) >= 4 else 1
+        if not 1 <= nth <= len(hits):
+            print("%d on-screen match(es) for %r" % (len(hits), argv[2]), file=sys.stderr)
+            return 1
+        acc, role, name = hits[nth - 1]
+        if not on_screen(acc):
+            try:
+                acc.get_component_iface().scroll_to(Atspi.ScrollType.ANYWHERE)
+            except Exception:
+                pass
+        act = acc.get_action_iface()
+        if act is None or act.get_n_actions() < 1:
+            print("%s %r has no action" % (role, name), file=sys.stderr)
+            return 1
+        act.do_action(0)
+        print("%s %r: %s" % (role, name, act.get_action_name(0)))
         return 0
     if cmd in ("find", "center"):
         if len(argv) < 3:
