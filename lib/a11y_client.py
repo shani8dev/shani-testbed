@@ -228,6 +228,27 @@ def content_name(acc, depth=0):
     return " ".join(p for p in parts if p).strip()
 
 
+def label_name(acc):
+    """The name of what labels this element (AT-SPI's labelled-by relation).
+
+    A screen reader announces a control by its label when it has no name of its
+    own, so a labelled control is a named one. Qt needs this for password
+    fields: it gives a password TextInput an empty name whatever the app sets
+    (measured, Qt 6.12), so the only way to name one is a label relation.
+    """
+    try:
+        for rel in acc.get_relation_set() or []:
+            if rel.get_relation_type() == Atspi.RelationType.LABELLED_BY:
+                for i in range(rel.get_n_targets()):
+                    t = rel.get_target(i)
+                    text = (t.get_name() or "").strip() if t else ""
+                    if text:
+                        return text
+    except Exception:
+        pass
+    return ""
+
+
 def shown_name(acc, role, name):
     """The name a person (and `observe`) knows an element by: its own name, or
     for an unnamed list/tree item the text inside it. `find`/`center` matched
@@ -483,8 +504,9 @@ def main(argv):
                 continue
             n += 1
             # a text field may legitimately be named by its placeholder or
-            # content only through its label relation; GTK exposes that as name
-            if not name.strip() and not (role in NAME_FROM_CONTENT and content_name(acc)):
+            # content only through its label relation; GTK exposes that as name.
+            # A control labelled by another element (labelled-by) is named too.
+            if not name.strip() and not (role in NAME_FROM_CONTENT and content_name(acc)) and not label_name(acc):
                 bad.append(describe(ref, d, acc, role, name, indent=False))
         if not n:
             print("no on-screen controls (app not started, or accessibility off)", file=sys.stderr)
