@@ -1430,7 +1430,6 @@ between the markers; edit the source and rerun the generator.
 |---|---|---|
 | `apparmor` | boot | every shipped profile parses |
 | `backup-snapshots` | boot | what `shani_backup.btrfs` actually does on a REAL btrfs filesystem, measured rather than reasoned about, driving the repo's own module (/mnt/src/shani-backup, the live checkout, read-only) instead of a copy of it |
-| `home-snapshots` | boot | `shani_backup.home` (daily snapshots of every home in /home/.snapshots) on the real layout: /home is @home and homes are plain folders; a scratch copy with two plain homes and one subvolume home, owned by throwaway accounts - coverage, read-only, once a day, privacy between accounts, retention, a planted symlink refused, the CLI as a person; and that the installed updatedb indexes / and the homes but not a `.snapshots` folder |
 | `boot-health` | boot | every unit that failed in this boot is either on the list of failures systemd-nspawn itself causes (each with the evidence that proved it), or it is reported as a real failure |
 | `boot-safety-onfailure` | boot | shani-deploy's OnFailure= wiring on the boot-safety units (shani-boot-safety-failed@.service) and shani-health --boot's "Safety units" / "Kernel crash" rows, in a real booted slot |
 | `chronoa-binary-hardening` | boot | the `binary_hardening` skill, driven on the REAL image through the REAL dispatch path (`tools.execute_tool_outcome`, which runs the handler in the sandboxed child a model's tool call would use) |
@@ -1457,6 +1456,7 @@ between the markers; edit the source and rerun the generator.
 | `disk-layout` | boot | the Btrfs top level holds only the installed layout |
 | `dnscrypt-enable` | boot | Does enabling dnscrypt-proxy break the machine's networking? |
 | `fresh-user` | boot | what a person gets on a fresh install |
+| `home-snapshots` | boot | `shani_backup.home` (daily snapshots of people's homes in /home/.snapshots, the idea of NAZY-OS/btrfs-home-user-snapshots) on a real btrfs, in the real image, driving the live checkout (/mnt/src/shani-backup) |
 | `initramfs-drivers` | boot | every UKI on the ESP carries the drivers its root disk can need, so the initqueue can find root=UUID= on more than a virtio disk |
 | `launchers` | boot | what the shipped desktop pins is really there |
 | `nut-stack` | boot | does the NUT stack START from systemd on a real Shanios boot, with the config shani-settings ships and NO UPS attached? |
