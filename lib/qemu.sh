@@ -123,7 +123,7 @@ cmd_iso() {
   # installer will repartition it (the old root.img+esp.img pair is gone).
   local target_disk_args=()
   if [[ "${SHANIOS_TEST_ISO_INSTALL_TARGET:-0}" == 1 ]]; then
-    [[ -f "$INSTALL_IMG" ]] || truncate -s "${INSTALL_SIZE:-24G}" "$INSTALL_IMG"
+    [[ -f "$INSTALL_IMG" ]] || truncate -s "${INSTALL_DISK_SIZE:-32G}" "$INSTALL_IMG"
     warn "Attaching disk/install.img as the install target - installing from the ISO will OVERWRITE the current slots"
     target_disk_args=(-drive if=virtio,format=raw,file="$INSTALL_IMG")
   fi

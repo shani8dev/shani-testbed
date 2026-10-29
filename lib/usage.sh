@@ -306,7 +306,7 @@ Environment:
                              HOST (default: ../os-installer-config next to
                              this repo) — set on the run_in_container.sh
                              invocation, not test.sh itself
-  INSTALL_DISK_SIZE          Whole-disk image size for install (default 24G;
+  INSTALL_DISK_SIZE          Whole-disk image size for install (default 32G;
                              iso-install: the ISO installer's min_size)
   SHANIOS_TEST_LUKS_PIN      LUKS passphrase for install --encrypted /
                              configure --encrypted (default: shanios-test-passphrase)

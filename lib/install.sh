@@ -639,7 +639,9 @@ cmd_install() {
   # comment above this section) — always wiped and recreated, so detach
   # whatever loop devices (if any, however many) are already attached to it
   # first, same preflight principle as cmd_disk.
-  local size="${INSTALL_DISK_SIZE:-24G}"
+  # 32G: at least os-installer-config's min_size (30 GB). The old 24G left
+  # too little free space for shani-deploy's 10 GB update check.
+  local size="${INSTALL_DISK_SIZE:-32G}"
   mkdir -p "$DATA_DIR"
   _detach_all_loops "$INSTALL_IMG"
   rm -f "$INSTALL_IMG"
