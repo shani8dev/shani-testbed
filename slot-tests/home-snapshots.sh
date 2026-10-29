@@ -53,19 +53,25 @@ command -v setfacl >/dev/null && res home-setfacl-present PASS || res home-setfa
 if command -v updatedb >/dev/null; then
   cmd=$(systemctl cat plocate-updatedb.service 2>/dev/null | sed -n 's/^ExecStart=\(.\+\)/\1/p' | tail -1)
   P=/root/home-snapshots-probe-$$; mkdir -p "$P/.snapshots/daily-x"; touch "$P/.snapshots/daily-x/needle-in-snapshot-$$"
+  # a file of its own in /home (a fresh install has no homes yet), removed after
+  PH=/home/home-snapshots-probe-$$; mkdir -p "$PH"; touch "$PH/needle-in-home-$$"
   db=/tmp/home-snapshots-$$.db
   eval "${cmd:-updatedb} -o $db" 2>/dev/null
-  hf=$(find /home -mindepth 2 -maxdepth 2 -type f -name '.bash*' 2>/dev/null | head -1)
-  found="root:$(locate -d "$db" -c -r '^/usr/bin/bash$') home:$( [ -n "$hf" ] && locate -d "$db" -c -r "^$hf\$" || echo none) snapshot:$(locate -d "$db" -c "needle-in-snapshot-$$")"
-  rm -rf "$P" "$db"
+  found="root:$(locate -d "$db" -c -r '^/usr/bin/bash$') home:$(locate -d "$db" -c "needle-in-home-$$") snapshot:$(locate -d "$db" -c "needle-in-snapshot-$$")"
+  rm -rf "$P" "$PH" "$db"
   case "$found" in "root:1 home:1 snapshot:0") res locate-index "PASS ($found; ran: ${cmd:-updatedb})";;
-    *) res locate-index "FAIL ($found; ran: ${cmd:-updatedb}; home file: ${hf:-none})";; esac
+    *) case "$cmd" in *prunenames*snapshots*) why="";; *) why="; this image predates shani-settings' plocate drop-in (51b3757) - rebuild to pick it up";; esac
+       res locate-index "FAIL ($found; ran: ${cmd:-updatedb}$why)";; esac
 else
   res locate-index "SKIP (no plocate in this image)"
 fi
 
 # ---- the scratch layout ------------------------------------------------------------
 T=$(mktemp -d /tmp/home-snapshots.XXXXXX)
+# mktemp makes it 0700 root: the throwaway accounts could not even reach
+# their own homes inside it (the first run's privacy and CLI failures were
+# this, not the code); /home itself is 0755
+chmod 755 "$T"
 SCRATCH="@home-snapshots-probe-$$"
 U1=hsnapalice U2=hsnapbob U3=hsnapcarol
 cleanup() {
@@ -91,8 +97,10 @@ H="$T/root"
 chmod 755 "$H"
 # the accounts own folders under the scratch "home"; their passwd home is the
 # same path, so the module's /home/<name> is $H/<name>
-useradd -M -d "$H/$U1" -s /bin/sh $U1 && useradd -M -d "$H/$U3" -s /bin/sh $U3 && useradd -M -d "$H/$U2" -s /bin/sh $U2 \
-  || { res home-scratch "FAIL (useradd)"; exit 0; }
+# accounts a run before this one left (a slot boot's /etc persists): gone first
+for u in $U1 $U2 $U3; do userdel "$u" >/dev/null 2>&1; groupdel "$u" >/dev/null 2>&1; done
+err=$( { useradd -M -d "$H/$U1" -s /bin/sh $U1 && useradd -M -d "$H/$U3" -s /bin/sh $U3 && useradd -M -d "$H/$U2" -s /bin/sh $U2; } 2>&1 ) \
+  || { res home-scratch "FAIL (useradd: $err)"; exit 0; }
 mkdir -m 700 "$H/$U1" "$H/$U3"; btrfs subvolume create "$H/$U2" >/dev/null; chmod 700 "$H/$U2"
 echo "alice-secret" > "$H/$U1/note.txt"; echo "bob-secret" > "$H/$U2/note.txt"; echo "carol" > "$H/$U3/note.txt"
 for u in $U1 $U2 $U3; do chown -R "$u:$u" "$H/$u"; done
