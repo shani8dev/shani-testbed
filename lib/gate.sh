@@ -309,9 +309,17 @@ cmd_gate() {
   else _gate_step clean cmd_clean || true; fi
 
   # image promotable: both user journeys to it passed (a phase skipped with
-  # --skip counts as not tested, so no marker)
+  # --skip counts as not tested, so no marker). A profile's FIRST release
+  # has no stable image yet (stable.txt absent), so the existing-user path
+  # (stable -> candidate) cannot run and is skipped above; in that case the
+  # new-user journey alone is the gate result. Requiring both would make a
+  # first release un-promotable forever.
   local image_ok=0
-  (( fresh_ok && up_ok )) && image_ok=1
+  if [[ -z "${stable_date:-}" ]]; then
+    (( fresh_ok )) && image_ok=1
+  else
+    (( fresh_ok && up_ok )) && image_ok=1
+  fi
   local stamp out i json iso_m img_m
   stamp="$(date +%s)"
   out="${DATA_DIR}/gate-${profile}-${stamp}.json"
