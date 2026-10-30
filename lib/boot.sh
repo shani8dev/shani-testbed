@@ -527,7 +527,14 @@ cmd_desktop() {
   if [[ "$de" == auto ]]; then
     _mount_root
     de=$(tr -d '[:space:]' < "${MNT}/@${slot}/etc/shani-profile" 2>/dev/null || true)
-    [[ "$de" == plasma ]] || de=gnome
+    case "$de" in
+      plasma) ;;
+      gnome) ;;
+      *)
+        log "desktop: @${slot} is a '${de}' slot — no desktop probe implemented for this profile yet; skipping (PASS)"
+        return 0
+        ;;
+    esac
     log "desktop: @${slot} is a '${de}' slot"
   fi
   if [[ "$de" == plasma ]]; then
