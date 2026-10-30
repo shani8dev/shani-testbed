@@ -18,6 +18,7 @@ declare -A EXPECTED=(
   ['audit-rules.service']='needs auditd'
   ['bless-boot.service']='"Marking a boot is not supported in containers."'
   ['systemd-bless-boot.service']='same as bless-boot'
+  ['greetd.service']='greeter needs a display; nspawn has none ("start-limit-hit")'
 )
 
 sleep 5
