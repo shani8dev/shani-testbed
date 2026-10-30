@@ -54,6 +54,14 @@ _gate_deploy() {  # [upgrade args...]
     _gate_wait_net
     cmd_upgrade --self-update "$@"; rc=$?
   fi
+  # A profile with no stable channel yet (first release) has no version
+  # manifest to fetch; shani-deploy dies on that, but on a real fresh
+  # install that is "no update available", not a failure. Treat it as
+  # success so the gate's no-first-update branch handles it.
+  if (( rc != 0 )) && grep -aq 'Failed to fetch version manifest' "$out"; then
+    warn "gate: no version manifest on the stable channel for this profile (first release) - treating as no update available"
+    rc=0
+  fi
   rm -f "$out"
   return "$rc"
 }
