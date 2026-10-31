@@ -27,6 +27,10 @@
 #   6. a symlink planted at .snapshots is refused (negative control: the same
 #      run with a real folder succeeds, so the refusal is about the link).
 #   7. the CLI answers `home list --json` for a non-root person.
+#   8. `home predeploy` (what shani-deploy calls before an update) takes a
+#      fresh snapshot beside today's daily - the name carries the time, and a
+#      second call is not answered with the first - and its retention keeps
+#      the newest two without deleting daily or manual snapshots.
 set -u
 res() { printf 'RESULT %-40s %s\n' "$1" "$2"; }
 
@@ -174,4 +178,38 @@ printf '%s' "$bad" | grep -q 'symbolic link' && [ $planted = no ] && ! printf '%
 cli=$(su $U1 -s /bin/sh -c "PYTHONPATH='$SRC' SHANI_BACKUP_HOME='$H' python3 -m shani_backup.cli home list --json" 2>&1)
 printf '%s' "$cli" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d['ok'] and d['user']=='$U1' and d['snapshots'] else 1)" 2>/dev/null \
   && res home-cli-list-as-person "PASS ($(printf '%s' "$cli" | cut -c1-120))" || res home-cli-list-as-person "FAIL ($cli)"
+
+# ---- 8. predeploy: a fresh kind beside today's daily, pruned on its own -----------
+# What `shani-deploy` calls before an update. It must NOT be answered with the
+# day's `daily` (that one is idempotent per day and would hold the morning's
+# files), so the name carries the time; and its retention must not delete the
+# person's daily or manual snapshots.
+predeploy() { py "
+import datetime as dt, json
+from shani_backup import home
+r = home.predeploy(keep=$1, now=dt.datetime($2))
+print(json.dumps([[w, x.ok, x.detail] for w, x in r]))"; }
+
+out=$(predeploy 2 "2026,11,2,10,0,0")
+wholeP="$H/.snapshots/@home/predeploy-2026-11-02_10-00-00"
+ownP="$H/.snapshots/$U2/predeploy-2026-11-02_10-00-00"
+roP=$(btrfs property get -ts "$wholeP" ro 2>&1)
+if [ -f "$wholeP/$U1/note.txt" ] && [ -f "$wholeP/$U3/note.txt" ] && [ -f "$ownP/note.txt" ] && [ "$roP" = ro=true ]; then
+  res home-predeploy-covers-every-home "PASS ($wholeP + $ownP, read-only)"
+else
+  res home-predeploy-covers-every-home "FAIL ($out; ro=$roP; whole has: $(ls "$wholeP" 2>&1 | tr '\n' ' '))"
+fi
+
+out=$(predeploy 2 "2026,11,2,11,0,0")
+out2=$(predeploy 2 "2026,11,2,12,0,0")
+leftP=$(ls "$H/.snapshots/@home" | grep '^predeploy-' | tr '\n' ' ')
+leftPd=$(ls "$H/.snapshots/@home" | grep -v '^predeploy-' | tr '\n' ' ')
+leftPo=$(ls "$H/.snapshots/$U2" | grep '^predeploy-' | tr '\n' ' ')
+[ "$leftP" = "predeploy-2026-11-02_11-00-00 predeploy-2026-11-02_12-00-00 " ] \
+  && [ "$leftPo" = "$leftP" ] \
+  && printf '%s' "$leftPd" | grep -q 'daily-2026-11-02' \
+  && printf '%s' "$leftPd" | grep -q 'manual-2026-10-20_09-00-00' \
+  && ! printf '%s' "$out$out2" | grep -q 'already exists' \
+  && res home-predeploy-fresh-and-pruned "PASS (three times, newest 2 kept: $leftP| daily/manual left: $leftPd)" \
+  || res home-predeploy-fresh-and-pruned "FAIL (whole: $leftP| own: $leftPo| others: $leftPd| out: $out$out2)"
 exit 0
