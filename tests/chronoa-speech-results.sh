@@ -223,6 +223,13 @@ STUB
 }
 
 # Piper's real argv is `<piper-tts> --model <voice> --output_file <out>`.
+# chronoa_path <scenario dir> <python expression over files/voices>: the path
+# the shipped code would use with this scenario's XDG_DATA_HOME
+chronoa_path() {
+  XDG_DATA_HOME="$1/xdg" PYTHONPATH="$CHRONOA_LIB" python3 -c \
+    "from shani_chronoa import files, voices; print($2)"
+}
+
 write_piper_stub() {
   cat > "$1" <<'STUB'
 #!/bin/bash
@@ -387,12 +394,17 @@ scenario() {
     none)        : ;;
   esac
   case "$extras" in
+    # where the model and the voice go is asked of the shipped code (its data
+    # home, voices.voice_dir()): both moved under shani-chronoa/ once, and stubs
+    # at the old place left whisper "unavailable" and Piper never chosen
     whisper) write_whisper_stub "$sd/bin/whisper-cli"
-             mkdir -p "$sd/xdg/whisper/models"
-             : > "$sd/xdg/whisper/models/ggml-base.bin" ;;
+             mkdir -p "$(chronoa_path "$sd" 'files.data_home() / "shani-chronoa" / "whisper" / "models"')"
+             : > "$(chronoa_path "$sd" 'files.data_home() / "shani-chronoa" / "whisper" / "models"')/ggml-base.bin" ;;
     piper)   write_piper_stub "$sd/bin/piper-tts"
-             mkdir -p "$sd/xdg/piper/voices"
-             : > "$sd/xdg/piper/voices/en_US-lessac-medium.onnx" ;;
+             mkdir -p "$(chronoa_path "$sd" 'voices.voice_dir()')"
+             : > "$(chronoa_path "$sd" 'voices.voice_dir()')/en_US-lessac-medium.onnx"
+             # a voice is its .onnx AND its .onnx.json (voices._voice_on_disk)
+             echo '{}' > "$(chronoa_path "$sd" 'voices.voice_dir()')/en_US-lessac-medium.onnx.json" ;;
     none)    : ;;
   esac
 
@@ -597,15 +609,23 @@ want base snap-is-not-a-shanios-path               PASS "no whisper-cli in the s
 # `senses-a-poll-really-runs` needs that application's store and a real
 # /proc/mounts read. Neither is satisfiable here, and both ARE asserted in a real
 # slot run - which is the only place they mean anything.
+# Machine-tracking, like the other controls: the launcher and the poll need a
+# real install everywhere off a slot and must fail here; the import and the
+# scheduler need PyGObject, which a host may or may not have (this one now
+# does), so they may pass. Nothing outside these four may fail.
 HOST_ONLY="app-imports-clean launcher-imports-shipped-package senses-a-poll-really-runs senses-scheduler-constructed"
+HOST_ALWAYS="launcher-imports-shipped-package senses-a-poll-really-runs"
 base_fails=$(awk '$1=="RESULT" && $3=="FAIL" {print $2}' "$TMP/base/out" | sort | tr '\n' ' ')
 base_fails="${base_fails% }"
+fails_ok=1
+for f in $HOST_ALWAYS; do [[ " $base_fails " == *" $f "* ]] || fails_ok=0; done
+for f in $base_fails; do [[ " $HOST_ONLY " == *" $f "* ]] || fails_ok=0; done
 if [[ "$(cat "$TMP/base/rc")" == 0 ]] && [[ "$(count_verdict base PASS)" -gt 0 ]] \
-   && [[ "$(count_verdict base SKIP)" -ge 1 ]] && [[ "$base_fails" == "$HOST_ONLY" ]]; then
+   && [[ "$(count_verdict base SKIP)" -ge 1 ]] && (( fails_ok )); then
   ok "cmd_slot_test's rule: rc=0, $(count_verdict base PASS) pass, $(count_verdict base SKIP) skip, and the only FAILs are the two a host cannot satisfy (${base_fails})"
 else
   no "cmd_slot_test's rule sees a healthy file" \
-     "rc=$(cat "$TMP/base/rc") pass=$(count_verdict base PASS) skip=$(count_verdict base SKIP) fail=[${base_fails}], expected exactly [${HOST_ONLY}]"
+     "rc=$(cat "$TMP/base/rc") pass=$(count_verdict base PASS) skip=$(count_verdict base SKIP) fail=[${base_fails}], expected [${HOST_ALWAYS}] and nothing outside [${HOST_ONLY}]"
 fi
 
 # --- 2b. THE CONTROL FOR senses-a-poll-really-runs ----------------------------
@@ -887,7 +907,7 @@ else
 fi
 # And the resolved location must actually be where the string lives — the two
 # halves together are what the STT assertion depends on.
-if [[ -n "$app_origin" ]] && grep -rq 'not available - STT disabled' "$app_origin" 2>/dev/null; then
+if [[ -n "$app_origin" ]] && grep -rq 'listening={stt_ready}' "$app_origin" 2>/dev/null; then
   ok "the STT-disabled warning string is present where find_spec says the application module lives"
 else
   no "the STT-disabled warning string is present where find_spec says the application module lives" \

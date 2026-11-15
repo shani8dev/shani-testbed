@@ -207,7 +207,7 @@ for SLOT in "${slots[@]}"; do
             # zstd magic SOMEWHERE inside it. Assuming offset 0 - which the first
             # version of this did - finds a cpio stub, lists 7 entries, and reports
             # a module that is demonstrably present as missing. Same technique as
-            # tests/check-uki-initrd.sh, for the same reason.
+            # boot-probes/check-uki-initrd.sh, for the same reason.
             # Two things this must get right, and both were wrong in the first
             # version - found by running it against a real UKI:
             #   1. the section does not BEGIN with the initramfs. It opens with a

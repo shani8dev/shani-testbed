@@ -1,5 +1,5 @@
-"""tests/boot-failure-timing.sh must catch a producer/consumer timer reorder."""
-TEST = "tests/boot-failure-timing.sh"
+"""shani-deploy/tests/test-boot-failure-timing.sh must catch a producer/consumer timer reorder."""
+TEST = "../shani-deploy/tests/test-boot-failure-timing.sh"
 MUTATIONS = [
     {"file": "../shani-deploy/systemd/system/check-boot-failure.timer",
      "label": "boot-failure check fires after the rollback reads its marker (15m -> 17m)",

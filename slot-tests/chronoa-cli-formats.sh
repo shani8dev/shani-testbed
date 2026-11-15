@@ -83,7 +83,7 @@ startxref
 PDF
   pdffonts "$WORK/mini.pdf" >"$WORK/pdffonts.out" 2>"$WORK/pdffonts.err"; echo "$?" >"$WORK/pdffonts.rc"
   # The measured trap, run live: a file that is not a PDF at all.
-  pdffonts /etc/hostname >"$WORK/pdffonts-notpdf.out" 2>&1; echo "$?" >"$WORK/pdffonts-notpdf.rc"
+  pdffonts /etc/os-release >"$WORK/pdffonts-notpdf.out" 2>&1; echo "$?" >"$WORK/pdffonts-notpdf.rc"
   if have avahi-browse; then timeout 20 avahi-browse --all --terminate --resolve \
       >"$WORK/avahi.out" 2>"$WORK/avahi.err"; echo "$?" >"$WORK/avahi.rc"; fi
   if have arping; then arping -D -c 2 -w 3 192.0.2.1 \
@@ -141,7 +141,7 @@ PDF
         timeout 25 capinfos -t -M -H "$WORK/probe.pcap" >"$WORK/capinfos-table.out" 2>&1
         echo "$?" >"$WORK/capinfos-table.rc"
         # The refusal on a file that is not a capture: measured, not assumed.
-        timeout 25 capinfos /etc/hostname >"$WORK/capinfos-notpcap.out" 2>&1
+        timeout 25 capinfos /etc/os-release >"$WORK/capinfos-notpcap.out" 2>&1
         echo "$?" >"$WORK/capinfos-notpcap.rc"
       else
         echo 1 >"$WORK/capinfos.rc"

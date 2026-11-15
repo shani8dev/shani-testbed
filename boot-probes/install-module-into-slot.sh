@@ -2,7 +2,7 @@
 # Install the CURRENT 99shanios dracut module from the working tree into a real
 # slot subvolume, so `regen-uki.sh` can rebuild that slot's UKI from it.
 #
-#   tests/install-module-into-slot.sh <slot> [<slot>...]      (in the builder
+#   boot-probes/install-module-into-slot.sh <slot> [<slot>...]      (in the builder
 #                                                            container, as root)
 #
 # WHY IT IS NOT A ONE-LINE `cp`. Four separate things went wrong doing this by

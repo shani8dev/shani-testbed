@@ -213,6 +213,24 @@ cmd_gate() {
     warn "gate: --reuse-install - reusing the ISO ${iso_date} install (booted via firmware, NOT reinstalled)"
     iso_install+=(--boot-only)
   fi
+  # What a new user sees on the first switch-on, through firmware, before any
+  # check adds an account: that desktop's first setup running (the process
+  # proves it - a boot splash left on screen still "draws something") and a
+  # settled, non-blank screen kept as evidence. 2026-11-15: greetd failed on
+  # every fresh niri install and only this kind of boot showed it.
+  _gate_first_screen() {
+    local want=""
+    case "$profile" in
+      niri) want='qs -c shani-setup' ;;
+      gnome) want='gnome-initial-setup' ;;
+      plasma) want='plasma-setup' ;;
+      *) log "gate: no first-setup check for ${profile}"; return 0 ;;
+    esac
+    mkdir -p "${SCRIPT_DIR}/shots"
+    _gate_step iso:first-screen cmd_iso_install -p "$profile" --iso=installed --boot-only --console-timeout=1500 \
+      "--console-exec=for i in \$(seq 240); do pgrep -af '${want}' && exit 0; sleep 5; done; systemctl --failed --no-pager; exit 1" \
+      "--first-screen=${SCRIPT_DIR}/shots/gate-${profile}-${cand_date}-first-screen.ppm:1500"
+  }
   # each phase starts from failed=0 and reports its own result
   _gate_phase_ok() { (( failed == 0 )); }
   local iso_ok=0 fresh_ok=0 up_ok=0 installed_from=""
@@ -234,9 +252,10 @@ cmd_gate() {
     _gate_step iso:clean cmd_clean \
       && _gate_step iso:install "${iso_install[@]}" \
       && installed_from="$iso_date" \
+      && _gate_first_screen \
       && _gate_record_iso_version \
       && _gate_identity_step iso:identity "$iso_img_date" \
-      && _gate_checks iso boot-health fresh-user launchers disk-layout \
+      && _gate_checks iso first-boot boot-health fresh-user launchers disk-layout \
       && _gate_step iso:first-update _gate_deploy --channel=stable --no-force \
       && _gate_identity_step iso:identity-after-update "$after_first" || true
     if _gate_phase_ok && [[ "$after_first" != "$iso_img_date" ]]; then

@@ -43,6 +43,7 @@ run() {
       # not on the folder date.
       cmd_iso_install() { echo CALL iso_install "$*"
         if [[ "$*" == *--boot-only* ]]; then   # firmware boot: boots what current-slot names
+          if [[ "$*" == *--first-screen=* ]]; then [[ -z "${FAIL_FIRST_SCREEN:-}" ]] || return 7; return 0; fi
           local want; want=$(grep -oP "(?<=--expect-slot=)[a-z]+" <<<"$*"); [[ "$(cat "$MNT/@data/current-slot")" == "$want" ]] || return 6; return 0; fi
         local sel carries; sel=$(grep -oP "(?<=--iso=)[0-9]{8}" <<<"$*")
         [[ -n "${FAIL_ISO:-}" && "$sel" == 20260921 ]] && return 4
@@ -76,15 +77,17 @@ check "all-pass: iso marker = ISO folder"        "[[ \$ISO == 20260921 ]]"
 check "iso: installs the candidate ISO"          "has 'CALL iso_install -p gnome --iso=20260921'"
 check "iso: first update = stable, no --force"   "has 'CALL upgrade --self-update --channel=stable --no-force'"
 check "iso: older stable is not a downgrade"     "has 'no update needed' && has 'not newer than the base image 20260921 the ISO 20260921 carries'"
-check "iso: launchers checked on ISO install"    "has 'CALL slot_test blue boot-health fresh-user launchers disk-layout'"
+check "iso: first-boot + launchers on ISO install" "has 'CALL slot_test blue first-boot boot-health fresh-user launchers disk-layout'"
 check "fresh: candidate on the ISO machine"      "has 'CALL upgrade --self-update --channel=latest --no-force'"
 check "fresh: firmware boot of the updated slot" "has 'CALL iso_install -p gnome --iso=installed --boot-only --expect-slot=green'"
 check "fresh: firmware boot after rollback"      "has 'CALL iso_install -p gnome --iso=installed --boot-only --expect-slot=blue'"
-check "no firmware boot on the R2 install"       "[[ \$(grep -c 'boot-only' <<<\"\$OUT\") -eq 2 ]]"
+check "no firmware boot on the R2 install"       "[[ \$(grep -v first-screen <<<\"\$OUT\" | grep -c 'boot-only') -eq 2 ]]"
+check "iso: first screen right after the install" "grep 'CALL' <<<\"\$OUT\" | grep -A1 'CALL iso_install -p gnome --iso=20260921' | grep -q 'first-screen'"
+check "iso: first screen waits for gnome-initial-setup" "has \"pgrep -af 'gnome-initial-setup'\""
 check "upgrade: existing user from stable"       "has 'CALL bootstrap -p gnome -d 20260807 --from-r2'"
 check "upgrade: no launchers on R2 install"      "has 'CALL slot_test green boot-health fresh-user disk-layout apparmor deploy-status pam-wiring'"
 check "fresh: candidate checks apparmor + status" "has 'CALL slot_test green boot-health fresh-user launchers disk-layout apparmor deploy-status pam-wiring'"
-check "iso: no candidate-only checks on stable"   "has 'CALL slot_test blue boot-health fresh-user launchers disk-layout' && ! grep 'CALL slot_test blue' <<<\"\$OUT\" | grep -q apparmor"
+check "iso: no candidate-only checks on stable"   "has 'CALL slot_test blue first-boot boot-health fresh-user launchers disk-layout' && ! grep 'CALL slot_test blue' <<<\"\$OUT\" | grep -q apparmor"
 check "no --force anywhere in the gate"          "! grep 'CALL upgrade' <<<\"\$OUT\" | grep -qv -- '--no-force'"
 
 # An ISO published on one day legitimately ships the base image gated on an
@@ -100,7 +103,7 @@ check "older carried image: no first update"       "has 'not newer than the base
 
 run iso-carries-newer-image "ISO_CARRIES=20260920"
 check "newer carried image: identity after update" "has 'identity: @blue runs 20260920 (want 20260920)'"
-check "newer carried image: rollback restores it"  "has 'identity: @blue runs 20260920 (want 20260920)' && has 'CALL slot_test blue boot-health fresh-user launchers disk-layout'"
+check "newer carried image: rollback restores it"  "has 'identity: @blue runs 20260920 (want 20260920)' && has 'CALL slot_test blue first-boot boot-health fresh-user launchers disk-layout'"
 check "newer carried image: ISO promotable"         "[[ \$ISO == 20260921 ]]"
 
 run iso-version-unrecorded "NO_ISO_VERSION=1"
@@ -113,6 +116,11 @@ check "iso-broken: exit non-zero"                "[[ $RC -ne 0 ]]"
 check "iso-broken: no iso marker"                "[[ -z \$ISO ]]"
 check "iso-broken: image still promotable"       "[[ \$IMG == shanios-20260922-gnome.zst ]]"
 check "iso-broken: new user via iso-stable"      "has 'CALL iso_install -p gnome --iso=20260518'"
+
+run first-screen-fails "FAIL_FIRST_SCREEN=1"
+check "first screen fails: not ISO-promotable"  "[[ -z \$ISO ]]"
+check "first screen fails: no checks on that disk" "! grep -q 'CALL slot_test blue first-boot' <<<\"\$OUT\""
+check "first screen fails: image still gated"   "[[ \$IMG == shanios-20260922-gnome.zst ]]"
 
 run upgrade-broken "FAIL_UPGRADE=1"
 check "upgrade-broken: no image marker"          "[[ -z \$IMG ]]"

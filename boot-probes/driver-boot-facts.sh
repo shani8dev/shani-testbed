@@ -11,7 +11,7 @@
 # `/opt/shani-testbed/...`, which the runner mounts read-only.
 #
 #   iso-install -p gnome --boot-only --iso=iso-latest \
-#     --console-put=/opt/shani-testbed/tests/driver-boot-facts.sh:/tmp/driver-facts.sh \
+#     --console-put=/opt/shani-testbed/boot-probes/driver-boot-facts.sh:/tmp/driver-facts.sh \
 #     --console-exec="bash /tmp/driver-facts.sh" --boot-timeout=900
 #
 # Prints `DRIVERFACT key=value`

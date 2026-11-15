@@ -6,7 +6,7 @@
 # each handler in the sandboxed child a model's tool call would use).
 #
 # WHY THIS FILE EXISTS. Those skills had been verified in two halves that never
-# touched: `chronoa-driver-tools.sh` and `tests/driver-boot-facts.sh` measure the
+# touched: `chronoa-driver-tools.sh` and `boot-probes/driver-boot-facts.sh` measure the
 # **platform**, and shani-chronoa's own suite exercises the **logic** on an Ubuntu
 # dev box. Nobody had run the skills on the distribution they ship to — and that
 # matters more than it sounds, because **on the dev box `driver_status` reports
@@ -114,7 +114,12 @@ res("driver-skills-registered",
 
 # --- 2. the consent keys, read from the running compiled schema --------------
 cfg = ChronoaConfig()
-for key, expect_default in (("driver-build-enabled", False), ("i2c-write-enabled", False)):
+# driver-build-enabled is ON by default, deliberately (the schema's own
+# description: it lets Kbuild compile under your home and nothing more - a built
+# module is neither installed nor loaded, the root is a read-only slot, and
+# Secure Boot refuses an unsigned module). i2c-write-enabled writes to hardware,
+# so it stays off. The check is that each matches its documented default.
+for key, expect_default in (("driver-build-enabled", True), ("i2c-write-enabled", False)):
     if key not in schema_keys:
         res(f"consent-key-{key}", "FAIL (not in the RUNNING compiled schema, so the gate can never be opened by a user and every call refuses forever - the calendar_write / fm_radio dead-switch class)")
         continue
@@ -122,7 +127,7 @@ for key, expect_default in (("driver-build-enabled", False), ("i2c-write-enabled
     res(f"consent-key-{key}",
         f"PASS (in the compiled schema; default is {got}, expected {expect_default})"
         if got is expect_default else
-        f"FAIL (default is {got}, expected {expect_default} - a gate that opens by default is worse than one that never opens)")
+        f"FAIL (default is {got}, expected {expect_default} - not the default the schema documents)")
 
 # --- 3. driver_status: the refusal branch, on the machine that takes it -------
 text = run("driver_status")
@@ -159,6 +164,8 @@ res("driver-status-signing-claim",
 
 # --- 4. driver_build: the gate, before any fact ------------------------------
 d = T / "home" / "drivers" / "probe"
+# the gate is on by default, so it is turned off to see it refuse
+cfg.set("driver-build-enabled", "false")
 built = run("driver_build", {"name": "probe", "path": str(d)})
 if "Refusing to build" in built:
     res("driver-build-gated", f"PASS (consent off: {built.split('.')[0]})")
@@ -227,9 +234,8 @@ else:
     else:
         res("driver-build-with-consent-names-the-packages",
             f"FAIL (refused without naming base-devel and linux-headers, so a person has nothing to install: {opened[:150]})")
-    # Restored, not left open: a run that leaves the machine's gate on after itself
-    # is a worse failure than a red check. Same API as the grant above.
-    cfg.set("driver-build-enabled", "false")
+    # Restored to its default (on), as the user had it before the run.
+    cfg.set("driver-build-enabled", "true")
 
 # --- 5b. scaffolding must not be verified as a build --------------------------
 # **Found by running the skill on a real machine (this one):** the module-level

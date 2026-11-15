@@ -362,7 +362,10 @@ stt_bin=""
 for b in whisper-cli whisper.cpp; do
   command -v "$b" >/dev/null 2>&1 && { stt_bin=$(command -v "$b"); break; }
 done
-MODEL_DIRS=("$XDG_DATA_HOME/whisper/models" "/usr/share/whisper/models")
+# the folders stt._get_model_path() searches, the user's one asked of the shipped
+# code (it moved under shani-chronoa/ once, and a hard-coded copy went stale)
+user_models=$(PYTHONPATH="$CHRONOA_LIB" python3 -c 'from shani_chronoa import files; print(files.data_home() / "shani-chronoa" / "whisper" / "models")' 2>/dev/null)
+MODEL_DIRS=("/var/lib/shani-chronoa/whisper/models" "${user_models:-$XDG_DATA_HOME/shani-chronoa/whisper/models}" "/usr/share/whisper/models")
 stt_model=""
 for d in "${MODEL_DIRS[@]}"; do
   for m in "$d"/ggml-*.bin; do
@@ -438,10 +441,10 @@ else:
   where="nowhere (shani_chronoa.app has no resolvable origin)"
   if [[ -n "$app_src" ]]; then
     if [[ -d "$app_src" ]]; then
-      grep -rq 'not available - STT disabled' "$app_src" 2>/dev/null && warn="yes"
+      grep -rq 'listening={stt_ready}' "$app_src" 2>/dev/null && warn="yes"
       where="the package at $app_src"
     elif [[ -f "$app_src" ]]; then
-      grep -q 'not available - STT disabled' "$app_src" 2>/dev/null && warn="yes"
+      grep -q 'listening={stt_ready}' "$app_src" 2>/dev/null && warn="yes"
       where="$app_src"
     fi
   fi
@@ -451,7 +454,7 @@ else:
     warnstate="ABSENT"
   fi
   if [[ "$want" == no && "$guard" == yes && "$warn" == yes ]]; then
-    pass stt-reports-unavailable-not-broken "is_available() is False (no whisper binary${stt_bin:+ at $stt_bin}${have_model:+, no model}), so the application module's 'not available - STT disabled' branch (with the backend's own name interpolated) is the one taken and the string is still in the installed source at ${where} — degraded, not broken, and saying so"
+    pass stt-reports-unavailable-not-broken "is_available() is False (no whisper binary${stt_bin:+ at $stt_bin}${have_model:+, no model}), so the application module's start-up line reports stt=none listening=False (read off the live STT object) — the line is in the installed source at ${where}: degraded, not broken, and saying so"
   elif [[ "$want" == yes ]]; then
     # Both halves present, so is_available() is True and the application must
     # NOT take the degradation branch. The line that has to be readable either
@@ -459,7 +462,7 @@ else:
     # is for.
     pass stt-reports-unavailable-not-broken "is_available() is True and tracks reality (whisper binary ${stt_bin} and model ${stt_model} both present), so the STT-disabled branch is correctly NOT taken; the warning string is still ${warnstate} in the installed application module (${where}) for the day one half goes away"
   else
-    bad stt-reports-unavailable-not-broken "is_available() is correctly False, but the degradation is not visible: the not-is_available() guard evaluated ${guard} and the 'not available - STT disabled' warning string is ${warnstate} under ${where} — STT goes quiet for a reason nobody can read"
+    bad stt-reports-unavailable-not-broken "is_available() is correctly False, but the degradation is not visible: the not-is_available() guard evaluated ${guard} and the start-up line that reports listening= is ${warnstate} under ${where} — STT goes quiet for a reason nobody can read"
   fi
 fi
 
@@ -703,7 +706,9 @@ fi
 # /snap. (The literal "/snap" is matched with a delimiter, so the numerous
 # "snapshots" senses and gsettings keys in this codebase do not trip it.)
 snap_bin=$(command -v whisper-cli 2>/dev/null || true)
-snap_refs=$(grep -rInE "/snap(/|[\"']|$)" "$CHRONOA_LIB" /usr/bin/shani-chronoa* 2>/dev/null | head -3)
+# the speech code and the launchers - a disk listing that skips /snap mounts
+# (gui/surfaces/machine.py) is not a whisper install path
+snap_refs=$(grep -InE "/snap(/|[\"']|$)" "$CHRONOA_LIB"/shani_chronoa/{stt,stt_provision,stt_server,tts,voices,engines}.py /usr/bin/shani-chronoa* 2>/dev/null | head -3)
 snap_why=""
 case "$snap_bin" in
   /snap/*) snap_why+="whisper-cli resolves to ${snap_bin}, a snap: snapd is not a Shanios dependency, so this binary is not part of the install path being tested; " ;;

@@ -5,7 +5,7 @@
 # WHY THIS FILE EXISTS. `shani-deploy`'s boot-failure hook clears
 # `LoaderEntrySysFail` / `LoaderEntryOneShot` / `LoaderEntryPreferred` from the
 # initramfs, because systemd-boot reads loader.conf's `default` LAST of seven
-# sources (POWER-CUT-STATE.md, `config_select_default_entry()` in boot.c): any
+# sources (powercut/STATE.md, `config_select_default_entry()` in boot.c): any
 # of those three EFI vars outranks every deploy's loader.conf **forever**, so a
 # machine with one set boots whatever it names — failing open, into a broken boot.
 # The clearing is `rm -f` on the efivarfs node plus a verification read.
@@ -31,9 +31,9 @@
 # be told to forget".
 #
 #   iso-install -p gnome --boot-only --iso=iso-latest \
-#     --console-put=/opt/shani-testbed/tests/efivar-boot-facts.sh:/tmp/efivar-facts.sh \
+#     --console-put=/opt/shani-testbed/boot-probes/efivar-boot-facts.sh:/tmp/efivar-facts.sh \
 #     --console-exec="sh -c 'bash /tmp/efivar-facts.sh > /tmp/f; grep ^EFIVARFACT /tmp/f'" \
-#     --boot-timeout=900 | ./tests/efivar-boot-verify.sh
+#     --boot-timeout=900 | ./boot-probes/efivar-boot-verify.sh
 #
 # `--console-put` resolves its SOURCE inside the builder container, whose /tmp is
 # a tmpfs, so a host path under /tmp does not exist there; /opt/shani-testbed is
@@ -83,7 +83,7 @@ target="$(cd "$EFIVARS" 2>/dev/null && ls -1 LoaderEntrySelected-* 2>/dev/null |
 [ -n "$target" ] || target="$(cd "$EFIVARS" 2>/dev/null && ls -1 Loader* 2>/dev/null | head -1)"
 
 # Is `rm` even present? This harness has a documented history of minimal
-# environments missing binaries — POWER-CUT-STATE.md records `sync: command not
+# environments missing binaries — powercut/STATE.md records `sync: command not
 # found` from the initramfs, visible in the console the whole time. A `rm -f`
 # that fails because `rm` is absent is indistinguishable, with stderr discarded,
 # from a `rm -f` the kernel refused — and those two demand opposite conclusions

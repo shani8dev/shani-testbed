@@ -1,5 +1,5 @@
-"""tests/boot-default-entry-id.sh must catch a boot default that is not an entry id."""
-TEST = "tests/boot-default-entry-id.sh"
+"""shani-deploy/tests/test-boot-default-entry-id.sh must catch a boot default that is not an entry id."""
+TEST = "../shani-deploy/tests/test-boot-default-entry-id.sh"
 MUTATIONS = [
     {"file": "../shani-deploy/scripts/shani-deploy.sh",
      "label": "shani-deploy writes the slot stem instead of the .conf entry id",

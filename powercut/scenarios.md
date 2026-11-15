@@ -20,7 +20,7 @@ three times four minutes apart, recovered by hand from the other partition.
 
 The three scenarios above are all **end states of the extract phase or after the
 flip has completed**. None of them is a cut *during* the flip, and this harness
-structurally cannot produce one: `powercut-scenario.sh` reproduces the state a
+structurally cannot produce one: `powercut/scenario.sh` reproduces the state a
 cut leaves, so a state that only exists mid-write has no representation.
 
 That matters, because the flip is several writes and they are not one atomic
@@ -79,8 +79,8 @@ during UKI creation leaves the previous UKI in place — which is why scenario A
 ## Order
 
 ```sh
-powercut-inject-hook.sh                    # once, after ANY hook change
-powercut-scenario.sh C
+powercut/inject-hook.sh                    # once, after ANY hook change
+powercut/scenario.sh C
 test-env/test.sh vmspawn --tpm=no          # boot 1 — mount fails, loader.conf rewritten
 # inspect the ESP's default entry
 test-env/test.sh vmspawn --tpm=no          # boot 2 — lands on the good slot

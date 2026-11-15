@@ -505,8 +505,8 @@ if [[ -n "$probe_uid" ]]; then
         pkill -KILL -u "$probe_uid" 2>/dev/null || true
         sleep 1
     done
-    userdel -r skelprobe 2>/tmp/opencode-userdel.err || \
-        userdel skelprobe 2>>/tmp/opencode-userdel.err
+    userdel -r skelprobe 2>/tmp/post-reset-userdel.err || \
+        userdel skelprobe 2>>/tmp/post-reset-userdel.err
 fi
 rm -rf "/home/skelprobe" 2>/dev/null || true
 
@@ -524,7 +524,7 @@ else
     hm="no"
     mountpoint -q /home/skelprobe 2>/dev/null && hm="YES (a mountpoint)"
     res stranded-precondition-no-account \
-       "FAIL (accounts present: $regular_accounts; home is a mountpoint: $hm; uid $probe_uid processes: ${survivors:-none}; userdel said: $(tr '\n' ' ' </tmp/opencode-userdel.err 2>/dev/null))"
+       "FAIL (accounts present: $regular_accounts; home is a mountpoint: $hm; uid $probe_uid processes: ${survivors:-none}; userdel said: $(tr '\n' ' ' </tmp/post-reset-userdel.err 2>/dev/null))"
 fi
 
 STRAY_UID=3999

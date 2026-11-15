@@ -115,5 +115,14 @@ python3 "$VP" compare "$TMP/bad.ppm" "$TMP/base.ppm" >/dev/null 2>&1; [[ $? -eq 
   && ok "a non-PPM input is a clean error, not a verdict" \
   || no "bad input" "a malformed PPM did not exit 65"
 
+# 7. content: a flat frame (a dead display manager's black screen) is blank,
+#    exit 2; a frame with a window on it has content, exit 0.
+python3 "$VP" content "$TMP/base.ppm" >/dev/null; [[ $? -eq 2 ]] \
+  && ok "a flat frame is blank (exit 2)" \
+  || no "content blank" "a one-colour frame was not called blank"
+python3 "$VP" content "$TMP/window.ppm" >/dev/null; [[ $? -eq 0 ]] \
+  && ok "a frame with a window has content (exit 0)" \
+  || no "content window" "a frame with a window on it was called blank"
+
 printf '\n%d ok, %d failed\n' "$pass_n" "$fail_n"
 [[ $fail_n -eq 0 ]]

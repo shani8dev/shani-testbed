@@ -347,19 +347,24 @@ scenario() {
   # rubberband is the other candidate _best_transposer() looks for; leaving it
   # absent is what makes the "no shifter" scenario real rather than a fiction.
   [[ "$kokoro" == yes ]] && {
-    local kok="$sd/xdg/shani-chronoa"
-    mkdir -p "$kok/sherpa-onnx/sherpa-onnx-v1.13.8-linux-x64-shared/bin"
-    write_sherpa_stub "$kok/sherpa-onnx/sherpa-onnx-v1.13.8-linux-x64-shared/bin/sherpa-onnx-offline-tts"
-    # kokoro_dir() is data_home()/kokoro - NOT data_home()/shani-chronoa/kokoro,
-    # which is where sherpa's release lives. Getting that wrong leaves the model
-    # invisible, and `_kokoro_reason()` then falls through to espeak-ng with a
-    # perfectly plausible reason string, so the scenario would quietly test the
-    # formant voice while claiming to test the neural one.
-    local model="$sd/xdg/kokoro/kokoro-int8-en-v0_19"
-    mkdir -p "$model/espeak-ng-data"
-    for f in model.int8.onnx voices.bin tokens.txt; do
-      [[ -s "$model/$f" ]] || printf 'stub\n' > "$model/$f"
-    done
+    # Where the program and the model files go is asked of the shipped code
+    # itself (sherpa.binary's path, voices.kokoro_files()), not written down
+    # here: both moved once (data_home()/kokoro -> data_home()/shani-chronoa/
+    # kokoro, the v0.19 model -> v1.0 with a lexicon), and a stub laid out at
+    # the old place made every style check SKIP "kokoro is not installed".
+    local f
+    while IFS= read -r f; do
+      mkdir -p "$(dirname "$f")"
+      case "$f" in
+        */sherpa-onnx-offline-tts) write_sherpa_stub "$f" ;;
+        *) [[ -s "$f" ]] || printf 'stub\n' > "$f" ;;
+      esac
+    done < <(XDG_DATA_HOME="$sd/xdg" PYTHONPATH="$CHRONOA_SRC" python3 -c '
+from shani_chronoa import sherpa, voices
+print(sherpa.install_dir() / f"sherpa-onnx-{sherpa.VERSION}-linux-x64-shared" / "bin" / "sherpa-onnx-offline-tts")
+# the user copy (kokoro_files() answers with the system one until it exists)
+for p in voices.kokoro_files().values():
+    print(voices.kokoro_model_dir() / p.name)')
   }
 
   # A real compiled schema, with the one consent key's default flipped. Reading

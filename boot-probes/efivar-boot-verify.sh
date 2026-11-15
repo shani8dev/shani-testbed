@@ -3,11 +3,11 @@
 # boot into PASS/FAIL/SKIP verdicts, so the failover hook's EFI-variable clearing
 # is **checked** rather than believed.
 #
-# WHY. `tests/efivar-boot-facts.sh` measures; nothing here asserts until now.
+# WHY. `boot-probes/efivar-boot-facts.sh` measures; nothing here asserts until now.
 # The hook clears three EFI variables that outrank loader.conf's `default`
 # (systemd-boot's `config_select_default_entry()` reads `default` LAST of seven
 # sources), using `rm -f` plus a verification read. It is implemented and
-# unit-tested, and POWER-CUT-STATE.md records the consequence in terms: a machine
+# unit-tested, and powercut/STATE.md records the consequence in terms: a machine
 # with a stale `LoaderEntryDefault` boots whatever it names, failing open into a
 # broken boot.
 #
@@ -18,9 +18,9 @@
 # kernel, so the check could never reach the operation the hook performs.
 #
 #   iso-install -p gnome --boot-only --iso=iso-latest \
-#     --console-put=/opt/shani-testbed/tests/efivar-boot-facts.sh:/tmp/efivar-facts.sh \
+#     --console-put=/opt/shani-testbed/boot-probes/efivar-boot-facts.sh:/tmp/efivar-facts.sh \
 #     --console-exec="sh -c 'bash /tmp/efivar-facts.sh > /tmp/f; grep ^EFIVARFACT /tmp/f'" \
-#     --boot-timeout=900 | ./tests/efivar-boot-verify.sh
+#     --boot-timeout=900 | ./boot-probes/efivar-boot-verify.sh
 #
 # Reads stdin, or a file given as $1. `tests/efivar-boot-verify-results.sh`
 # proves this can say FAIL against doctored streams before any boot trusts a PASS
@@ -109,7 +109,7 @@ res efivar-loader-vars-present "PASS ($(fact efivarfs_count) present: $(fact loa
 # prints octal DIGITS with no type letter, so a mode is 3 characters, not 10 —
 # the others triplet of the `crw-rw-rw-` form that `ls -l` shows does not exist
 # here. And even in that form, others-WRITE is not the last character: the first
-# attempt indexed the third (execute). POWER-CUT-STATE.md records this exact pair
+# attempt indexed the third (execute). powercut/STATE.md records this exact pair
 # of mistakes already found once in `driver-boot-verify.sh` ("index 9 is the
 # others-EXECUTE bit, so crw-rw-rw- still read as not world-readable"), so this
 # is the third occurrence of the same arithmetic, not a new idea.
@@ -139,7 +139,7 @@ esac
 # not take effect, every LoaderEntry* stays set, LoaderEntryDefault keeps
 # outranking loader.conf, and the machine boots whatever it names.
 if [ "$(fact rm_present)" != "yes" ]; then
-  res efivar-target-unlinks "SKIP (no \`rm\` on PATH in this environment ($(fact kernel)) — the hook's \`rm -f\` was never executed, so this says NOTHING about it. This harness has measured binaries missing from minimal environments before: POWER-CUT-STATE.md records \`sync: command not found\` from the initramfs.)"
+  res efivar-target-unlinks "SKIP (no \`rm\` on PATH in this environment ($(fact kernel)) — the hook's \`rm -f\` was never executed, so this says NOTHING about it. This harness has measured binaries missing from minimal environments before: powercut/STATE.md records \`sync: command not found\` from the initramfs.)"
 elif [ "$(fact hook_target_present)" != "yes" ]; then
   res efivar-target-unlinks "SKIP (no Loader* variable existed to unlink — this machine has none of the hook's four targets set, so the hook's clearing has nothing to act on here. This says NOTHING about the hook in either direction.)"
 elif [ "$(fact unlink_ok)" = "yes" ] && [ "$(fact gone_after_delete)" = "yes" ]; then

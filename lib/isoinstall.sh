@@ -370,6 +370,10 @@ _isovm_boot_installed() {  # <timeout> [expected slot]
   if [[ "$result" == OK:* && -n "${ISOVM_CONSOLE_EXEC:-}" ]]; then
     _isovm_console_exec "$boot_log" "$ISOVM_CONSOLE_EXEC" "${ISOVM_CONSOLE_TIMEOUT:-600}" || ISOVM_CONSOLE_RC=$?
   fi
+  ISOVM_SCREEN_RC=0
+  if [[ "$result" == OK:* && -n "${ISOVM_FIRST_SCREEN:-}" ]]; then
+    _isovm_first_screen "${ISOVM_FIRST_SCREEN%%:*}" "$(sed -n 's/^[^:]*:\([0-9]\+\)$/\1/p' <<<"$ISOVM_FIRST_SCREEN")" || ISOVM_SCREEN_RC=$?
+  fi
   sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$boot_log" | grep -aE 'Linux version|systemd-boot|shanios|tpm|TPM|Reached target|login:|FAILED|emergency' \
     | cut -c1-140 | tail -10 | sed 's/^/  | /' || true
   if [[ "$result" != OK:* ]]; then  # the filter above misses a hang: show where it stopped
@@ -380,10 +384,40 @@ _isovm_boot_installed() {  # <timeout> [expected slot]
   trap - EXIT
   [[ "$result" == OK:* ]] || die "iso-install: the installed disk did not boot (${boot_log})"
   (( ISOVM_CONSOLE_RC == 0 )) || die "iso-install: --console-exec command failed (rc=${ISOVM_CONSOLE_RC})"
+  (( ISOVM_SCREEN_RC == 0 )) || die "iso-install: --first-screen: nothing was drawn on the screen (${ISOVM_FIRST_SCREEN%%:*})"
+}
+
+# --first-screen=FILE[:SECS]: what a person sees when the installed machine is
+# switched on. Screendumps the VGA output every 15 s until two frames in a row
+# are the same (visual_progress.py settled) AND something is drawn (content:
+# not one flat colour - a display manager that died leaves a black screen),
+# then keeps that frame as FILE (P6 PPM). SECS (default 900: TCG paints a
+# compositor slowly) bounds the wait. Pair it with --console-exec checking the
+# first setup's process: the picture shows it, the process proves it.
+_isovm_first_screen() {  # <file.ppm> [secs]
+  local out="$1" secs="${2:-900}" dir="${ISOVM}/first-screen" i=0 t0 last=""
+  local vp="${LIB_DIR}/visual_progress.py"
+  rm -rf "$dir"; mkdir -p "$dir" "$(dirname "$out")"
+  t0=$(date +%s)
+  while (( $(date +%s) - t0 < secs )); do
+    i=$((i + 1))
+    python3 "${LIB_DIR}/qmp_client.py" screendump "${ISOVM}/qmp.sock" "${dir}/f${i}.ppm" >/dev/null 2>&1 || { sleep 15; continue; }
+    if [[ -n "$last" ]] && python3 "$vp" settled "$last" "$last" "${dir}/f${i}.ppm" >/dev/null 2>&1 \
+       && python3 "$vp" content "${dir}/f${i}.ppm" >/dev/null 2>&1; then
+      cp "${dir}/f${i}.ppm" "$out"
+      log "iso-install: first screen settled after $(( $(date +%s) - t0 ))s: ${out} ($(python3 "$vp" content "$out"))"
+      return 0
+    fi
+    last="${dir}/f${i}.ppm"
+    sleep 15
+  done
+  [[ -n "$last" ]] && cp "$last" "$out"
+  warn "iso-install: first screen: no settled, non-blank frame in ${secs}s (last frame: ${out}: $(python3 "$vp" content "$out" 2>/dev/null))"
+  return 1
 }
 
 cmd_iso_install() {
-  local usage="Usage: $(basename "$0") iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso> [--encrypted] [--live-timeout=S] [--install-timeout=S] [--boot-timeout=S] [--boot-only [--reset-firmware]] [--disk-size=BYTES] [--disk-bus=virtio|usb|uas|ehci] [--boot-disk-bus=BUS] [--expect-slot=blue|green] [--console-exec=CMD] [--console-put=LOCAL:REMOTE] [--console-timeout=S] [--expect-tpm-unlock]"
+  local usage="Usage: $(basename "$0") iso-install -p <profile> --iso=<iso-latest|iso-stable|YYYYMMDD|file.iso> [--encrypted] [--live-timeout=S] [--install-timeout=S] [--boot-timeout=S] [--boot-only [--reset-firmware]] [--disk-size=BYTES] [--disk-bus=virtio|usb|uas|ehci] [--boot-disk-bus=BUS] [--expect-slot=blue|green] [--console-exec=CMD] [--console-put=LOCAL:REMOTE] [--console-timeout=S] [--expect-tpm-unlock] [--first-screen=FILE.ppm[:SECS]]"
   local profile="" sel="" encrypted=0 live_to=1800 inst_to=10800 boot_to=1800 boot_only=0 reset_fw=0 disk_size="" expect_slot=""
   while (( $# )); do
     case "$1" in
@@ -403,6 +437,7 @@ cmd_iso_install() {
       --console-timeout=*) ISOVM_CONSOLE_TIMEOUT="${1#*=}" ;;
       --console-put=*) ISOVM_CONSOLE_PUT="${ISOVM_CONSOLE_PUT:+${ISOVM_CONSOLE_PUT} }${1#*=}" ;;
       --expect-tpm-unlock) ISOVM_EXPECT_TPM_UNLOCK=1 ;;
+      --first-screen=*) ISOVM_FIRST_SCREEN="${1#*=}" ;;
       *) die "$usage" ;;
     esac
     shift

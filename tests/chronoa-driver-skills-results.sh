@@ -80,17 +80,17 @@ schema() {
 # flip_default <schema-dir> <key> — set that key's <default> to true, in the XML,
 # then recompile. Done in python so a key that is not there is an error rather
 # than a silent no-op.
-flip_default() {
-  python3 - "$1" "$2" <<'PY'
+flip_default() {   # <schema dir> <key> <true|false>
+  python3 - "$1" "$2" "$3" <<'PY'
 import pathlib, re, sys
-d, key = pathlib.Path(sys.argv[1]), sys.argv[2]
+d, key, value = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 p = d / "org.shani.chronoa.gschema.xml"
 s = p.read_text()
 pat = re.compile(r'(<key name="%s"[^>]*>\s*<default>)([^<]*)(</default>)' % re.escape(key))
 if not pat.search(s):
     print(f"ANCHOR-MISSING: no <default> for {key} - refusing to pretend")
     sys.exit(3)
-p.write_text(pat.sub(r"\g<1>true\g<3>", s))
+p.write_text(pat.sub(r"\g<1>" + value + r"\g<3>", s))
 PY
   [[ $? == 0 ]] || { echo "Bail out! could not flip a default in $1"; exit 0; }
   glib-compile-schemas "$1" >/dev/null 2>&1
@@ -99,7 +99,7 @@ PY
   # "negative control that cannot fail" in its purest form.
   local got
   got=$(GSETTINGS_SCHEMA_DIR="$1" gsettings get org.shani.chronoa "$2" 2>/dev/null || echo "(unreadable)")
-  [[ "$got" == "true" ]] || { echo "Bail out! flipping $2 did not take (gsettings says '$got')"; exit 0; }
+  [[ "$got" == "$3" ]] || { echo "Bail out! flipping $2 to $3 did not take (gsettings says '$got')"; exit 0; }
 }
 
 # run_case <name> <schema-dir> — run the slot-test's own python body.
@@ -183,15 +183,17 @@ else
   no "the toolchain refusal passed on a box that has a compiler - it may be a rubber stamp"
 fi
 
-# --- a gate that DEFAULTS ON -------------------------------------------------
+# --- each gate flipped away from its documented default ---------------------
+# (driver-build-enabled defaults on - it only compiles - and i2c-write-enabled
+# off - it writes to hardware; a schema that swapped either must go red)
 opened=$(schema opened)
-flip_default "$opened" driver-build-enabled
-flip_default "$opened" i2c-write-enabled
+flip_default "$opened" driver-build-enabled false
+flip_default "$opened" i2c-write-enabled true
 out=$(run_case opened "$opened")
-echo "# --- both gates flipped to default-on ---"
+echo "# --- both gates flipped from their documented defaults ---"
 grep -E 'consent-key' <<<"$out" | sed 's/^/#   /'
-check "a gate defaulting to true FAILS" "$out" "consent-key-driver-build-enabled" FAIL
-check "and so does the second gate"     "$out" "consent-key-i2c-write-enabled" FAIL
+check "the build gate defaulting off FAILS" "$out" "consent-key-driver-build-enabled" FAIL
+check "the i2c write gate defaulting on FAILS" "$out" "consent-key-i2c-write-enabled" FAIL
 
 # --- the four defects, mutated in the product -------------------------------
 # (a) the Kbuild line back to the form that does not build. The anchor is the

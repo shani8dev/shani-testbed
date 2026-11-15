@@ -117,7 +117,12 @@ piped into `probe --exec`):
   (`tests/run-app-actions.sh`, `tests/run-web-client.sh`);
 - **a repeatable walk through a real app** → an `app-scripts/<app>.actions`
   file (`cassini-tour.actions`), run with `app --script=`;
-- **a check of the harness itself** → `tests/`.
+- **a script run inside a firmware boot** (`--console-put`/`--console-exec`) →
+  `boot-probes/`, its host-side verifier beside it, its negative control in `tests/`;
+- **a check of the harness itself** → `tests/`;
+- **a test of a product's own code** (shani-deploy's scripts, the dracut
+  module) → that product's `tests/`, not here. README "Where each kind of file
+  lives" is the map; keep it true when you add a directory.
 
 A test that only exists in one session's scratchpad is lost the moment the
 session ends, and the next agent re-derives it.
@@ -548,7 +553,7 @@ containers first.
   `config-validators`' `audit-rules-loaded` SKIPs there by design. A VM boots the
   image's kernel, where audit is independent of the host: the proof ran inside a
   guest on **`7.2.6-arch2-1`** with **auditd active** and loaded **64 of 64** rules,
-  plus both controls. Harness-side pieces: `tests/audit-boot-proof.sh` and the
+  plus both controls. Harness-side pieces: `boot-probes/audit-boot-proof.sh` and the
   digest-pinned snapshot in `tests/fixtures/` - the snapshot is a copy because
   shani-settings is not in run_in_container.sh's sibling-mount loop, so
   `--console-put` otherwise cannot reach it, and the recorded sha256 keeps a stale
@@ -1129,7 +1134,7 @@ things that cost a run each:
 cd ../shani-install-media
 SHANIOS_NO_PULL=1 ./run_in_container.sh build.sh test iso-install -p gnome \
   --boot-only --iso=iso-latest \
-  --console-put=/opt/shani-testbed/tests/driver-boot-facts.sh:/tmp/driver-facts.sh \
+  --console-put=/opt/shani-testbed/boot-probes/driver-boot-facts.sh:/tmp/driver-facts.sh \
   --console-exec="bash /tmp/driver-facts.sh" --boot-timeout=900
 ```
 
@@ -1149,7 +1154,7 @@ An installed boot reaches `login:` in **126 s** under TCG on this host, so this 
 a minutes-long measurement rather than an afternoon. `--boot-timeout=`, not
 `--timeout` — the latter is the slot-test flag.
 
-`tests/driver-boot-facts.sh` is the measurement itself, kept in the harness
+`boot-probes/driver-boot-facts.sh` is the measurement itself, kept in the harness
 rather than a scratchpad for the reason above. It prints `DRIVERFACT key=value`
 lines so the parser matches on a **key**: pinning prose is the trap this file
 already records for the espeak argv and the hardcoded module path, and a
@@ -1157,13 +1162,13 @@ measurement whose output format is a sentence cannot be asserted on safely.
 
 ### `driver-boot-verify`: a claim written down is a claim that rots silently (2026-10-10)
 
-`tests/driver-boot-facts.sh` measures the driver environment inside a firmware
+`boot-probes/driver-boot-facts.sh` measures the driver environment inside a firmware
 boot. **Measuring is not checking** — so this pair of files closes the loop:
-`tests/driver-boot-verify.sh` turns the `DRIVERFACT key=value` stream into
+`boot-probes/driver-boot-verify.sh` turns the `DRIVERFACT key=value` stream into
 PASS/FAIL/SKIP, and `tests/driver-boot-verify-results.sh` proves it can say no
 before any boot is trusted to say yes.
 
-That ordering is `tests/audit-boot-proof.sh`'s practice restated: the audit script
+That ordering is `boot-probes/audit-boot-proof.sh`'s practice restated: the audit script
 was dry-run against a stub kernel in both directions first, so the boot was
 confirming a check already known to discriminate. **A checker whose first ever
 run is a real boot has not been shown it can say no** — and this one exists to

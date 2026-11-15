@@ -355,6 +355,24 @@ copy-pasted between commands):
 | `lib/a11y_client.py` | AT-SPI accessibility-tree client used by `app` |
 | `mcp/shani_harness_mcp.py` | MCP server exposing `app` and harness commands to AI agents |
 
+Where each kind of file lives:
+
+| directory | holds | runs |
+|---|---|---|
+| `lib/` | the harness commands | via `testbed <command>` |
+| `slot-tests/` | checks that run **inside a slot** (`RESULT <name> PASS\|FAIL\|SKIP`) | `slot-test <slot> <name>` |
+| `boot-probes/` | scripts run **inside a firmware boot** of an install (facts, proofs, UKI rebuilds) and the host-side verifiers of their output | `iso-install --boot-only --console-put=boot-probes/<x>.sh:... --console-exec=...` |
+| `app-scripts/` | walks through a real app (`.actions`) | `app ... --script=` |
+| `powercut/` | the power-cut scenario runner, its hook, the scenarios and their state log | `powercut/scenario.sh` |
+| `tests/` | tests **of the harness itself** (parsers, verdicts, option handling, MCP parity, the negative controls of slot-tests and boot-probes) | on the host, most in CI |
+| `tools/` | maintenance: `gen_readme.py`, `mutate.py` + `mutations/` | by hand |
+| `docs/` | measured results that are not the README | - |
+
+A test of a product's own code belongs in that product's repo, not here: shani-deploy's
+decision and boot-entry tests are in `shani-deploy/tests/`, the dracut module's
+dependency check in `shani-install-media/tests/`. They still run from a checkout
+next to this one, and `tools/mutate.py` mutates them by relative path.
+
 `slot-tests/backup-snapshots.sh` drives `shani-backup`'s own `btrfs.py` against a
 real filesystem inside the slot, because six claims about its snapshot code decide
 what its fix has to be: a plain directory cannot be snapshotted, a snapshot cannot
@@ -469,6 +487,13 @@ container). `iso-install -p <profile> --iso=<iso-latest|iso-stable|date|file>`:
    configure.sh wrote) to a login prompt; its console reaches
    `disk/iso-install-boot-console.log` through systemd-stub's SMBIOS
    kernel-cmdline-extra (`console=ttyS0`, the only change to the system).
+
+`--first-screen=FILE.ppm[:SECS]` (with `--boot-only`) keeps what a person
+sees on the first switch-on: screendumps until the picture settles and is not
+one flat colour, saved as FILE. A boot splash left on screen also "draws
+something", so pair it with `--console-exec` waiting for that desktop's first
+setup process - `gate` does both (`iso:first-screen`: `qs -c shani-setup`,
+`gnome-initial-setup`, `plasma-setup`), before any check adds an account.
 
 Not covered: clicking the os-installer GUI pages (they only collect the
 `OSI_*` values), and Secure Boot (MOK enrollment needs MokManager).
@@ -1455,6 +1480,7 @@ between the markers; edit the source and rerun the generator.
 | `deploy-status` | boot | `shani-deploy --status [--check] --json`, what Shani Cassini reads |
 | `disk-layout` | boot | the Btrfs top level holds only the installed layout |
 | `dnscrypt-enable` | boot | Does enabling dnscrypt-proxy break the machine's networking? |
+| `first-boot` | boot | what a new install shows when it is switched on |
 | `fresh-user` | boot | what a person gets on a fresh install |
 | `home-snapshots` | boot | `shani_backup.home` (daily snapshots of people's homes in /home/.snapshots, the idea of NAZY-OS/btrfs-home-user-snapshots) on a real btrfs, in the real image, driving the live checkout (/mnt/src/shani-backup) |
 | `initramfs-drivers` | boot | every UKI on the ESP carries the drivers its root disk can need, so the initqueue can find root=UUID= on more than a virtio disk |

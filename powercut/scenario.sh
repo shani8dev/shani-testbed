@@ -1,6 +1,6 @@
 #!/bin/bash
 # Apply a "power was cut here" end state to install.img.
-#   $1 = A | B | C     (see powercut-scenarios.md)
+#   $1 = A | B | C     (see powercut/scenarios.md)
 # The cut itself is not what is under test; what a cut DETERMINISTICALLY LEAVES
 # BEHIND is, so each scenario reproduces one end state to be booted for real.
 set -uo pipefail
@@ -123,7 +123,7 @@ C) # The reported failure. The candidate must genuinely fail to mount.
    if [[ -z $CAND ]]; then
        echo "SCENARIO C ABORT: SHANIOS_CANDIDATE must name the slot whose UKI is unbootable." >&2
        echo "  Set it to the slot regen-uki.sh --break-root was run against, e.g." >&2
-       echo "      SHANIOS_CANDIDATE=green bash powercut-scenario.sh C" >&2
+       echo "      SHANIOS_CANDIDATE=green bash powercut/scenario.sh C" >&2
        exit 2
    fi
    if [[ ! -f "$ESPMNT/loader/entries/shanios-${CAND}.conf" ]]; then
@@ -233,7 +233,7 @@ C) # The reported failure. The candidate must genuinely fail to mount.
          echo
          echo "Build the bad UKI by construction (gen-efi/dracut with a different"
          echo "kernel cmdline) rather than patching one, point this entry at it, and"
-         echo "re-run. See POWER-CUT-STATE.md, 'Scenario C must be built, not patched'."
+         echo "re-run. See powercut/STATE.md, 'Scenario C must be built, not patched'."
        } >&2
        exit 2
    fi

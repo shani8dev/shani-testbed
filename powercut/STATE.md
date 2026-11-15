@@ -85,7 +85,7 @@ commit (`f8adca4`) claimed a bug here; retracted in `794da2c`.
 
 The hook lives in the **initramfs**, which is embedded in the **UKI** on the ESP
 (`EFI/shanios/shanios-blue.efi`, 53,823,024 bytes) — there is no standalone
-`initramfs-linux.img`. `powercut-inject-hook.sh` currently copies into
+`initramfs-linux.img`. `powercut/inject-hook.sh` currently copies into
 `/usr/lib/dracut/` and regenerates an initramfs, which does **not** affect the
 UKI.
 
@@ -1500,7 +1500,7 @@ other things:
 `sync` is not in `inst_multiple`, so the hook's flush before it unmounts and gives
 up **never ran**. That is the exact difference between the rewrite reaching the
 disk and not — the question this whole investigation turned on — and it was not
-happening. Fixed, and `tests/dracut-hook-deps.py` now diffs every external command
+happening. Fixed, and `shani-install-media/tests/test-dracut-hook-deps.py` now diffs every external command
 the hooks run against the declared list, with three mutations confirmed red
 including the original `cat`/`cp` omission.
 
@@ -1690,7 +1690,7 @@ The fix was one line — `FALLBACK="${N}.conf"` — and finding it took:
 
 4. **`sync` was never in the initramfs** (`sync: command not found`, visible in
    the console the whole time), so the hook's flush before it unmounts never ran.
-   Now in `inst_multiple`, with `tests/dracut-hook-deps.py` covering the class.
+   Now in `inst_multiple`, with `shani-install-media/tests/test-dracut-hook-deps.py` covering the class.
 
 ## The reusable half
 
@@ -1706,11 +1706,11 @@ The fix was one line — `FALLBACK="${N}.conf"` — and finding it took:
 ## Re-run through the harness alone — the throwaway is gone
 
 The proof above used a one-off script to build the disk state, which the repo's
-rules do not allow to outlive a session. `powercut-scenario.sh` now takes
+rules do not allow to outlive a session. `powercut/scenario.sh` now takes
 `SHANIOS_CANDIDATE` and derives the sibling slot, so the whole loop is three
 harness commands and nothing else:
 
-    SHANIOS_CANDIDATE=green bash powercut-scenario.sh C
+    SHANIOS_CANDIDATE=green bash powercut/scenario.sh C
     ./test-env/test.sh vmspawn --tpm=no --commit --timeout=200    # must FAIL
     ./test-env/test.sh vmspawn --tpm=no --commit --timeout=880    # must recover
 
@@ -1786,7 +1786,7 @@ measurement - which is why no boot was run on it.
 
 `8eec805` made (2) abort, so the blocked run above was runnable. Same two boots,
 same three hook lines each, reached entirely through repo tooling
-(`regen-uki.sh --break-root` → `powercut-scenario.sh C` → `test.sh vmspawn
+(`regen-uki.sh --break-root` → `powercut/scenario.sh C` → `test.sh vmspawn
 --commit`), no throwaway:
 
     boot 1: FAIL: Entering emergency mode (33s)
@@ -1833,9 +1833,9 @@ not closed is that nobody had gone looking.
 
 ## The efivar measurement now exists, and can say no before it is trusted
 
-`tests/efivar-boot-facts.sh` (runs inside the boot via `--console-put` +
+`boot-probes/efivar-boot-facts.sh` (runs inside the boot via `--console-put` +
 `--console-exec`, prints `EFIVARFACT key=value`) and
-`tests/efivar-boot-verify.sh` (turns that stream into verdicts), shaped exactly
+`boot-probes/efivar-boot-verify.sh` (turns that stream into verdicts), shaped exactly
 like the `driver-boot-*` pair above. The measurement settles this in **one
 boot rather than two**, because the property the hook needs is not "does the
 variable survive a reboot" — it is "can efivarfs be written, read back and
@@ -1874,7 +1874,7 @@ repo's recurring shapes:
 ### Two boots of it, and both changed the measurement
 
 Run via `iso-install -p gnome --boot-only --iso=iso-latest --console-put=
-/opt/shani-testbed/tests/efivar-boot-facts.sh:/tmp/efivar-facts.sh
+/opt/shani-testbed/boot-probes/efivar-boot-facts.sh:/tmp/efivar-facts.sh
 --console-exec="bash /tmp/efivar-facts.sh" --boot-timeout=900`. Both reached the
 guest (`rc=0`, kernel `7.2.6-arch2-1`) and both changed what the file measures.
 

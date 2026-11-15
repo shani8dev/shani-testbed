@@ -3,19 +3,19 @@
 # boot into PASS/FAIL/SKIP verdicts, so the claims shani-chronoa makes about
 # this platform are **checked** rather than written down once.
 #
-# WHY THIS FILE EXISTS. `tests/driver-boot-facts.sh` measures; nothing asserted.
+# WHY THIS FILE EXISTS. `boot-probes/driver-boot-facts.sh` measures; nothing asserted.
 # `AGENTS.md` in both repos records "no linux-headers, /var is tmpfs, /usr/lib/
 # modules is read-only, lockdown enforces none" as the current state of this
 # platform - and a recorded fact is a claim that rots silently. This is the
 # staleness check, and it is deliberately shaped like
-# `tests/audit-boot-proof.sh`'s practice: **prove the checker can say FAIL before
+# `boot-probes/audit-boot-proof.sh`'s practice: **prove the checker can say FAIL before
 # trusting a boot's PASS**, which `tests/driver-boot-verify-results.sh` does
 # against doctored fact streams including ones that must go red.
 #
 #   iso-install -p gnome --boot-only --iso=iso-latest \
-#     --console-put=/opt/shani-testbed/tests/driver-boot-facts.sh:/tmp/driver-facts.sh \
+#     --console-put=/opt/shani-testbed/boot-probes/driver-boot-facts.sh:/tmp/driver-facts.sh \
 #     --console-exec="sh -c 'bash /tmp/driver-facts.sh > /tmp/f; \
-#       grep ^DRIVERFACT /tmp/f'" --boot-timeout=900 | ./tests/driver-boot-verify.sh
+#       grep ^DRIVERFACT /tmp/f'" --boot-timeout=900 | ./boot-probes/driver-boot-verify.sh
 #
 # IT READS ITS INPUT ON STDIN, and it also accepts a file, because piping a
 # boot's console through a grep and then into this is how the facts get here.

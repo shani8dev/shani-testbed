@@ -29,6 +29,7 @@ not - the signal a step did nothing.
 Usage:
     visual_progress.py compare BEFORE.ppm AFTER.ppm      # prints a JSON verdict
     visual_progress.py assert-changed BEFORE.ppm AFTER.ppm  # exit 0 changed, 2 same
+    visual_progress.py content FRAME.ppm                  # exit 0 something drawn, 2 blank
 """
 from __future__ import annotations
 
@@ -165,6 +166,22 @@ def compare(before_path: str, after_path: str, grid: int = GRID) -> dict:
 STABLE_RUN = 2
 
 
+#: A frame is blank when its brightest and darkest cells are this close: one
+#: colour (a black screen, a background with nothing on it).
+CONTENT_SPREAD = 16
+
+
+def content(path: str, grid: int = GRID) -> dict:
+    """Is anything drawn on this frame, or is it one flat colour? The question
+    a first-boot screenshot has to answer before anyone looks at it: a display
+    manager that died leaves a black (or plain background) screen, and a
+    screenshot of that "succeeds" as well as one of the setup."""
+    cells, width, height = thumbnail(path, grid)
+    spread = max(cells) - min(cells)
+    return {"verdict": "content" if spread > CONTENT_SPREAD else "blank",
+            "spread": spread, "width": width, "height": height}
+
+
 def settled(frame_paths: "list[str]", stable_run: int = STABLE_RUN, grid: int = GRID):
     """The index of the first frame by which the screen had held still for
     `stable_run` comparisons in a row (settled), or None if it never did.
@@ -190,6 +207,14 @@ def settled(frame_paths: "list[str]", stable_run: int = STABLE_RUN, grid: int = 
 
 
 def main(argv: "list[str]") -> int:
+    if argv[:1] == ["content"] and len(argv) == 2:
+        try:
+            result = content(argv[1])
+        except (OSError, PPMError) as exc:
+            sys.stderr.write(f"visual_progress: {exc}\n")
+            return 65
+        print(json.dumps(result))
+        return 0 if result["verdict"] == "content" else 2
     if argv[:1] == ["settled"]:
         paths = argv[1:]
         if len(paths) < STABLE_RUN + 1:

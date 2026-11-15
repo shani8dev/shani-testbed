@@ -1,8 +1,8 @@
 #!/bin/bash
-# driver-boot-verify-results — proves tests/driver-boot-verify.sh can go red,
+# driver-boot-verify-results — proves boot-probes/driver-boot-verify.sh can go red,
 # on the host, with no slot, no VM and no boot.
 #
-# WHY THIS FILE EXISTS. `tests/audit-boot-proof.sh`'s practice, restated: the
+# WHY THIS FILE EXISTS. `boot-probes/audit-boot-proof.sh`'s practice, restated: the
 # audit script "was dry-run against a stub kernel in both directions before the
 # boot (a kernel refusing the capset rules made it report FAIL 62 of 64), so the
 # boot was confirming a check already known to discriminate". **A checker whose
@@ -21,7 +21,7 @@
 #      the measurement script itself fell into on its first run.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-VERIFY="$HERE/driver-boot-verify.sh"
+VERIFY="$HERE/../boot-probes/driver-boot-verify.sh"
 
 pass=0; fail=0
 ok()  { printf 'ok %d - %s\n' "$((++pass))" "$1"; }

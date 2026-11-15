@@ -21,7 +21,7 @@
 # merely swallow a failure, the next line RENAMES that file over a working one,
 # so a failed grep commits a truncated default.
 #
-# Both are invisible to every test in this harness. powercut-scenario.sh
+# Both are invisible to every test in this harness. powercut/scenario.sh
 # reproduces the END STATE a cut leaves and cannot represent a state that only
 # exists mid-write, and no unit test executes a deploy's write path against a
 # real ESP. The observable pass condition is therefore a property of the SOURCE:

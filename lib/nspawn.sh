@@ -145,7 +145,10 @@ _overlay_local_pkgs() {
   for spec in "${specs[@]}"; do
     [[ -n "$spec" ]] || continue
     if [[ "$spec" == *.pkg.tar.* ]]; then pkg="$spec"
-    else pkg=$(ls -t /opt/shani-pkgbuilds/"$spec"/"$spec"-*.pkg.tar.zst 2>/dev/null | grep -v -- '-debug-' | head -1 || true)
+    # the highest version, not the newest file: a package file's mtime is
+    # when it was last touched (a checkout, a copy), and `ls -t` picked a
+    # stale 1.0-4 over the 1.0-14 just built (2026-11-15)
+    else pkg=$(ls /opt/shani-pkgbuilds/"$spec"/"$spec"-*.pkg.tar.zst 2>/dev/null | grep -v -- '-debug-' | sort -V | tail -1 || true)
     fi
     [[ -n "$pkg" && -f "$pkg" ]] || die "--local-pkg=${spec}: no built package found (build it with shani-pkgbuilds/make_pkg.sh ${spec})"
     tmp=$(mktemp -d)

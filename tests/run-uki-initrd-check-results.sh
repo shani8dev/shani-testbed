@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run-uki-initrd-check-results.sh - prove tests/check-uki-initrd.sh can say no.
+# run-uki-initrd-check-results.sh - prove boot-probes/check-uki-initrd.sh can say no.
 #
 # A checker whose first run is a real UKI has never been shown it discriminates.
 # These are synthetic UKIs built the way the layout is documented: a PE carrying
@@ -10,7 +10,7 @@
 # a zero-byte "archive" that reads exactly like an empty initramfs.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-CHECK="$HERE/check-uki-initrd.sh"
+CHECK="$HERE/../boot-probes/check-uki-initrd.sh"
 PASS=0; FAIL=0
 pass() { printf '  ok   %s\n' "$1"; PASS=$((PASS + 1)); }
 fail() { printf '  FAIL %s\n' "$1"; FAIL=$((FAIL + 1)); }

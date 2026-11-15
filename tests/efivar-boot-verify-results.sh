@@ -6,13 +6,13 @@
 # power-cut hook's EFI clearing works on a variable that exists. Its first runs
 # were ~6-minute firmware boots, and a checker that has only ever said PASS is
 # worse than none: it would read as "the clearing is fine" when nothing was
-# distinguished. This is `tests/audit-boot-proof.sh`'s practice — dry-run against
+# distinguished. This is `boot-probes/audit-boot-proof.sh`'s practice — dry-run against
 # a stub in both directions first — applied to the same subsystem, and it is
 # cheap: no boot, no container, no slot.
 #
 # Host-only, no docker, no btrfs, no firmware.
 cd "$(dirname "$0")/.." || exit 1
-VERIFY=tests/efivar-boot-verify.sh
+VERIFY=boot-probes/efivar-boot-verify.sh
 
 pass=0; fail=0
 ck() {

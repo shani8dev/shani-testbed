@@ -29,7 +29,7 @@
 # TPM every run, so a variable deleted here is regenerated next run. NEVER run
 # this against a real machine's efivarfs.
 #
-# Prints EFIVARFACT key=value lines, the format tests/driver-boot-verify.sh
+# Prints EFIVARFACT key=value lines, the format boot-probes/driver-boot-verify.sh
 # already parses: a measurement whose output is a sentence cannot be asserted
 # on safely.
 set -u
