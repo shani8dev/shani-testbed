@@ -1495,6 +1495,7 @@ between the markers; edit the source and rerun the generator.
 | `systemd-report-signing` | boot | Can systemd 262 sign a fleet report with the TPM2 on this machine? |
 | `unit-verify` | boot | `systemd-analyze verify` over every unit ShaniOS itself ships, in the installed image, plus every load-time complaint PID 1 logged this boot |
 | `user-setup-path` | boot | shani-user-setup.path stays active after boot (no trigger-limit-hit); the /data/user-setup-needed marker and useradd still trigger shani-user-setup.service; a sync that fixes several users at once converges with the path unit alive (missing shells repaired); another spelling of the same zsh is not rewritten; a shell a user chose (bash) is kept - no forced zsh; re-adding the old PathExists= line reproduces the failure (negative control); shani-health --security's "Unit Sandboxing" works |
+| `var-state-coverage` | boot | every /var place the IMAGE could write state to is either kept by /etc/fstab or declared '# ram:' there |
 <!-- END GENERATED: slot-tests -->
 
 ## Requirements

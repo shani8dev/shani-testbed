@@ -12,7 +12,9 @@
 #   source /mnt/testbed/slot-tests/_pacdb.sh   then:   pacq -Qql shani-deploy
 PACDB=/var/lib/pacman
 _PACDB_MNT=""
-if [ ! -d /var/lib/pacman/local ] || [ -z "$(ls -A /var/lib/pacman/local 2>/dev/null)" ]; then
+# PACDB_SUBVOL=1: mount the slot's subvolume anyway - for a test that must read
+# the IMAGE's own /var (a booted slot has fstab's binds over it).
+if [ "${PACDB_SUBVOL:-}" = 1 ] || [ ! -d /var/lib/pacman/local ] || [ -z "$(ls -A /var/lib/pacman/local 2>/dev/null)" ]; then
     # the btrfs device: by label (also present in the harness's nspawn boots,
     # whose / is an overlay), else whatever / is mounted from
     _dev=/dev/disk/by-label/shani_root
