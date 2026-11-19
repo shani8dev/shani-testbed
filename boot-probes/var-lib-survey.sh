@@ -11,9 +11,11 @@
 #   kept  bind (from /data/varlib) or subvol (its own subvolume)
 #   RAM   on the tmpfs: emptied at every boot
 #   inside not a mountpoint itself, but under one (e.g. /var/lib/x on a kept /var/lib/x/..)
-#   size  du -sh of what is in it NOW (after the system has run a while)
+#   size  du -shx of what is in it NOW, on this filesystem only (a plain du of
+#         /var/lib counted the flatpak and snapd subvolumes: 8.4G "on RAM")
 #   owner the package that ships the folder (pacman -Qo), or "runtime" when no
-#         package does - a service made it while running
+#         package does - a service made it while running. On a real boot
+#         pacman's database is itself on the tmpfs, so every row reads "runtime"
 #
 # A RAM folder that is non-empty after a normal boot is a candidate for the
 # persisted list: some service writes state there and loses it at every boot.
@@ -46,7 +48,7 @@ survey() {  # PATH
         # under something kept (only /var itself is the tmpfs)
         [[ $(findmnt -no TARGET -T "$d" 2>/dev/null) != /var ]] && state=inside
     fi
-    size=$(du -sh "$d" 2>/dev/null | cut -f1)
+    size=$(du -shx "$d" 2>/dev/null | cut -f1)  # -x: not the kept mounts below it
     owner=$(pacman -Qoq "$d" 2>/dev/null | paste -sd, -)
     printf 'SURVEY %-36s %-6s %-6s %6s %s\n' "$d" "$state" "$how" "${size:-?}" "${owner:-runtime}"
     if [[ $check == yes && $state == RAM && $d != /var/lib && $d != /var/spool ]] \
