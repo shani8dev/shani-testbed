@@ -1482,6 +1482,7 @@ between the markers; edit the source and rerun the generator.
 | `dnscrypt-enable` | boot | Does enabling dnscrypt-proxy break the machine's networking? |
 | `first-boot` | boot | what a new install shows when it is switched on |
 | `fresh-user` | boot | what a person gets on a fresh install |
+| `guest-account` | boot | the guest account of a classroom board or a shared computer (shani-shell's Settings > Users > Guest, made by bridge/shani-admin.py; shani-desktop-niri's guest-reset, run by a user-runtime-dir@.service drop-in), in a really booted slot |
 | `home-snapshots` | boot | `shani_backup.home` (daily snapshots of people's homes in /home/.snapshots, the idea of NAZY-OS/btrfs-home-user-snapshots) on a real btrfs, in the real image, driving the live checkout (/mnt/src/shani-backup) |
 | `initramfs-drivers` | boot | every UKI on the ESP carries the drivers its root disk can need, so the initqueue can find root=UUID= on more than a virtio disk |
 | `launchers` | boot | what the shipped desktop pins is really there |
