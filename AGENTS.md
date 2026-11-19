@@ -1221,3 +1221,32 @@ image's kernel is `7.2.6-arch2-1` while **pacman calls the same package
 separators folded away; and `/sys/kernel/security/lockdown` **enforces `none`**
 with no SecureBoot efivar present, so an unsigned module is *not* refused for its
 signature here and the signing story in the driver skills had to be corrected.
+
+### `boot-counting`: systemd-boot's tries and the login-screen gate, in firmware boots (2026-11-19)
+
+`boot-probes/boot-counting.sh` measures whether systemd-boot counts a ShaniOS
+entry and whether a counted (trial) boot is blessed only once the login screen
+is up. One firmware boot per phase: `setup KEY [break-dm|fix-dm]` arms the
+NEXT boot (a fresh `+3-0` entry written with `uki` or `efi`, files console-put
+as `/tmp/bc_<name>` installed into the booted slot, the display manager broken
+or fixed through an `/etc` drop-in); `verify` prints `RESULT` lines for THIS
+boot. What it settled on the plasma install (systemd 262-1):
+
+- `efi` key: `LoaderBootCountPath` absent, entry stays `+3-0` (systemd#40405);
+  `uki` key: `+3-0 → +2-1`, `LoaderBootCountPath` set.
+- login screen up → `shani-desktop-health` PASS, `bless-boot` seals the entry;
+  display manager broken → FAIL, no `/data/boot-ok`, entry left counting.
+
+Three traps, each cost a boot:
+
+- **`console-put` cannot create directories** — `/tmp/bc/x` fails; the probe
+  reads flat `/tmp/bc_<name>` files.
+- **An installed slot is a received subvolume** (`received_uuid` set):
+  `btrfs property set -ts … ro false` refuses without `-f`, and the copies then
+  fail silently. The probe uses `-f` (as shani-deploy does) and `cmp`s every
+  file it installed.
+- **A check that reboots a failed trial boot loops forever here.** With
+  `default shanios-blue.conf` named explicitly, systemd-boot keeps picking the
+  entry after its tries run out; the VM rebooted ~every 160 s until the run's
+  timeout. To recover a disk stuck like that, stop the unit for one boot first:
+  `--console-exec="systemctl mask --runtime --now <unit>; bash /tmp/bc.sh setup …"`.

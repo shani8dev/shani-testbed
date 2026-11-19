@@ -131,7 +131,7 @@ C) # The reported failure. The candidate must genuinely fail to mount.
        echo "  Entries are:" >&2; ls "$ESPMNT/loader/entries" >&2
        exit 2
    fi
-   CAND_EFI=$(sed -n 's/^efi[[:space:]]*//p' "$ESPMNT/loader/entries/shanios-${CAND}.conf" | head -1)
+   CAND_EFI=$(sed -n 's/^\(efi\|uki\)[[:space:]]*//p' "$ESPMNT/loader/entries/shanios-${CAND}.conf" | head -1)
 
    # The healthy sibling needs a PLAIN entry. After a real post-flip deploy it has
    # one; left over from earlier scenario runs it may only have a tries entry,
@@ -139,7 +139,7 @@ C) # The reported failure. The candidate must genuinely fail to mount.
    SIB=""
    for f in "$ESPMNT/loader/entries"/*.conf; do
        [ -f "$f" ] || continue
-       e=$(sed -n 's/^efi[[:space:]]*//p' "$f" | head -1)
+       e=$(sed -n 's/^\(efi\|uki\)[[:space:]]*//p' "$f" | head -1)
        [ "$e" = "$CAND_EFI" ] && continue
        SIB="$f"; break
    done
@@ -171,7 +171,7 @@ C) # The reported failure. The candidate must genuinely fail to mount.
        case "$N" in *+*-*) continue ;; esac
        HOOK_FALLBACK="$N"; break
    done
-   efi_of() { sed -n 's/^efi[[:space:]]*//p' "$ESPMNT/loader/entries/$1.conf" 2>/dev/null | head -1; }
+   efi_of() { sed -n 's/^\(efi\|uki\)[[:space:]]*//p' "$ESPMNT/loader/entries/$1.conf" 2>/dev/null | head -1; }
    echo "    hook would fall back to: ${HOOK_FALLBACK:-<none>}"
    if [[ -z "$HOOK_FALLBACK" ]]; then
        echo "SCENARIO C ABORT: no plain entry for the hook to fall back to." >&2
@@ -191,7 +191,7 @@ C) # The reported failure. The candidate must genuinely fail to mount.
    # it: the UKI this entry loads must really carry the bad subvolume in its
    # own .cmdline. objcopy --only-section is the reliable extractor here -
    # lsinitrd / unmkinitramfs / ukify are not in the builder image.
-   EFI_REL=$(sed -n 's/^efi[[:space:]]*//p' "$ESPMNT/loader/entries/${BAD}.conf" | head -1)
+   EFI_REL=$(sed -n 's/^\(efi\|uki\)[[:space:]]*//p' "$ESPMNT/loader/entries/${BAD}.conf" | head -1)
    EFI_ABS="${ESPMNT}${EFI_REL}"
    if [[ ! -f $EFI_ABS ]]; then
        echo "SCENARIO C ABORT: ${BAD}.conf loads ${EFI_REL}, which is not on the ESP" >&2
