@@ -141,11 +141,9 @@ setup() {
 # next boot lands on says which of systemd-boot's selection steps skips an
 # exhausted entry (src/boot/boot.c config_select_default_entry()).
 efivar_clear() {
-    local f
-    for f in "$EFIVARS/$1-$GUID"; do
-        [[ -e $f ]] || continue
-        chattr -i "$f" 2>/dev/null; rm -f "$f"
-    done
+    local f="$EFIVARS/$1-$GUID"
+    [[ -e $f ]] || return 0
+    chattr -i "$f" 2>/dev/null; rm -f "$f"
 }
 arm_exhausted() {
     local slot="$1" key="$2" pref="$3" def="$4" entry
