@@ -125,7 +125,7 @@ _mount_etc_overlay() {
   [[ -d "${MNT}/@data" ]] || { warn "no @data subvolume - /etc stays a plain directory (not like a real boot)"; return 0; }
   mkdir -p "$up" "$wk"
   mountpoint -q "$etc" && return 0
-  mount -t overlay overlay -o "rw,lowerdir=${etc},upperdir=${up},workdir=${wk},index=off,metacopy=off" "$etc" \
+  mount -t overlay overlay -o "rw,lowerdir=${etc},upperdir=${up},workdir=${wk},index=off,metacopy=off,redirect_dir=follow,xino=off" "$etc" \
     || warn "/etc overlay (as dracut's shanios-overlay-etc does) failed - /etc stays a plain directory"
 }
 
