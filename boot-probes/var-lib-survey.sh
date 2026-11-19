@@ -20,9 +20,19 @@
 # Whether it SHOULD persist (state, or a cache that is fine to lose?) is a
 # judgement this does not make.
 #
+# --check: also read the '# ram: <path> - <why>' declarations in this system's
+# own /etc/fstab (folders deliberately left on the tmpfs) and exit 1 for every
+# folder that is on the tmpfs, NOT empty, and neither mounted nor declared:
+#   UNDECLARED <path> <size>
+# A folder that only fills later in a machine's life is not caught by a fresh
+# boot - the report's RAM rows are the record of what was not looked at.
+#
 # Usage: iso-install --boot-only --console-put=boot-probes/var-lib-survey.sh:/tmp/vls.sh
-#        --console-exec="bash /tmp/vls.sh"
+#        --console-exec="bash /tmp/vls.sh [--check]"
 set -u
+check=no; [[ ${1:-} == --check ]] && check=yes
+declared=$(sed -n "s/^# ram: \\([^ ]*\\) .*/\\1/p" /etc/fstab 2>/dev/null)
+undeclared=0
 timeout 600 systemctl is-system-running --wait >/dev/null 2>&1
 echo "SURVEY-BEGIN $(systemctl is-system-running 2>/dev/null) uptime=$(cut -d' ' -f1 /proc/uptime)s"
 survey() {  # PATH
@@ -39,9 +49,17 @@ survey() {  # PATH
     size=$(du -sh "$d" 2>/dev/null | cut -f1)
     owner=$(pacman -Qoq "$d" 2>/dev/null | paste -sd, -)
     printf 'SURVEY %-36s %-6s %-6s %6s %s\n' "$d" "$state" "$how" "${size:-?}" "${owner:-runtime}"
+    if [[ $check == yes && $state == RAM && $d != /var/lib && $d != /var/spool ]] \
+       && [[ -n $(ls -A "$d" 2>/dev/null) ]] && ! grep -qxF "$d" <<< "$declared"; then
+        echo "UNDECLARED $d ${size:-?}"; undeclared=$((undeclared + 1))
+    fi
 }
 echo "/var itself: $(findmnt -no FSTYPE /var)"
 for d in /var/*/ /var/lib/*/ /var/spool/*/; do
     [[ -d $d ]] && survey "${d%/}"
 done
 echo "SURVEY-END"
+if [[ $check == yes ]]; then
+    echo "CHECK $( ((undeclared)) && echo FAIL || echo PASS ) ${undeclared} undeclared non-empty /var folder(s) on the tmpfs"
+    ((undeclared == 0))
+fi
