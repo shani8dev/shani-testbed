@@ -7,6 +7,10 @@
 # phase; each later phase reads what the boot before it did:
 #
 #   verify                 RESULT lines for THIS boot (waits for it to settle)
+#   arm-exhausted SLOT KEY PREFERRED DEFAULT
+#                          for the NEXT boot: SLOT's entry has no tries left and
+#                          the selection efivars are set - which slot boots?
+#   restore SLOT           the entries and efivars as an install leaves them
 #   setup KEY [break-dm|fix-dm]
 #                          for the NEXT boot: the default entry becomes a fresh
 #                          +3-0 trial written with KEY (uki|efi), the files
@@ -131,8 +135,52 @@ setup() {
     sync
 }
 
+# arm-exhausted SLOT KEY PREFERRED DEFAULT - for the NEXT boot: SLOT's entry has
+# no tries left (+0-3, KEY), LoaderEntryPreferred=PREFERRED and
+# LoaderEntryDefault=DEFAULT (entry ids, or "-" to leave unset). Which slot the
+# next boot lands on says which of systemd-boot's selection steps skips an
+# exhausted entry (src/boot/boot.c config_select_default_entry()).
+efivar_clear() {
+    local f
+    for f in "$EFIVARS/$1-$GUID"; do
+        [[ -e $f ]] || continue
+        chattr -i "$f" 2>/dev/null; rm -f "$f"
+    done
+}
+arm_exhausted() {
+    local slot="$1" key="$2" pref="$3" def="$4" entry
+    esp_mount || { res arm-esp FAIL; return 1; }
+    entry=$(ls /boot/efi/loader/entries/shanios-"$slot"*.conf | head -1)
+    sed "s/^\(efi\|uki\)\([[:space:]]\)/${key}\2/" "$entry" > /boot/efi/loader/entries/.bc.tmp \
+        && mv -f /boot/efi/loader/entries/.bc.tmp "/boot/efi/loader/entries/shanios-${slot}+0-3.conf"
+    [[ $entry == */"shanios-${slot}+0-3.conf" ]] || rm -f "$entry"
+    efivar_clear LoaderEntryPreferred; efivar_clear LoaderEntryDefault; efivar_clear LoaderEntryOneShot
+    [[ $pref == - ]] || bootctl --esp-path=/boot/efi set-preferred "$pref" || res arm-preferred FAIL
+    [[ $def == - ]] || bootctl --esp-path=/boot/efi set-default "$def" || res arm-default FAIL
+    sync
+    res arm-exhausted "$(ls /boot/efi/loader/entries | tr '\n' ' ')pref=$pref default=$def $(grep '^default' /boot/efi/loader/loader.conf)"
+    res arm-efivars "$(ls "$EFIVARS" | grep -E '^LoaderEntry(Preferred|Default|OneShot)' | cut -d- -f1 | paste -sd' ')"
+}
+
+# restore SLOT - SLOT's entry an unproven +3-0 with the "efi" key, the selection
+# efivars cleared, loader.conf's default SLOT: the disk as an install leaves it.
+restore() {
+    local slot="$1" entry
+    esp_mount || { res restore-esp FAIL; return 1; }
+    entry=$(ls /boot/efi/loader/entries/shanios-"$slot"*.conf | head -1)
+    sed "s/^\(efi\|uki\)\([[:space:]]\)/efi\2/" "$entry" > /boot/efi/loader/entries/.bc.tmp \
+        && mv -f /boot/efi/loader/entries/.bc.tmp "/boot/efi/loader/entries/shanios-${slot}+3-0.conf"
+    [[ $entry == */"shanios-${slot}+3-0.conf" ]] || rm -f "$entry"
+    efivar_clear LoaderEntryPreferred; efivar_clear LoaderEntryDefault; efivar_clear LoaderEntryOneShot
+    sed -i "s/^default .*/default shanios-${slot}.conf/" /boot/efi/loader/loader.conf
+    sync
+    res restore "$(ls /boot/efi/loader/entries | tr '\n' ' ')$(grep '^default' /boot/efi/loader/loader.conf)"
+}
+
 case ${1:-} in
     verify) verify ;;
     setup) shift; setup "$@" ;;
-    *) echo "usage: boot-counting.sh verify | setup uki|efi [break-dm|fix-dm]" >&2; exit 2 ;;
+    arm-exhausted) shift; arm_exhausted "$@" ;;
+    restore) shift; restore "$@" ;;
+    *) echo "usage: boot-counting.sh verify | setup uki|efi [break-dm|fix-dm] | arm-exhausted SLOT KEY PREF|- DEFAULT|- | restore SLOT" >&2; exit 2 ;;
 esac
