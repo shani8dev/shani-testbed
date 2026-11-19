@@ -23,6 +23,9 @@ run_case() {  # <name> <failing-step|none>
       die()  { echo "[ERROR] $*"; exit 1; }
       _take_local_src() { LOCAL_SRC=""; REST_ARGS=("$@"); }
       MNT="$DATA_DIR/mnt"; mkdir -p "$MNT/@blue/etc" "$MNT/@green/etc" "$MNT/@data"
+      # the ESP the rollback:esp-* checks read (lib/suite.sh honours SUITE_ESP_DIR)
+      export SUITE_ESP_DIR="$DATA_DIR/esp"; mkdir -p "$SUITE_ESP_DIR/loader/entries"
+      esp_default() { printf "default %s\n" "$1" > "$SUITE_ESP_DIR/loader/loader.conf"; : > "$SUITE_ESP_DIR/loader/entries/$1"; }
       _current_slot() { cat "$MNT/@data/current-slot"; }
       for s in clean ca; do
         eval "cmd_$s() { [[ \"\$FAILING\" != $s ]] || return 3; }"
@@ -30,10 +33,13 @@ run_case() {  # <name> <failing-step|none>
       # slots behave like the real thing (or like the old destructive rollback)
       cmd_bootstrap() { [[ "$FAILING" != bootstrap ]] || return 3; echo blue > "$MNT/@data/current-slot"
         echo 20260821 > "$MNT/@blue/etc/shani-version"; echo 20260821 > "$MNT/@green/etc/shani-version"; }
-      cmd_upgrade() { [[ "$FAILING" != upgrade ]] || return 3; echo green > "$MNT/@data/current-slot"; echo 20260924 > "$MNT/@green/etc/shani-version"; }
+      cmd_upgrade() { [[ "$FAILING" != upgrade ]] || return 3; echo green > "$MNT/@data/current-slot"; echo 20260924 > "$MNT/@green/etc/shani-version"
+        esp_default shanios-green.conf; }
       cmd_rollback() { [[ "$FAILING" != rollback ]] || return 3
         if [[ "${DESTRUCTIVE:-}" ]]; then echo 20260924 > "$MNT/@blue/etc/shani-version"   # old behaviour: copy of the new slot
-        else echo blue > "$MNT/@data/current-slot"; fi; }
+        else echo blue > "$MNT/@data/current-slot"; fi
+        # STALE_ESP: the markers say blue, the firmware would still boot green
+        [[ "${STALE_ESP:-}" ]] || esp_default shanios-blue.conf; }
       source "'"$here"'/lib/suite.sh"
       # AFTER the source: lib/suite.sh defines this, so a stub set before the
       # source gets overwritten. Stubbed because this test is about the SUMMARY,
@@ -98,5 +104,27 @@ out="$(FAILING=none DESTRUCTIVE=1 DATA_DIR="$tmp2" bash -c '
 check "destructive rollback: suite FAILED"          "grep -q 'suite FAILED' <<<\"\$out\""
 check "destructive rollback: rollback:restored FAIL" "grep -qE '^\[INFO\]   rollback:restored +FAIL' <<<\"\$out\""
 rm -rf "$tmp2"
+# NEGATIVE control for the rollback:esp-* checks: every marker says the rollback
+# worked, and loader.conf still names the slot rolled away from - the machine
+# would boot it. That passed this suite while db12414 had the checks removed.
+tmp3="$(mktemp -d)"
+out="$(STALE_ESP=1 DATA_DIR="$tmp3" bash -c '
+  set -Eeuo pipefail; log(){ echo "[INFO] $*"; }; warn(){ echo "[WARN] $*"; }; die(){ echo "[ERROR] $*"; exit 1; }
+  _take_local_src() { LOCAL_SRC=""; REST_ARGS=("$@"); }
+  MNT="$DATA_DIR/mnt"; mkdir -p "$MNT/@blue/etc" "$MNT/@green/etc" "$MNT/@data"
+  export SUITE_ESP_DIR="$DATA_DIR/esp"; mkdir -p "$SUITE_ESP_DIR/loader/entries"
+  esp_default() { printf "default %s\n" "$1" > "$SUITE_ESP_DIR/loader/loader.conf"; : > "$SUITE_ESP_DIR/loader/entries/$1"; }
+  _current_slot() { cat "$MNT/@data/current-slot"; }
+  cmd_clean() { :; }; cmd_ca() { :; }
+  cmd_bootstrap() { echo blue > "$MNT/@data/current-slot"; echo 20260821 > "$MNT/@blue/etc/shani-version"; echo 20260821 > "$MNT/@green/etc/shani-version"; }
+  cmd_upgrade() { echo green > "$MNT/@data/current-slot"; echo 20260924 > "$MNT/@green/etc/shani-version"; esp_default shanios-green.conf; }
+  cmd_rollback() { echo blue > "$MNT/@data/current-slot"; }
+  source "'"$here"'/lib/suite.sh"
+  cmd_critical_writes() { :; }
+  cmd_suite -p gnome' 2>&1)" || true
+check "stale ESP after rollback: suite FAILED" "grep -q 'suite FAILED' <<<\"\$out\""
+check "stale ESP after rollback: rollback:restored PASS (the markers are right)" "grep -qE '^\[INFO\]   rollback:restored +PASS' <<<\"\$out\""
+check "stale ESP after rollback: rollback:esp-default-names-the-target FAIL" "grep -qE '^\[INFO\]   rollback:esp-default-names-the-target +FAIL' <<<\"\$out\""
+rm -rf "$tmp3"
 echo
 (( fails == 0 )) && echo "suite-summary: all checks passed" || { echo "suite-summary: $fails check(s) failed"; exit 1; }
